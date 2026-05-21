@@ -1,0 +1,73 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2026-04-26 12:41:59.862541",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "base_rate",
+  "polishing_rate",
+  "hole_rate",
+  "notch_rate",
+  "sandblast_rate"
+ ],
+ "fields": [
+  {
+   "default": "90",
+   "fieldname": "base_rate",
+   "fieldtype": "Currency",
+   "label": "Base Rate"
+  },
+  {
+   "default": "20",
+   "fieldname": "polishing_rate",
+   "fieldtype": "Currency",
+   "label": "Polishing Rate"
+  },
+  {
+   "default": "25",
+   "fieldname": "hole_rate",
+   "fieldtype": "Currency",
+   "label": "Hole Rate"
+  },
+  {
+   "default": "25",
+   "fieldname": "notch_rate",
+   "fieldtype": "Currency",
+   "label": "Notch Rate"
+  },
+  {
+   "default": "70",
+   "fieldname": "sandblast_rate",
+   "fieldtype": "Currency",
+   "label": "Sandblast Rate"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-04-26 12:41:59.862541",
+ "modified_by": "Administrator",
+ "module": "Crystal Alluminium Works",
+ "name": "Glass Pricing Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}

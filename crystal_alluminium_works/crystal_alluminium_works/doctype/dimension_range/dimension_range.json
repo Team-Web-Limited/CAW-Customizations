@@ -1,0 +1,95 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2026-04-26 12:41:59.476278",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "min_mm",
+  "max_mm",
+  "equivalent_ft",
+  "equivalent_inches",
+  "equivalent_inches_min",
+  "equivalent_inches_max",
+  "interval_set"
+ ],
+ "fields": [
+  {
+   "fieldname": "min_mm",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Min (mm)",
+   "reqd": 1
+  },
+  {
+   "fieldname": "max_mm",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Max (mm)",
+   "reqd": 1
+  },
+  {
+   "fieldname": "equivalent_ft",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Equivalent (ft)",
+   "reqd": 1
+  },
+  {
+   "fieldname": "equivalent_inches",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Equivalent (inches)",
+   "reqd": 1
+  },
+  {
+   "fieldname": "equivalent_inches_min",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Equivalent Inches Min"
+  },
+  {
+   "fieldname": "equivalent_inches_max",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Equivalent Inches Max"
+  },
+  {
+   "default": "Standard Glass",
+   "fieldname": "interval_set",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Interval Set",
+   "options": "Standard Glass\nToughened Glass",
+   "reqd": 1
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-04-26 12:41:59.476278",
+ "modified_by": "Administrator",
+ "module": "Crystal Alluminium Works",
+ "name": "Dimension Range",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}

@@ -1,0 +1,23 @@
+{
+ "content": null,
+ "creation": "2026-04-27 12:16:21.092586",
+ "docstatus": 0,
+ "doctype": "Page",
+ "idx": 0,
+ "modified": "2026-04-27 12:16:21.092586",
+ "modified_by": "Administrator",
+ "module": "Crystal Alluminium Works",
+ "name": "quotation-manager",
+ "owner": "Administrator",
+ "page_name": "quotation-manager",
+ "roles": [
+  {
+   "role": "System Manager"
+  }
+ ],
+ "script": null,
+ "standard": "Yes",
+ "style": null,
+ "system_page": 0,
+ "title": "Quotation Manager"
+}

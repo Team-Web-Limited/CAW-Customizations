@@ -1,0 +1,17 @@
+{
+ "creation": "2026-05-14 00:00:00.000000",
+ "docstatus": 0,
+ "doctype": "Page",
+ "modified": "2026-05-14 00:00:00.000000",
+ "module": "Crystal Alluminium Works",
+ "name": "sales-invoice-manager",
+ "owner": "Administrator",
+ "page_name": "sales-invoice-manager",
+ "roles": [
+  {
+   "role": "System Manager"
+  }
+ ],
+ "standard": "Yes",
+ "title": "Sales Invoice Manager"
+}

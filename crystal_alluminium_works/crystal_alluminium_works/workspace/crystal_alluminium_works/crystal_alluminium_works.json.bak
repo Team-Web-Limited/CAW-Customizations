@@ -1,0 +1,18 @@
+{
+ "app": "crystal_alluminium_works",
+ "content": "[{\"id\":\"header123\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>Crystal Alluminium Works</b></span>\",\"col\":12}}]",
+ "docstatus": 0,
+ "doctype": "Workspace",
+ "for_user": "",
+ "hide_custom": 0,
+ "icon": "tool",
+ "is_hidden": 0,
+ "label": "Crystal Alluminium Works",
+ "links": [],
+ "module": "Crystal Alluminium Works",
+ "name": "Crystal Alluminium Works",
+ "public": 1,
+ "sequence_id": 10.0,
+ "title": "Crystal Alluminium Works",
+ "type": "Workspace"
+}

@@ -1,0 +1,12 @@
+{
+ "app": "crystal_alluminium_works",
+ "doctype": "Desktop Icon",
+ "hidden": 0,
+ "icon_type": "App",
+ "label": "Crystal Alluminium Works",
+ "link": "/app/crystal-aluminium-wo",
+ "link_type": "External",
+ "logo_url": "/assets/crystal_alluminium_works/images/crystal-alluminium-works-logo.svg",
+ "name": "Crystal Alluminium Works",
+ "standard": 1
+}

@@ -1,0 +1,23 @@
+{
+ "content": null,
+ "creation": "2026-04-26 15:47:50.115085",
+ "docstatus": 0,
+ "doctype": "Page",
+ "idx": 0,
+ "modified": "2026-04-26 15:47:50.115085",
+ "modified_by": "Administrator",
+ "module": "Crystal Alluminium Works",
+ "name": "crystal-aluminium-wo",
+ "owner": "Administrator",
+ "page_name": "crystal-aluminium-wo",
+ "roles": [
+  {
+   "role": "System Manager"
+  }
+ ],
+ "script": null,
+ "standard": "Yes",
+ "style": null,
+ "system_page": 0,
+ "title": "Operations Dashboard"
+}

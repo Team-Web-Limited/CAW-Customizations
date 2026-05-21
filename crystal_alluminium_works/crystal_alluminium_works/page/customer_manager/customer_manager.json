@@ -1,0 +1,23 @@
+{
+ "content": null,
+ "creation": "2026-05-18 14:02:05.594586",
+ "docstatus": 0,
+ "doctype": "Page",
+ "idx": 0,
+ "modified": "2026-05-18 14:02:05.594586",
+ "modified_by": "Administrator",
+ "module": "Crystal Alluminium Works",
+ "name": "customer-manager",
+ "owner": "Administrator",
+ "page_name": "customer-manager",
+ "roles": [
+  {
+   "role": "System Manager"
+  }
+ ],
+ "script": null,
+ "standard": "Yes",
+ "style": null,
+ "system_page": 0,
+ "title": "Customer Manager"
+}

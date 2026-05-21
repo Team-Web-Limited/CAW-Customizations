@@ -1,0 +1,17 @@
+{
+ "creation": "2026-04-28 22:15:00.000000",
+ "docstatus": 0,
+ "doctype": "Page",
+ "modified": "2026-04-28 22:15:00.000000",
+ "module": "Selling",
+ "name": "sales-order-manager",
+ "owner": "Administrator",
+ "page_name": "sales-order-manager",
+ "roles": [
+  {
+   "role": "System Manager"
+  }
+ ],
+ "standard": "Yes",
+ "title": "Sales Order Manager"
+}

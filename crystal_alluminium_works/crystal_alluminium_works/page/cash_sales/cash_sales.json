@@ -1,0 +1,23 @@
+{
+ "content": null,
+ "creation": "2026-05-17 11:33:55.492437",
+ "docstatus": 0,
+ "doctype": "Page",
+ "idx": 0,
+ "modified": "2026-05-17 11:33:55.492437",
+ "modified_by": "Administrator",
+ "module": "Crystal Alluminium Works",
+ "name": "cash-sales",
+ "owner": "Administrator",
+ "page_name": "cash-sales",
+ "roles": [
+  {
+   "role": "System Manager"
+  }
+ ],
+ "script": null,
+ "standard": "Yes",
+ "style": null,
+ "system_page": 0,
+ "title": "Cash Sales"
+}

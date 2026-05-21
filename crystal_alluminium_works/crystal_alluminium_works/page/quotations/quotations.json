@@ -1,0 +1,17 @@
+{
+ "creation": "2026-04-29 00:00:00.000000",
+ "docstatus": 0,
+ "doctype": "Page",
+ "modified": "2026-04-29 00:00:00.000000",
+ "module": "Crystal Alluminium Works",
+ "name": "quotations",
+ "owner": "Administrator",
+ "page_name": "quotations",
+ "roles": [
+  {
+   "role": "System Manager"
+  }
+ ],
+ "standard": "Yes",
+ "title": "Quotations"
+}

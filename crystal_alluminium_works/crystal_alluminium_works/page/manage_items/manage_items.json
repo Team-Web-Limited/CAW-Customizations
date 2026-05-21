@@ -1,0 +1,23 @@
+{
+ "content": null,
+ "creation": "2026-04-26 17:26:33.512188",
+ "docstatus": 0,
+ "doctype": "Page",
+ "idx": 0,
+ "modified": "2026-04-26 17:26:33.512188",
+ "modified_by": "Administrator",
+ "module": "Crystal Alluminium Works",
+ "name": "manage-items",
+ "owner": "Administrator",
+ "page_name": "manage-items",
+ "roles": [
+  {
+   "role": "System Manager"
+  }
+ ],
+ "script": null,
+ "standard": "Yes",
+ "style": null,
+ "system_page": 0,
+ "title": "Manage Items"
+}

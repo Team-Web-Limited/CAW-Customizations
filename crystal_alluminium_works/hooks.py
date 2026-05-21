@@ -9,17 +9,22 @@ app_license = "mit"
 # ------------------
 
 # required_apps = []
+fixtures = [
+	# Workspace commented out — replaced by custom Page
+	# {"dt": "Workspace", "filters": [["name", "in", ["Crystal Alluminium Works"]]]},
+	{"dt": "Desktop Icon", "filters": [["name", "in", ["Crystal Alluminium Works"]]]},
+	{"dt": "Custom Field", "filters": [["module", "in", ["Crystal Alluminium Works"]]]}
+]
 
 # Each item in the list will be shown as an app in the apps page
-# add_to_apps_screen = [
-# 	{
-# 		"name": "crystal_alluminium_works",
-# 		"logo": "/assets/crystal_alluminium_works/logo.png",
-# 		"title": "Crystal Alluminium Works",
-# 		"route": "/crystal_alluminium_works",
-# 		"has_permission": "crystal_alluminium_works.api.permission.has_app_permission"
-# 	}
-# ]
+add_to_apps_screen = [
+	{
+		"name": "crystal_alluminium_works",
+		"logo": "/assets/crystal_alluminium_works/images/crystal-alluminium-works-logo.svg",
+		"title": "Crystal Alluminium Works",
+		"route": "/app/crystal-aluminium-wo",
+	}
+]
 
 # Includes in <head>
 # ------------------
@@ -43,7 +48,11 @@ app_license = "mit"
 # page_js = {"page" : "public/js/file.js"}
 
 # include js in doctype views
-# doctype_js = {"doctype" : "public/js/doctype.js"}
+doctype_js = {
+	"Quotation" : "public/js/quotation.js",
+	"Sales Order" : "public/js/sales_order.js",
+	"Sales Invoice" : "public/js/sales_invoice.js"
+}
 # doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
 # doctype_calendar_js = {"doctype" : "public/js/doctype_calendar.js"}
@@ -86,7 +95,7 @@ app_license = "mit"
 # ------------
 
 # before_install = "crystal_alluminium_works.install.before_install"
-# after_install = "crystal_alluminium_works.install.after_install"
+after_install = "crystal_alluminium_works.patches.refresh_workspace_sidebar_links.execute"
 
 # Uninstallation
 # ------------
@@ -138,13 +147,17 @@ app_license = "mit"
 # ---------------
 # Hook on document methods and events
 
-# doc_events = {
-# 	"*": {
-# 		"on_update": "method",
-# 		"on_cancel": "method",
-# 		"on_trash": "method"
-# 	}
-# }
+doc_events = {
+	"Quotation": {
+		"validate": "crystal_alluminium_works.quotation_handler.on_validate"
+	},
+	"Sales Order": {
+		"validate": "crystal_alluminium_works.sales_order_handler.on_validate"
+	},
+	"Sales Invoice": {
+		"validate": "crystal_alluminium_works.sales_invoice_handler.on_validate"
+	}
+}
 
 # Scheduled Tasks
 # ---------------
@@ -171,6 +184,8 @@ app_license = "mit"
 # -------
 
 # before_tests = "crystal_alluminium_works.install.before_tests"
+
+after_migrate = "crystal_alluminium_works.patches.refresh_workspace_sidebar_links.execute"
 
 # Extend DocType Class
 # ------------------------------
@@ -255,4 +270,3 @@ app_license = "mit"
 # ------------
 # List of apps whose translatable strings should be excluded from this app's translations.
 # ignore_translatable_strings_from = []
-
