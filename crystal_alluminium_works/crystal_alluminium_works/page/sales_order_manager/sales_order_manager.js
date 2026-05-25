@@ -46,6 +46,10 @@ function get_sales_order_item_uom_qty(item) {
 	}
 
 	if (item.custom_product_category === 'Glass') {
+		if (item.custom_glass_sale_mode === 'Sheet') {
+			return flt(item.qty || 0);
+		}
+
 		if (item.custom_glass_sale_mode === 'Full Sheet') {
 			return flt(item.qty || 0);
 		}

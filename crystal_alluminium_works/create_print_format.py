@@ -72,21 +72,37 @@ def create_crystal_print_format(doctype, print_format_name, ref_label, terms):
     }}
 </style>
 
+{{% set has_aluminium_rows = namespace(value=false) %}}
+{{% set has_glass_rows = namespace(value=false) %}}
+{{% for row in doc.items %}}
+    {{% if not row.custom_auto_generated and (row.custom_product_category or '') == 'Aluminium' %}}
+        {{% set has_aluminium_rows.value = true %}}
+    {{% endif %}}
+    {{% if not row.custom_auto_generated and (row.custom_product_category or '') == 'Glass' %}}
+        {{% set has_glass_rows.value = true %}}
+    {{% endif %}}
+{{% endfor %}}
+
 <table class="cq-table">
     <thead>
         <tr>
             <th style="text-align: left; white-space: nowrap;">Code</th>
             <th style="text-align: left; white-space: nowrap;">Item</th>
+            {{% if has_aluminium_rows.value %}}
+            <th style="text-align: center; white-space: nowrap;">Color</th>
+            {{% endif %}}
             <th style="text-align: center; white-space: nowrap;">Pcs</th>
             <th style="text-align: right; white-space: nowrap;">Rate</th>
             <th style="text-align: center; white-space: nowrap;">Qty</th>
             <th style="text-align: center; white-space: nowrap;">UOM</th>
             <th style="text-align: center; white-space: nowrap;">No</th>
+            {{% if has_glass_rows.value %}}
             <th style="text-align: center; white-space: nowrap;">Width</th>
             <th style="text-align: center; white-space: nowrap;">Height</th>
             <th style="text-align: left; white-space: nowrap;">Polish Sides</th>
             <th style="text-align: center; white-space: nowrap;">Holes</th>
             <th style="text-align: center; white-space: nowrap;">Notches</th>
+            {{% endif %}}
             <th style="text-align: right; white-space: nowrap;">Amount</th>
         </tr>
     </thead>
@@ -108,6 +124,9 @@ def create_crystal_print_format(doctype, print_format_name, ref_label, terms):
                     {{% if parent.custom_glass_sale_mode == 'Full Sheet' %}}
                         {{% set qty = parent.qty or 0 %}}
                         {{% set uom = 'Nos' %}}
+                    {{% elif parent.custom_glass_sale_mode == 'Sheet' %}}
+                        {{% set qty = parent.qty or 0 %}}
+                        {{% set uom = parent.uom or 'Square Foot' %}}
                     {{% else %}}
                         {{% set qty = (parent.custom_area_sqft or 0) * (parent.qty or 0) %}}
                         {{% set uom = parent.uom or 'Square Foot' %}}
@@ -141,7 +160,7 @@ def create_crystal_print_format(doctype, print_format_name, ref_label, terms):
                 {{% if parent_category == 'Glass' %}}
                     {{% set display_width = frappe.utils.flt(parent.custom_width_mm or 0, 0) or '-' %}}
                     {{% set display_height = frappe.utils.flt(parent.custom_height_mm or 0, 0) or '-' %}}
-                    {{% if parent.custom_glass_sale_mode != 'Full Sheet' and frappe.utils.flt(parent.custom_area_sqft or 0) %}}
+                    {{% if parent.custom_glass_sale_mode not in ['Full Sheet', 'Sheet'] and frappe.utils.flt(parent.custom_area_sqft or 0) %}}
                         {{% set display_rate = (parent.rate or 0) / frappe.utils.flt(parent.custom_area_sqft or 0) %}}
                     {{% endif %}}
                 {{% endif %}}
@@ -158,11 +177,19 @@ def create_crystal_print_format(doctype, print_format_name, ref_label, terms):
                 <tr>
                     <td style="font-weight: bold; white-space: nowrap;">{{{{ parent.item_code or '' }}}}</td>
                     <td>{{{{ parent.item_name or parent.item_code or '' }}}}</td>
+                    {{% if has_aluminium_rows.value %}}
+                    <td style="text-align: center; white-space: nowrap;">
+                        {{% if parent_category == 'Aluminium' %}}
+                            {{{{ parent.custom_aluminium_color or '-' }}}}
+                        {{% else %}}-{{% endif %}}
+                    </td>
+                    {{% endif %}}
                     <td style="text-align: center; white-space: nowrap;">{{{{ frappe.utils.flt(pieces, 2) }}}}</td>
                     <td style="text-align: right; white-space: nowrap;">{{{{ frappe.format_value(display_rate, df={{'fieldtype': 'Currency'}}, doc=doc) }}}}</td>
                     <td style="text-align: center; white-space: nowrap;">{{{{ frappe.utils.flt(qty, 3) }}}}</td>
                     <td style="text-align: center; white-space: nowrap;">{{{{ short_uom(uom) }}}}</td>
                     <td style="text-align: center; white-space: nowrap;">{{{{ parent.idx or '-' }}}}</td>
+                    {{% if has_glass_rows.value %}}
                     <td style="text-align: center; white-space: nowrap;">{{{{ display_width }}}}</td>
                     <td style="text-align: center; white-space: nowrap;">{{{{ display_height }}}}</td>
                     <td style="white-space: nowrap;">
@@ -183,19 +210,24 @@ def create_crystal_print_format(doctype, print_format_name, ref_label, terms):
                             {{% if glass_service.notches_amount %}} ({{{{ frappe.format_value(glass_service.notches_amount, df={{'fieldtype': 'Currency'}}, doc=doc) }}}}){{% endif %}}
                         {{% else %}}-{{% endif %}}
                     </td>
+                    {{% endif %}}
                     <td style="text-align: right; white-space: nowrap;">{{{{ frappe.format_value(line.amount, df={{'fieldtype': 'Currency'}}, doc=doc) }}}}</td>
                 </tr>
             {{% endif %}}
         {{% endfor %}}
         {{% if doc.doctype == 'Quotation' %}}
         <tr>
-            <td colspan="2" style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
+            <td colspan="{{{{ 3 if has_aluminium_rows.value else 2 }}}}" style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
             <td style="text-align: center; white-space: nowrap; font-weight: bold;">{{{{ frappe.utils.flt(quotation_totals.pcs, 2) }}}}</td>
             <td style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
             <td style="text-align: center; white-space: nowrap; font-weight: bold;">{{{{ frappe.utils.flt(quotation_totals.qty, 3) }}}}</td>
+            {{% if has_glass_rows.value %}}
             <td colspan="5" style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
             <td style="text-align: center; white-space: nowrap; font-weight: bold;">{{{{ quotation_totals.holes }}}}</td>
             <td style="text-align: center; white-space: nowrap; font-weight: bold;">{{{{ quotation_totals.notches }}}}</td>
+            {{% else %}}
+            <td colspan="2" style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
+            {{% endif %}}
             <td style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
         </tr>
         {{% endif %}}

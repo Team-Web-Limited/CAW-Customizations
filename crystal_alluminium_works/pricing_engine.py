@@ -136,8 +136,13 @@ def process_glass_item(row, parent_idx):
     sale_mode = getattr(row, "custom_glass_sale_mode", "Resized")
     glass_qty = frappe.utils.flt(getattr(row, "qty", 0) or 1)
     
+    if sale_mode == "Sheet":
+        # Builder sheet rows already carry the selected square-foot rate.
+        row.amount = glass_qty * frappe.utils.flt(row.rate or 0)
+        return []
+
     if sale_mode == "Full Sheet":
-        # Skip dimension logic, use standard item pricing
+        # Skip dimension logic, use standard item pricing.
         base_rate = (frappe.get_cached_value("Item", row.item_code, "standard_rate") or 0.0) / 1.16
         row.rate = base_rate
         row.amount = glass_qty * row.rate

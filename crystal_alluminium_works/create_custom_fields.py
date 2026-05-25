@@ -2,6 +2,7 @@ import frappe
 from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 
 PRODUCT_CATEGORY_OPTIONS = "\nAluminium\nGlass\nFittings\nCeiling\nRubber\nSilicone"
+GLASS_SALE_MODE_OPTIONS = "Resized\nFull Sheet\nSheet"
 
 
 def _get_crystal_item_fields(read_only=False):
@@ -40,10 +41,19 @@ def _get_crystal_item_fields(read_only=False):
             "read_only": ro,
         },
         {
+            "fieldname": "custom_aluminium_color",
+            "label": "Color",
+            "fieldtype": "Link",
+            "options": "Aluminium Color",
+            "insert_after": "custom_aluminium_metres",
+            "depends_on": "eval:doc.custom_product_category=='Aluminium'",
+            "read_only": ro,
+        },
+        {
             "fieldname": "custom_ceiling_sq_m",
             "label": "Square Metres",
             "fieldtype": "Float",
-            "insert_after": "custom_aluminium_metres",
+            "insert_after": "custom_aluminium_color",
             "depends_on": "eval:doc.custom_product_category=='Ceiling'",
             "read_only": ro,
         },
@@ -51,7 +61,7 @@ def _get_crystal_item_fields(read_only=False):
             "fieldname": "custom_glass_sale_mode",
             "label": "Glass Sale Mode",
             "fieldtype": "Select",
-            "options": "Resized\nFull Sheet",
+            "options": GLASS_SALE_MODE_OPTIONS,
             "default": "Resized",
             "insert_after": "custom_ceiling_sq_m",
             "depends_on": "eval:doc.custom_product_category=='Glass'",
@@ -221,11 +231,35 @@ def _get_crystal_item_fields(read_only=False):
             "read_only": ro,
         },
         {
+            "fieldname": "custom_sheet_size",
+            "label": "Sheet Size",
+            "fieldtype": "Data",
+            "insert_after": "custom_numbering",
+            "depends_on": "eval:doc.custom_product_category=='Glass' && doc.custom_glass_sale_mode=='Sheet'",
+            "read_only": ro,
+        },
+        {
+            "fieldname": "custom_sheet_sft",
+            "label": "SFT / Sheet",
+            "fieldtype": "Float",
+            "insert_after": "custom_sheet_size",
+            "depends_on": "eval:doc.custom_product_category=='Glass' && doc.custom_glass_sale_mode=='Sheet'",
+            "read_only": ro,
+        },
+        {
+            "fieldname": "custom_sheet_pcs",
+            "label": "Sheet Pcs",
+            "fieldtype": "Float",
+            "insert_after": "custom_sheet_sft",
+            "depends_on": "eval:doc.custom_product_category=='Glass' && doc.custom_glass_sale_mode=='Sheet'",
+            "read_only": ro,
+        },
+        {
             "fieldname": "custom_auto_generated",
             "label": "Auto Generated Row",
             "fieldtype": "Check",
             "hidden": 1,
-            "insert_after": "custom_numbering",
+            "insert_after": "custom_sheet_pcs",
         },
         {
             "fieldname": "custom_parent_row_idx",

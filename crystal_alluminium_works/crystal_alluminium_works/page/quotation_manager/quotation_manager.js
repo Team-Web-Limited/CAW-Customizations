@@ -46,6 +46,10 @@ function get_manager_item_uom_qty(item) {
 	}
 
 	if (item.custom_product_category === 'Glass') {
+		if (item.custom_glass_sale_mode === 'Sheet') {
+			return flt(item.qty || 0);
+		}
+
 		if (item.custom_glass_sale_mode === 'Full Sheet') {
 			return flt(item.qty || 0);
 		}
@@ -97,11 +101,42 @@ function get_manager_polish_sides_label(item) {
 
 function get_builder_glass_base_rate(item) {
 	let areaSqft = flt(item.custom_area_sqft || 0);
-	if (item.custom_glass_sale_mode === 'Full Sheet' || !areaSqft) {
+	if (item.custom_glass_sale_mode === 'Full Sheet' || item.custom_glass_sale_mode === 'Sheet' || !areaSqft) {
 		return flt(item.rate || 0);
 	}
 
 	return flt(item.rate || 0) / areaSqft;
+}
+
+async function get_sheet_builder_details(item, glass_type) {
+	if (item.custom_glass_sale_mode !== 'Sheet') {
+		return { pcs: item.qty, sheet_size: '', sheet_sft: 0 };
+	}
+
+	let saved_pcs = flt(item.custom_sheet_pcs || 0);
+	let saved_sft = flt(item.custom_sheet_sft || 0);
+	let saved_size = item.custom_sheet_size || '';
+	if (saved_pcs || saved_sft || saved_size) {
+		return {
+			pcs: saved_pcs,
+			sheet_size: saved_size,
+			sheet_sft: saved_sft
+		};
+	}
+
+	let configured_sheets = await frappe.call({
+		method: 'crystal_alluminium_works.api.get_glass_sheet_configs',
+		args: { glass_type: glass_type || 'Ordinary' }
+	});
+	let rows = configured_sheets.message || [];
+	let matching_sheet = rows.find(row => flt(row.sft || 0) && flt(item.qty || 0) % flt(row.sft || 0) === 0) || rows[0] || {};
+	let sheet_sft = flt(matching_sheet.sft || 0);
+
+	return {
+		pcs: sheet_sft ? flt(item.qty || 0) / sheet_sft : 0,
+		sheet_size: matching_sheet.size || '',
+		sheet_sft: sheet_sft
+	};
 }
 
 function render_manager_review_glass_row(item, index) {
@@ -137,9 +172,9 @@ function render_manager_review_aluminium_row(item, index, doc) {
 		<tr>
 			<td style="text-align:center;">${index + 1}</td>
 			<td style="font-weight:500;">${frappe.utils.escape_html(item.item_name || item.item_code || '')}</td>
+			<td style="text-align:center;">${item.custom_aluminium_color ? frappe.utils.escape_html(item.custom_aluminium_color) : '-'}</td>
 			<td style="white-space:pre-wrap;">${item.description ? frappe.utils.escape_html(item.description) : '-'}</td>
 			<td style="text-align:center;">${item.qty || '-'}</td>
-			<td style="text-align:center;">${format_manager_review_number(item.custom_aluminium_metres || 0)}</td>
 			<td style="text-align:center;">
 				<span style="background:var(--subtle-fg);padding:2px 8px;border-radius:6px;font-size:12px;">${price_list}</span>
 			</td>
@@ -342,9 +377,9 @@ function render_quotation_dashboard(page, quotation_name, wrapper) {
 								<tr>
 									<th style="text-align:center;white-space:nowrap;">No</th>
 									<th style="white-space:nowrap;">Item</th>
+									<th style="text-align:center;white-space:nowrap;">Color</th>
 									<th style="white-space:nowrap;">Description</th>
-									<th style="text-align:center;white-space:nowrap;">Qty</th>
-									<th style="text-align:center;white-space:nowrap;">Metres</th>
+									<th style="text-align:center;white-space:nowrap;">Pcs</th>
 									<th style="text-align:center;white-space:nowrap;">Price List</th>
 									<th style="text-align:right;white-space:nowrap;">Rate/m</th>
 									<th style="text-align:right;white-space:nowrap;">Amount</th>
@@ -658,14 +693,16 @@ function bind_action_events(page, doc, sales_orders, sales_invoices) {
 			});
 
 			// Convert quotation items back into builder format (skip auto-generated rows)
-			doc.items.forEach(item => {
-				if (item.custom_auto_generated) return; // Skip service rows
+			for (const item of doc.items) {
+				if (item.custom_auto_generated) continue; // Skip service rows
 
 				let category = item.custom_product_category || item.item_group || '';
 				let aluminium_metres = item.custom_aluminium_metres || 0;
 				let ceiling_sq_m = item.custom_ceiling_sq_m || 0;
 				let glass_area_sqft = flt(item.custom_area_sqft || 0);
 				let child_rows = service_rows_by_parent[item.idx] || [];
+				let glass_type = category === 'Glass' ? (glass_type_by_item_code[item.item_code] || 'Ordinary') : '';
+				let sheet_details = await get_sheet_builder_details(item, glass_type);
 				let display_amount = item.amount + child_rows.reduce((sum, child) => sum + (child.amount || 0), 0);
 				let builder_item = {
 					id: frappe.utils.get_random(8),
@@ -676,7 +713,9 @@ function bind_action_events(page, doc, sales_orders, sales_invoices) {
 				description: item.description || '',
 				price_list: doc.selling_price_list || 'Retail',
 				qty: item.qty,
+				pcs: item.custom_glass_sale_mode === 'Sheet' ? sheet_details.pcs : item.qty,
 				metres: aluminium_metres || 1,
+				aluminium_color: item.custom_aluminium_color || '',
 				square_metres: ceiling_sq_m || 1,
 					rate: category === 'Aluminium' && aluminium_metres
 						? (item.rate / aluminium_metres)
@@ -686,6 +725,7 @@ function bind_action_events(page, doc, sales_orders, sales_invoices) {
 					amount: display_amount,
 					// Glass-specific
 					sale_mode: item.custom_glass_sale_mode || 'Resized',
+					glass_mode: item.custom_glass_sale_mode === 'Sheet' ? 'Sheet' : 'Cut Size',
 				width_mm: item.custom_width_mm || 0,
 				height_mm: item.custom_height_mm || 0,
 				width_allowance: item.custom_width_allowance || 0,
@@ -696,6 +736,8 @@ function bind_action_events(page, doc, sales_orders, sales_invoices) {
 				height_ft: item.custom_height_ft || 0,
 				area_sqft: item.custom_area_sqft || 0,
 				perimeter_rft: item.custom_perimeter_rft || 0,
+					sheet_size: item.custom_glass_sale_mode === 'Sheet' ? sheet_details.sheet_size : '',
+					sheet_sft: item.custom_glass_sale_mode === 'Sheet' ? sheet_details.sheet_sft : 0,
 					polishing: item.custom_polishing || 0,
 					polish_width_sides: item.custom_polish_width_sides || (item.custom_polishing ? 2 : 0),
 					polish_height_sides: item.custom_polish_height_sides || (item.custom_polishing ? 2 : 0),
@@ -703,13 +745,13 @@ function bind_action_events(page, doc, sales_orders, sales_invoices) {
 					notches: item.custom_notches || 0,
 					numbering: item.custom_numbering || '',
 					sandblast_type: item.custom_sandblast_type || 'None',
-					glass_type: category === 'Glass' ? (glass_type_by_item_code[item.item_code] || 'Ordinary') : '',
-					glass_type_filter: category === 'Glass' ? (glass_type_by_item_code[item.item_code] || 'Ordinary') : '',
+					glass_type: glass_type,
+					glass_type_filter: glass_type,
 					glass_breakdown: category === 'Glass'
 						? [
 							{
 								label: 'Base Material',
-								qty: item.custom_glass_sale_mode === 'Full Sheet' ? item.qty : (glass_area_sqft * item.qty),
+								qty: ['Full Sheet', 'Sheet'].includes(item.custom_glass_sale_mode) ? item.qty : (glass_area_sqft * item.qty),
 								rate: get_builder_glass_base_rate(item),
 								amount: item.amount
 							},
@@ -723,7 +765,7 @@ function bind_action_events(page, doc, sales_orders, sales_invoices) {
 						: []
 				};
 				window.qb_state.items.push(builder_item);
-			});
+			}
 
 		frappe.set_route('quotation-builder');
 	});

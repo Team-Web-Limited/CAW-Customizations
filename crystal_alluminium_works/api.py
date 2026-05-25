@@ -4,6 +4,8 @@ from frappe.model.rename_doc import rename_doc
 from frappe.utils.file_manager import save_file
 from frappe.utils import flt
 from crystal_alluminium_works.pricing_engine import GLASS_SERVICE_ITEM_DEFS, ensure_glass_service_items
+from crystal_alluminium_works.create_custom_fields import GLASS_SALE_MODE_OPTIONS
+from crystal_alluminium_works.setup_glass_sheet_config import run_setup as setup_glass_sheet_config
 
 GLASS_TYPE_OPTIONS = ["Ordinary", "Laminated", "Ready Laminated", "Toughened"]
 ALUMINIUM_PRODUCT_CODE = "A01"
@@ -30,13 +32,106 @@ PRICE_TYPE_TO_PRICE_LIST = {
     "wholesale": "Wholesale",
     "special": "Special",
 }
+ALUMINIUM_BUILDER_PRICE_LIST_MAP = {
+    "Normal Price": "Retail",
+    "Mill Finished Price": "Wholesale",
+    "Special Price": "Special",
+    "Retail": "Retail",
+    "Wholesale": "Wholesale",
+    "Special": "Special",
+}
 STANDARD_GLASS_INTERVAL_SET = "Standard Glass"
 TOUGHENED_GLASS_INTERVAL_SET = "Toughened Glass"
 VAT_RATE = 0.16
+ALUMINIUM_PRICE_FACTOR = 1.07
+GLASS_SHEET_CONFIG_TYPES = ("Ordinary", "Ready Laminated")
 
 
 def _dimension_range_has_field(fieldname):
     return frappe.db.has_column("Dimension Range", fieldname)
+
+
+def _doc_has_field(doctype, fieldname):
+    return frappe.get_meta(doctype).has_field(fieldname)
+
+
+def _ensure_aluminium_color_storage():
+    _ensure_aluminium_color_doctype()
+    if _doc_has_field("Quotation Item", "custom_aluminium_color"):
+        return
+
+    from crystal_alluminium_works.create_custom_fields import add_custom_fields
+    add_custom_fields()
+    for doctype in ("Quotation Item", "Sales Order Item", "Sales Invoice Item"):
+        frappe.clear_cache(doctype=doctype)
+
+
+def _ensure_aluminium_pricing_storage():
+    required_fields = (
+        "custom_aluminium_rate_per_kg",
+        "custom_aluminium_weight_per_length",
+    )
+    if all(_item_has_field(fieldname) for fieldname in required_fields):
+        return
+
+    from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
+
+    create_custom_fields({
+        "Item": [
+            {
+                "fieldname": "custom_aluminium_rate_per_kg",
+                "label": "Aluminium Rate Per Kg",
+                "fieldtype": "Currency",
+                "default": 0,
+                "insert_after": "custom_product_code",
+                "depends_on": "eval:doc.item_group=='Aluminium'",
+            },
+            {
+                "fieldname": "custom_aluminium_weight_per_length",
+                "label": "Aluminium Weight Per Length",
+                "fieldtype": "Float",
+                "default": 0,
+                "insert_after": "custom_aluminium_rate_per_kg",
+                "depends_on": "eval:doc.item_group=='Aluminium'",
+            },
+        ]
+    })
+    frappe.clear_cache(doctype="Item")
+
+
+def _ensure_glass_sheet_config_storage():
+    setup_glass_sheet_config()
+
+
+def _ensure_glass_sale_mode_options():
+    from crystal_alluminium_works.create_custom_fields import add_custom_fields
+
+    for doctype in ("Quotation Item", "Sales Order Item", "Sales Invoice Item"):
+        custom_field_name = frappe.db.exists("Custom Field", {"dt": doctype, "fieldname": "custom_glass_sale_mode"})
+        if not custom_field_name:
+            continue
+
+        current_options = frappe.db.get_value("Custom Field", custom_field_name, "options") or ""
+        if current_options == GLASS_SALE_MODE_OPTIONS:
+            continue
+
+        custom_field = frappe.get_doc("Custom Field", custom_field_name)
+        custom_field.options = GLASS_SALE_MODE_OPTIONS
+        custom_field.save(ignore_permissions=True)
+        frappe.clear_cache(doctype=doctype)
+
+    required_sheet_fields = ("custom_sheet_size", "custom_sheet_sft", "custom_sheet_pcs")
+    if not all(_doc_has_field("Quotation Item", fieldname) for fieldname in required_sheet_fields):
+        add_custom_fields()
+        for doctype in ("Quotation Item", "Sales Order Item", "Sales Invoice Item"):
+            frappe.clear_cache(doctype=doctype)
+
+
+def _normalize_glass_sheet_type(glass_type):
+    glass_type = (glass_type or "").strip()
+    if glass_type not in GLASS_SHEET_CONFIG_TYPES:
+        frappe.throw("Glass sheet configuration is only supported for Ordinary and Ready Laminated.")
+    return glass_type
 
 
 def _ensure_glass_type_options():
@@ -58,6 +153,17 @@ def _ensure_glass_type_options():
 
 def _item_has_field(fieldname):
     return frappe.get_meta("Item").has_field(fieldname)
+
+
+def _get_aluminium_price_components(rate_per_kg=0, weight_per_length=0):
+    normal_price = flt(rate_per_kg) * flt(weight_per_length)
+    mill_finished_price = normal_price / ALUMINIUM_PRICE_FACTOR if ALUMINIUM_PRICE_FACTOR else normal_price
+    special_price = normal_price * ALUMINIUM_PRICE_FACTOR
+    return {
+        "normal_price": flt(normal_price),
+        "mill_finished_price": flt(mill_finished_price),
+        "special_price": flt(special_price),
+    }
 
 
 def _normalize_aluminium_type(value, fallback=None):
@@ -117,6 +223,12 @@ def _get_selling_rate(item_code, price_list):
         "price_list_rate"
     )
     return frappe.utils.flt(item_price or frappe.get_cached_value("Item", item_code, "standard_rate") or 0.0)
+
+
+def _get_builder_price_list(category, price_list):
+    if category == "Aluminium":
+        return ALUMINIUM_BUILDER_PRICE_LIST_MAP.get(price_list or "", "Retail")
+    return price_list or "Retail"
 
 
 def _get_item_price_rate(item_code, price_list):
@@ -242,6 +354,27 @@ def _ensure_price_list_exists(price_list):
         "selling": 1,
         "currency": frappe.defaults.get_global_default("currency") or "KES",
     }).insert(ignore_permissions=True)
+
+
+def _ensure_aluminium_color_doctype():
+    if frappe.db.exists("DocType", "Aluminium Color"):
+        return
+
+    doc = frappe.get_doc({
+        "doctype": "DocType",
+        "name": "Aluminium Color",
+        "module": "Crystal Alluminium Works",
+        "custom": 0,
+        "editable_grid": 1,
+        "autoname": "field:color_name",
+        "fields": [
+            {"fieldname": "color_name", "fieldtype": "Data", "label": "Color", "reqd": 1, "in_list_view": 1, "unique": 1}
+        ],
+        "permissions": [{"role": "System Manager", "read": 1, "write": 1, "create": 1, "delete": 1}]
+    })
+    doc.insert(ignore_permissions=True)
+    frappe.db.commit()
+    frappe.clear_cache(doctype="Aluminium Color")
 
 
 def _ensure_item_has_default_uom(item, uom_name):
@@ -600,9 +733,17 @@ def create_quotation_from_builder(customer, items, quotation_name=None):
     
     if not items:
         frappe.throw("Please add at least one item.")
+
+    if any(item.get("category") == "Aluminium" for item in items):
+        _ensure_aluminium_color_storage()
+    if any(item.get("category") == "Glass" for item in items):
+        _ensure_glass_sale_mode_options()
     
-    # Use the first item's selected selling price as the quotation-level default
-    default_price_list = items[0].get("price_list", "Retail") if items else "Retail"
+    # Use the first item's selected selling price as the quotation-level default.
+    default_price_list = _get_builder_price_list(
+        items[0].get("category", ""),
+        items[0].get("price_list", "Retail"),
+    ) if items else "Retail"
     company = _get_default_company()
 
     if quotation_name:
@@ -627,11 +768,12 @@ def create_quotation_from_builder(customer, items, quotation_name=None):
     
     for item in items:
         category = item.get("category", "")
+        row_price_list = _get_builder_price_list(category, item.get("price_list"))
         row_data = {
             "item_code": item.get("item_code"),
             "qty": item.get("qty", 1),
             "rate": frappe.utils.flt(item.get("rate", 0)) / 1.16,
-            "custom_price_list": item.get("price_list"),
+            "custom_price_list": row_price_list,
             "custom_product_category": category,
         }
 
@@ -656,7 +798,7 @@ def create_quotation_from_builder(customer, items, quotation_name=None):
                 "custom_height_ft": item.get("height_ft", 0),
                 "custom_width_allowance": item.get("width_allowance", 0),
                 "custom_height_allowance": item.get("height_allowance", 0),
-                "custom_area_sqft": item.get("area_sqft", 0),
+                "custom_area_sqft": 0 if sale_mode == "Sheet" else item.get("area_sqft", 0),
                 "custom_perimeter_rft": item.get("perimeter_rft", 0),
                 "custom_polishing": 1 if (
                     item.get("polishing") in [1, True, "1", "Yes"] or
@@ -668,15 +810,17 @@ def create_quotation_from_builder(customer, items, quotation_name=None):
                 "custom_notches": frappe.utils.cint(item.get("notches", 0)),
                 "custom_sandblast_type": "" if sandblast == "None" else sandblast,
                 "custom_numbering": item.get("numbering", ""),
+                "custom_sheet_size": item.get("sheet_size", "") if sale_mode == "Sheet" else "",
+                "custom_sheet_sft": frappe.utils.flt(item.get("sheet_sft", 0)) if sale_mode == "Sheet" else 0,
+                "custom_sheet_pcs": frappe.utils.flt(item.get("pcs", 0)) if sale_mode == "Sheet" else 0,
             })
             row_data["qty"] = item.get("qty", 1.0)
         elif category == "Aluminium":
             metres = frappe.utils.flt(item.get("metres", 1) or 1)
-            rate_per_metre = frappe.utils.flt(item.get("rate", 0)) / 1.16
             row_data.update({
-                "rate": metres * rate_per_metre,
                 "custom_aluminium_metres": metres,
             })
+            row_data["custom_aluminium_color"] = item.get("aluminium_color") or None
         elif category == "Ceiling":
             square_metres = frappe.utils.flt(item.get("square_metres", 1) or 1)
             rate_per_sq_m = frappe.utils.flt(item.get("rate", 0)) / 1.16
@@ -710,10 +854,13 @@ def submit_quotation(name):
 def make_sales_order_from_quotation(source_name):
     from erpnext.selling.doctype.quotation.quotation import _make_sales_order
     ensure_glass_service_items()
+    source_doc = frappe.get_doc("Quotation", source_name)
     so = _make_sales_order(source_name, ignore_permissions=True)
     
     if not so.items:
         frappe.throw("A Sales Order has already been fully created for this Quotation.")
+
+    _copy_aluminium_color_between_rows(source_doc.items, so.items)
         
     so.skip_delivery_note = 1
     so.flags.ignore_permissions = True
@@ -727,6 +874,7 @@ def make_sales_order_from_quotation(source_name):
 def make_sales_invoice_from_quotation(source_name):
     from erpnext.selling.doctype.quotation.quotation import _make_sales_invoice
     ensure_glass_service_items()
+    source_doc = frappe.get_doc("Quotation", source_name)
 
     invoice = _make_sales_invoice(source_name, ignore_permissions=True)
 
@@ -735,6 +883,8 @@ def make_sales_invoice_from_quotation(source_name):
 
     if hasattr(invoice, "custom_source_quotation"):
         invoice.custom_source_quotation = source_name
+
+    _copy_aluminium_color_between_rows(source_doc.items, invoice.items)
 
     invoice.update_stock = 0
     invoice.set_posting_time = 1
@@ -750,6 +900,7 @@ def make_sales_invoice_from_quotation(source_name):
 def make_sales_invoice_from_sales_order(source_name):
     from erpnext.selling.doctype.sales_order.sales_order import make_sales_invoice
     ensure_glass_service_items()
+    source_doc = frappe.get_doc("Sales Order", source_name)
 
     invoice = make_sales_invoice(source_name, ignore_permissions=True)
 
@@ -763,6 +914,8 @@ def make_sales_invoice_from_sales_order(source_name):
     )
     if quotation_name and hasattr(invoice, "custom_source_quotation"):
         invoice.custom_source_quotation = quotation_name
+
+    _copy_aluminium_color_between_rows(source_doc.items, invoice.items)
 
     invoice.update_stock = 0
     invoice.set_posting_time = 1
@@ -1014,9 +1167,10 @@ def calculate_glass_total(item_code, price_list, qty, sale_mode, width_mm, heigh
     breakdown = []
     total = 0.0
 
-    if sale_mode == "Full Sheet":
+    if sale_mode in ("Full Sheet", "Sheet"):
         amount = qty * float(base_rate)
-        breakdown.append({"label": "Glass (Full Sheet)", "qty": qty, "rate": base_rate, "amount": amount})
+        label = "Glass (Sheet)" if sale_mode == "Sheet" else "Glass (Full Sheet)"
+        breakdown.append({"label": label, "qty": qty, "rate": base_rate, "amount": amount})
         total = amount
         return {"total": total, "breakdown": breakdown}
 
@@ -1109,6 +1263,8 @@ def get_items_with_prices(category):
     Retail and Wholesale prices.
     """
     storage_category = _get_storage_category(category)
+    if storage_category == "Aluminium":
+        _ensure_aluminium_pricing_storage()
     filters = {"item_group": storage_category}
     if category in GLASS_CATEGORY_TO_TYPE:
         filters["custom_glass_type"] = GLASS_CATEGORY_TO_TYPE[category]
@@ -1116,6 +1272,11 @@ def get_items_with_prices(category):
     item_fields = ["name", "item_code", "item_name", "stock_uom", "standard_rate", "custom_glass_type"]
     if _item_has_field("custom_product_code"):
         item_fields.append("custom_product_code")
+    if storage_category == "Aluminium":
+        if _item_has_field("custom_aluminium_rate_per_kg"):
+            item_fields.append("custom_aluminium_rate_per_kg")
+        if _item_has_field("custom_aluminium_weight_per_length"):
+            item_fields.append("custom_aluminium_weight_per_length")
     items = frappe.get_all("Item", filters=filters, fields=item_fields)
 
     # Exclude service items from the glass catalog views.
@@ -1147,6 +1308,9 @@ def get_items_with_prices(category):
         item.retail_rate = price_map.get(item.name, {}).get("Retail", {}).get("rate", item.standard_rate or 0)
         item.wholesale_rate = price_map.get(item.name, {}).get("Wholesale", {}).get("rate", 0)
         item.special_rate = price_map.get(item.name, {}).get("Special", {}).get("rate", 0)
+        if storage_category == "Aluminium":
+            item.aluminium_rate_per_kg = flt(getattr(item, "custom_aluminium_rate_per_kg", 0) or 0)
+            item.aluminium_weight_per_length = flt(getattr(item, "custom_aluminium_weight_per_length", 0) or 0)
         
         # If it's a Ceiling item, fetch its Ceiling Configuration
         if category == "Ceiling":
@@ -1165,19 +1329,79 @@ def get_items_with_prices(category):
                     "item_4": "", "ratio_4": 0.36
                 }
         
-        # If it's a Glass item, fetch item-specific service rates
-        if storage_category == "Glass":
-            config = frappe.get_all("Laminated Glass Config",
-                filters={"parent_item": item.name},
-                fields=["polishing_rate", "hole_rate", "notch_rate", "sandblast_rate"],
-                limit=1
-            )
-            if config:
-                item.laminated_config = config[0]
-            else:
-                item.laminated_config = {"polishing_rate": 0, "hole_rate": 0, "notch_rate": 0, "sandblast_rate": 0}
-
     return items
+
+
+@frappe.whitelist()
+def get_aluminium_colors():
+    _ensure_aluminium_color_doctype()
+    return frappe.get_all(
+        "Aluminium Color",
+        fields=["color_name"],
+        order_by="color_name asc",
+        pluck="color_name",
+    )
+
+
+@frappe.whitelist()
+def save_aluminium_colors(colors):
+    _ensure_aluminium_color_doctype()
+
+    colors = json.loads(colors) if isinstance(colors, str) else (colors or [])
+    clean_colors = []
+    seen = set()
+    for color in colors:
+        color_name = str(color or "").strip()
+        if not color_name:
+            continue
+
+        normalized = color_name.lower()
+        if normalized in seen:
+            continue
+
+        seen.add(normalized)
+        clean_colors.append(color_name)
+
+    existing = frappe.get_all("Aluminium Color", fields=["name"])
+    for row in existing:
+        frappe.delete_doc("Aluminium Color", row.name, ignore_permissions=True, force=1)
+
+    for color_name in clean_colors:
+        frappe.get_doc({
+            "doctype": "Aluminium Color",
+            "color_name": color_name,
+        }).insert(ignore_permissions=True)
+
+    frappe.db.commit()
+    return clean_colors
+
+
+def _copy_aluminium_color_between_rows(source_rows, target_rows):
+    if not source_rows or not target_rows:
+        return
+
+    source_rows = [row for row in source_rows if not getattr(row, "custom_auto_generated", 0)]
+    target_rows = [row for row in target_rows if not getattr(row, "custom_auto_generated", 0)]
+    if any(getattr(row, "custom_aluminium_color", None) for row in source_rows):
+        _ensure_aluminium_color_storage()
+
+    source_by_name = {
+        row.name: row for row in source_rows
+        if getattr(row, "name", None)
+    }
+
+    fallback_index = 0
+    for target_row in target_rows:
+        source_row = None
+        prev_detail = getattr(target_row, "prevdoc_detail_docname", None)
+        if prev_detail and prev_detail in source_by_name:
+            source_row = source_by_name[prev_detail]
+        elif fallback_index < len(source_rows):
+            source_row = source_rows[fallback_index]
+            fallback_index += 1
+
+        if source_row and hasattr(target_row, "custom_aluminium_color"):
+            target_row.custom_aluminium_color = getattr(source_row, "custom_aluminium_color", None)
 
 def _save_item_price(item_code, price_list, rate):
     if rate is None:
@@ -1212,6 +1436,8 @@ def save_custom_item(data):
     category = data.get("category")
     storage_category = _get_storage_category(category)
     is_new = data.get("is_new")
+    aluminium_rate_per_kg = flt(data.get("aluminium_rate_per_kg", 0))
+    aluminium_weight_per_length = flt(data.get("aluminium_weight_per_length", 0))
     retail_rate = data.get("retail_rate", 0)
     wholesale_rate = data.get("wholesale_rate", 0)
     special_rate = data.get("special_rate", 0)
@@ -1227,9 +1453,17 @@ def save_custom_item(data):
         frappe.throw("Item Code is required.")
     if not item_name:
         frappe.throw("Item Name is required.")
+    if storage_category == "Aluminium" and (aluminium_rate_per_kg < 0 or aluminium_weight_per_length < 0):
+        frappe.throw("Aluminium rate/kg and weight/length cannot be negative.")
 
     if storage_category == "Glass":
         _ensure_glass_type_options()
+    elif storage_category == "Aluminium":
+        _ensure_aluminium_pricing_storage()
+        aluminium_prices = _get_aluminium_price_components(aluminium_rate_per_kg, aluminium_weight_per_length)
+        retail_rate = aluminium_prices["normal_price"]
+        wholesale_rate = aluminium_prices["mill_finished_price"]
+        special_rate = aluminium_prices["special_price"]
     
     # Determine UOM based on category
     uom = _get_category_uom(category)
@@ -1253,6 +1487,10 @@ def save_custom_item(data):
         })
         if _item_has_field("custom_aluminium_type"):
             item.custom_aluminium_type = aluminium_type if storage_category == "Aluminium" else None
+        if _item_has_field("custom_aluminium_rate_per_kg"):
+            item.custom_aluminium_rate_per_kg = aluminium_rate_per_kg if storage_category == "Aluminium" else 0
+        if _item_has_field("custom_aluminium_weight_per_length"):
+            item.custom_aluminium_weight_per_length = aluminium_weight_per_length if storage_category == "Aluminium" else 0
         if _item_has_field("custom_product_code"):
             item.custom_product_code = product_code
         _ensure_item_has_default_uom(item, uom)
@@ -1272,6 +1510,10 @@ def save_custom_item(data):
         item.custom_glass_type = glass_type if storage_category == "Glass" else None
         if _item_has_field("custom_aluminium_type"):
             item.custom_aluminium_type = aluminium_type if storage_category == "Aluminium" else None
+        if _item_has_field("custom_aluminium_rate_per_kg"):
+            item.custom_aluminium_rate_per_kg = aluminium_rate_per_kg if storage_category == "Aluminium" else 0
+        if _item_has_field("custom_aluminium_weight_per_length"):
+            item.custom_aluminium_weight_per_length = aluminium_weight_per_length if storage_category == "Aluminium" else 0
         if _item_has_field("custom_product_code"):
             item.custom_product_code = product_code
         _ensure_item_has_default_uom(item, uom)
@@ -1282,23 +1524,6 @@ def save_custom_item(data):
     _save_item_price(item_code, "Wholesale", wholesale_rate)
     _save_item_price(item_code, "Special", special_rate)
 
-    # Save item-specific glass service rates when provided
-    if storage_category == "Glass" and "laminated_config" in data:
-        cfg_data = data.get("laminated_config", {})
-        cfg_name = _get_single_config_docname("Laminated Glass Config", item_code, original_item_code)
-        if cfg_name:
-            cfg = frappe.get_doc("Laminated Glass Config", cfg_name)
-            cfg.parent_item = item_code
-        else:
-            cfg = frappe.new_doc("Laminated Glass Config")
-            cfg.parent_item = item_code
-            
-        cfg.polishing_rate = cfg_data.get("polishing_rate", 0)
-        cfg.hole_rate = cfg_data.get("hole_rate", 0)
-        cfg.notch_rate = cfg_data.get("notch_rate", 0)
-        cfg.sandblast_rate = cfg_data.get("sandblast_rate", 0)
-        cfg.save(ignore_permissions=True)
-    
     # Save Ceiling Configuration if applicable
     if category == "Ceiling" and "ceiling_config" in data:
         cfg = data["ceiling_config"]
@@ -1421,7 +1646,32 @@ def export_quotation_builder_items(data):
 
 
 @frappe.whitelist()
-def import_glass_items_to_builder(file_url, glass_type=None, item_code=None, price_list=None):
+def download_aluminium_items_template():
+    rows = [[
+        "item_name",
+        "code",
+        "rate_per_kg",
+        "weight_per_length",
+    ], [
+        "Sample Aluminium Item",
+        "A01.1",
+        870,
+        3.6,
+    ]]
+    return _build_xlsx_file("aluminium_items_template", rows)
+
+
+def _normalize_glass_dimension_uom(dimension_uom=None):
+    return "inches" if (dimension_uom or "").strip().lower() == "inches" else "mm"
+
+
+def _dimension_to_mm(value, dimension_uom=None):
+    value = frappe.utils.flt(value or 0)
+    return value * 25.4 if _normalize_glass_dimension_uom(dimension_uom) == "inches" else value
+
+
+@frappe.whitelist()
+def import_glass_items_to_builder(file_url, glass_type=None, item_code=None, price_list=None, dimension_uom=None):
     if not file_url:
         frappe.throw("Please attach an Excel file.")
 
@@ -1445,6 +1695,7 @@ def import_glass_items_to_builder(file_url, glass_type=None, item_code=None, pri
     glass_type = (glass_type or "").strip()
     item_code = (item_code or "").strip()
     price_list = (price_list or "").strip()
+    dimension_uom = _normalize_glass_dimension_uom(dimension_uom)
     if glass_type not in GLASS_TYPE_OPTIONS:
         frappe.throw("Please select a valid glass category.")
     if not item_code:
@@ -1488,8 +1739,10 @@ def import_glass_items_to_builder(file_url, glass_type=None, item_code=None, pri
 
     imported_items = []
     for row_number, row in enumerate(rows[1:], start=2):
-        width_mm = frappe.utils.flt(_get_import_cell(row, normalized_headers["width"]) or 0)
-        height_mm = frappe.utils.flt(_get_import_cell(row, normalized_headers["height"]) or 0)
+        width_value = frappe.utils.flt(_get_import_cell(row, normalized_headers["width"]) or 0)
+        height_value = frappe.utils.flt(_get_import_cell(row, normalized_headers["height"]) or 0)
+        width_mm = _dimension_to_mm(width_value, dimension_uom)
+        height_mm = _dimension_to_mm(height_value, dimension_uom)
         width_allowance = frappe.utils.flt(_get_import_cell(row, normalized_headers.get("width_allowance", -1)) or 0)
         height_allowance = frappe.utils.flt(_get_import_cell(row, normalized_headers.get("height_allowance", -1)) or 0)
         qty = frappe.utils.cint(_get_import_cell(row, normalized_headers["pcs"]) or 0)
@@ -1549,6 +1802,7 @@ def import_glass_items_to_builder(file_url, glass_type=None, item_code=None, pri
             "qty": qty,
             "rate": total.get("base_rate", 0),
             "amount": total.get("total", 0),
+            "dimension_uom": dimension_uom,
             "sale_mode": "Resized",
             "width_mm": width_mm,
             "height_mm": height_mm,
@@ -1623,11 +1877,51 @@ def save_dimension_intervals(intervals, interval_set=None):
         
     return True
 
+
+@frappe.whitelist()
+def get_glass_sheet_configs(glass_type=None):
+    _ensure_glass_sheet_config_storage()
+    glass_type = _normalize_glass_sheet_type(glass_type or "Ordinary")
+    return frappe.get_all(
+        "Glass Sheet Config",
+        filters={"glass_type": glass_type},
+        fields=["size", "sft"],
+        order_by="creation asc",
+    )
+
+
+@frappe.whitelist()
+def save_glass_sheet_configs(rows, glass_type=None):
+    _ensure_glass_sheet_config_storage()
+    glass_type = _normalize_glass_sheet_type(glass_type or "Ordinary")
+    rows = json.loads(rows) if isinstance(rows, str) else (rows or [])
+
+    existing = frappe.get_all("Glass Sheet Config", filters={"glass_type": glass_type}, pluck="name")
+    for name in existing:
+        frappe.delete_doc("Glass Sheet Config", name, ignore_permissions=True, force=1)
+
+    for row in rows:
+        size = str((row or {}).get("size") or "").strip()
+        sft = flt((row or {}).get("sft") or 0)
+        if not size or sft <= 0:
+            continue
+
+        frappe.get_doc({
+            "doctype": "Glass Sheet Config",
+            "glass_type": glass_type,
+            "size": size,
+            "sft": sft,
+        }).insert(ignore_permissions=True)
+
+    frappe.db.commit()
+    return True
+
 @frappe.whitelist()
 def import_category_items(file_url, category):
     """
     Import items from an Excel file for a specific category.
-    Expected headers: description, code, wholesale_rate, retail_rate, special_rate
+    Expected headers for Aluminium: item_name, code, rate_per_kg, weight_per_length
+    Expected headers for other categories: description, code, wholesale_rate, retail_rate, special_rate
     Legacy optional column for Aluminium: aluminium_type (ignored)
     """
     if not file_url:
@@ -1655,7 +1949,12 @@ def import_category_items(file_url, category):
         frappe.throw("The uploaded file must include a header row and at least one item row.")
 
     headers = [_normalize_import_header(cell) for cell in rows[0]]
-    required_headers = {"description", "code", "wholesale_rate", "retail_rate", "special_rate"}
+    is_aluminium = _get_storage_category(category) == "Aluminium"
+    required_headers = (
+        {"item_name", "code", "rate_per_kg", "weight_per_length"}
+        if is_aluminium else
+        {"description", "code", "wholesale_rate", "retail_rate", "special_rate"}
+    )
 
     missing_headers = required_headers - set(headers)
     if missing_headers:
@@ -1668,11 +1967,13 @@ def import_category_items(file_url, category):
     errors = []
 
     for row_number, row in enumerate(rows[1:], start=2):
-        description = _clean_import_text(_get_import_cell(row, column_index["description"]))
+        item_name = _clean_import_text(
+            _get_import_cell(row, column_index["item_name" if is_aluminium else "description"])
+        )
         code = _clean_import_text(_get_import_cell(row, column_index["code"]))
-        if not description or not code:
+        if not item_name or not code:
             skipped += 1
-            errors.append(f"Row {row_number}: description and code are required.")
+            errors.append(f"Row {row_number}: item name and code are required.")
             continue
 
         exists = frappe.db.exists("Item", code)
@@ -1685,25 +1986,40 @@ def import_category_items(file_url, category):
                     f"Row {row_number}: code {code} already exists in item group {existing_group}."
                 )
                 continue
-        wholesale_rate = frappe.utils.flt(_get_import_cell(row, column_index["wholesale_rate"]) or 0)
-        retail_rate = frappe.utils.flt(_get_import_cell(row, column_index["retail_rate"]) or 0)
-        special_rate = frappe.utils.flt(_get_import_cell(row, column_index["special_rate"]) or 0)
-
-        if wholesale_rate < 0 or retail_rate < 0 or special_rate < 0:
-            skipped += 1
-            errors.append(f"Row {row_number}: rates cannot be negative.")
-            continue
-
-        save_custom_item({
+        payload = {
             "is_new": not exists,
             "category": category,
             "item_code": code,
             "original_item_code": code,
-            "item_name": description,
-            "retail_rate": retail_rate,
-            "wholesale_rate": wholesale_rate,
-            "special_rate": special_rate
-        })
+            "item_name": item_name,
+        }
+
+        if is_aluminium:
+            rate_per_kg = frappe.utils.flt(_get_import_cell(row, column_index["rate_per_kg"]) or 0)
+            weight_per_length = frappe.utils.flt(_get_import_cell(row, column_index["weight_per_length"]) or 0)
+
+            if rate_per_kg < 0 or weight_per_length < 0:
+                skipped += 1
+                errors.append(f"Row {row_number}: rate_per_kg and weight_per_length cannot be negative.")
+                continue
+
+            payload["aluminium_rate_per_kg"] = rate_per_kg
+            payload["aluminium_weight_per_length"] = weight_per_length
+        else:
+            wholesale_rate = frappe.utils.flt(_get_import_cell(row, column_index["wholesale_rate"]) or 0)
+            retail_rate = frappe.utils.flt(_get_import_cell(row, column_index["retail_rate"]) or 0)
+            special_rate = frappe.utils.flt(_get_import_cell(row, column_index["special_rate"]) or 0)
+
+            if wholesale_rate < 0 or retail_rate < 0 or special_rate < 0:
+                skipped += 1
+                errors.append(f"Row {row_number}: rates cannot be negative.")
+                continue
+
+            payload["retail_rate"] = retail_rate
+            payload["wholesale_rate"] = wholesale_rate
+            payload["special_rate"] = special_rate
+
+        save_custom_item(payload)
 
         if exists:
             updated += 1

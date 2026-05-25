@@ -48,6 +48,10 @@ function get_sales_invoice_item_uom_qty(item) {
 	}
 
 	if (item.custom_product_category === 'Glass') {
+		if (item.custom_glass_sale_mode === 'Sheet') {
+			return flt(item.qty || 0);
+		}
+
 		if (item.custom_glass_sale_mode === 'Full Sheet') {
 			return flt(item.qty || 0);
 		}
@@ -130,6 +134,7 @@ function render_sales_invoice_aluminium_row(item, index, doc) {
 		<tr>
 			<td style="text-align:center;">${index + 1}</td>
 			<td style="font-weight:500;">${frappe.utils.escape_html(item.item_name || item.item_code || '')}</td>
+			<td style="text-align:center;">${item.custom_aluminium_color ? frappe.utils.escape_html(item.custom_aluminium_color) : '-'}</td>
 			<td style="white-space:pre-wrap;">${item.description ? frappe.utils.escape_html(item.description) : '-'}</td>
 			<td style="text-align:center;">${item.qty || '-'}</td>
 			<td style="text-align:center;">${format_sales_invoice_review_number(item.custom_aluminium_metres || 0)}</td>
@@ -365,8 +370,11 @@ frappe.pages['sales-invoice-manager'].on_page_show = function(wrapper) {
 	}
 
 	let route = frappe.get_route();
-	let invoice_name = route[1] || (frappe.get_route_options() ? frappe.get_route_options().sales_invoice : null);
-	let default_payment_mode = route[2] || (frappe.get_route_options() ? frappe.get_route_options().payment_mode : null);
+	let route_options = typeof frappe.get_route_options === 'function'
+		? frappe.get_route_options()
+		: (frappe.route_options || {});
+	let invoice_name = route[1] || route_options.sales_invoice || null;
+	let default_payment_mode = route[2] || route_options.payment_mode || null;
 
 	if (!invoice_name) {
 		$(wrapper).find('.layout-main-section').html(`
@@ -482,6 +490,7 @@ async function render_sales_invoice_dashboard(page, invoice_name, wrapper, defau
 								<tr>
 									<th style="text-align:center;white-space:nowrap;">No</th>
 									<th style="white-space:nowrap;">Item</th>
+									<th style="text-align:center;white-space:nowrap;">Color</th>
 									<th style="white-space:nowrap;">Description</th>
 									<th style="text-align:center;white-space:nowrap;">Qty</th>
 									<th style="text-align:center;white-space:nowrap;">Metres</th>

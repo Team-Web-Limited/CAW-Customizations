@@ -61,6 +61,23 @@ def create_doctypes():
         })
         doc.insert()
         print("Created Ceiling Composition")
+
+    # 4. Aluminium Color
+    if not frappe.db.exists("DocType", "Aluminium Color"):
+        doc = frappe.get_doc({
+            "doctype": "DocType",
+            "name": "Aluminium Color",
+            "module": "Crystal Alluminium Works",
+            "custom": 0,
+            "editable_grid": 1,
+            "autoname": "field:color_name",
+            "fields": [
+                {"fieldname": "color_name", "fieldtype": "Data", "label": "Color", "reqd": 1, "in_list_view": 1, "unique": 1}
+            ],
+            "permissions": [{"role": "System Manager", "read": 1, "write": 1, "create": 1, "delete": 1}]
+        })
+        doc.insert()
+        print("Created Aluminium Color")
         
     frappe.db.commit()
 

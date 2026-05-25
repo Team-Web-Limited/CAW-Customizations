@@ -28,6 +28,138 @@ frappe.pages['quotation-builder'].on_page_load = function (wrapper) {
 	render_step(page, window.qb_state.step || 1);
 };
 
+const QB_GLASS_DIMENSION_UOM_OPTIONS = 'inches\nmm';
+const QB_DEFAULT_GLASS_DIMENSION_UOM = 'mm';
+const QB_ALUMINIUM_PRICE_FACTOR = 1.07;
+const QB_ALUMINIUM_PRICE_OPTIONS = 'Normal Price\nMill Finished Price\nSpecial Price';
+const QB_ALUMINIUM_PRICE_LABEL_TO_PRICE_LIST = {
+	'Normal Price': 'Retail',
+	'Mill Finished Price': 'Wholesale',
+	'Special Price': 'Special',
+	'Retail': 'Retail',
+	'Wholesale': 'Wholesale',
+	'Special': 'Special'
+};
+const QB_ALUMINIUM_PRICE_LIST_TO_LABEL = {
+	'Retail': 'Normal Price',
+	'Wholesale': 'Mill Finished Price',
+	'Special': 'Special Price'
+};
+const QB_SHEET_GLASS_TYPES = new Set(['Ordinary', 'Ready Laminated']);
+
+function normalize_glass_dimension_uom(uom) {
+	return (uom || '').toLowerCase() === 'inches' ? 'inches' : 'mm';
+}
+
+function get_glass_dimension_label(uom) {
+	return normalize_glass_dimension_uom(uom) === 'inches' ? 'inches' : 'mm';
+}
+
+function dimension_input_to_mm(value, uom) {
+	let number = flt(value || 0);
+	return normalize_glass_dimension_uom(uom) === 'inches' ? number * 25.4 : number;
+}
+
+function mm_to_dimension_input(value, uom) {
+	let number = flt(value || 0);
+	return normalize_glass_dimension_uom(uom) === 'inches' ? number / 25.4 : number;
+}
+
+function get_aluminium_price_label(price_list) {
+	return QB_ALUMINIUM_PRICE_LIST_TO_LABEL[price_list] || price_list || 'Normal Price';
+}
+
+function get_aluminium_backend_price_list(price_list) {
+	return QB_ALUMINIUM_PRICE_LABEL_TO_PRICE_LIST[price_list] || price_list || 'Retail';
+}
+
+function get_aluminium_normal_price(rate_per_kg, weight_per_length) {
+	return flt(rate_per_kg || 0) * flt(weight_per_length || 0);
+}
+
+function get_aluminium_rate_for_selling_price(normal_price, selling_price) {
+	let price_label = get_aluminium_price_label(selling_price);
+	if (price_label === 'Mill Finished Price') {
+		return QB_ALUMINIUM_PRICE_FACTOR ? normal_price / QB_ALUMINIUM_PRICE_FACTOR : normal_price;
+	}
+	if (price_label === 'Special Price') {
+		return normal_price * QB_ALUMINIUM_PRICE_FACTOR;
+	}
+	return normal_price;
+}
+
+function get_item_selling_price_label(item) {
+	return item.category === 'Aluminium' ? get_aluminium_price_label(item.price_list) : (item.price_list || 'Retail');
+}
+
+function is_sheet_glass_type(glass_type) {
+	return QB_SHEET_GLASS_TYPES.has(glass_type || '');
+}
+
+function normalize_glass_mode(mode, glass_type) {
+	return is_sheet_glass_type(glass_type) && mode === 'Sheet' ? 'Sheet' : 'Cut Size';
+}
+
+function get_glass_add_choice_fields(default_uom, glass_type) {
+	let fields = [
+		{
+			fieldtype: 'Select',
+			fieldname: 'entry_method',
+			label: 'Entry Method',
+			options: 'Manual\nUpload',
+			default: 'Manual',
+			reqd: 1
+		},
+		{
+			fieldtype: 'Select',
+			fieldname: 'dimension_uom',
+			label: 'UOM',
+			options: QB_GLASS_DIMENSION_UOM_OPTIONS,
+			default: normalize_glass_dimension_uom(default_uom || QB_DEFAULT_GLASS_DIMENSION_UOM),
+			reqd: 1
+		}
+	];
+
+	if (is_sheet_glass_type(glass_type)) {
+		fields.push({
+			fieldtype: 'Select',
+			fieldname: 'glass_mode',
+			label: 'Glass Mode',
+			options: 'Cut Size\nSheet',
+			default: 'Cut Size',
+			reqd: 1,
+			depends_on: 'eval:doc.entry_method=="Manual"'
+		});
+	}
+
+	return fields;
+}
+
+function get_aluminium_color_options() {
+	let options = [''];
+	(window.qb_state.aluminium_colors || []).forEach(color => {
+		if (color) {
+			options.push(color);
+		}
+	});
+	return options.join('\n');
+}
+
+function ensure_aluminium_colors(callback) {
+	if (window.qb_state.aluminium_colors && window.qb_state.aluminium_colors.length) {
+		if (callback) callback(window.qb_state.aluminium_colors);
+		return;
+	}
+
+	frappe.call({
+		method: 'crystal_alluminium_works.api.get_aluminium_colors',
+		callback: function (r) {
+			window.qb_state.aluminium_colors = r.message || [];
+			if (callback) callback(window.qb_state.aluminium_colors);
+		}
+	});
+}
+
 function bind_events(page) {
 	$(page.body).on('click', '.qb-step-indicator', function () {
 		let step = parseInt($(this).data('step'));
@@ -42,23 +174,15 @@ function bind_events(page) {
 			let label = $(this).text().replace('+', '').trim();
 			let d = new frappe.ui.Dialog({
 				title: `Add ${label} Items`,
-				fields: [
-					{
-						fieldtype: 'Select',
-						fieldname: 'entry_method',
-						label: 'Entry Method',
-						options: 'Manual\nUpload',
-						default: 'Manual',
-						reqd: 1
-					}
-				],
+				fields: get_glass_add_choice_fields(QB_DEFAULT_GLASS_DIMENSION_UOM, glassType),
 				primary_action_label: 'Continue',
 				primary_action: function (values) {
 					d.hide();
+					let dimension_uom = normalize_glass_dimension_uom(values.dimension_uom);
 					if (values.entry_method === 'Upload') {
-						open_glass_import_dialog(page);
+						open_glass_import_dialog(page, dimension_uom);
 					} else {
-						add_item_row(page, 'Glass', glassType);
+						add_item_row(page, 'Glass', glassType, dimension_uom, values.glass_mode || 'Cut Size');
 					}
 				}
 			});
@@ -69,7 +193,7 @@ function bind_events(page) {
 	});
 
 	$(page.body).on('click', '.qb-import-products-btn', function () {
-		open_glass_import_dialog(page);
+		open_glass_import_dialog(page, QB_DEFAULT_GLASS_DIMENSION_UOM);
 	});
 
 	$(page.body).on('click', '.qb-nav-step', function () {
@@ -79,6 +203,10 @@ function bind_events(page) {
 }
 
 function get_item_display_qty(item) {
+	if (item.category === 'Glass' && item.sale_mode === 'Sheet') {
+		return flt(item.pcs || 0);
+	}
+
 	return item.qty;
 }
 
@@ -87,12 +215,12 @@ function get_item_uom_label(item) {
 		return 'Nos';
 	}
 
-	if (item.uom) {
-		return item.uom;
+	if (item.category === 'Aluminium') {
+		return 'len';
 	}
 
-	if (item.category === 'Aluminium') {
-		return 'Meter';
+	if (item.uom) {
+		return item.uom;
 	}
 
 	if (item.category === 'Ceiling') {
@@ -108,7 +236,7 @@ function get_item_uom_label(item) {
 
 function get_item_uom_qty(item) {
 	if (item.category === 'Aluminium') {
-		return flt(item.metres || 0);
+		return flt(item.qty || 0);
 	}
 
 	if (item.category === 'Ceiling') {
@@ -116,6 +244,10 @@ function get_item_uom_qty(item) {
 	}
 
 	if (item.category === 'Glass') {
+		if (item.sale_mode === 'Sheet') {
+			return flt(item.qty || 0);
+		}
+
 		if (item.sale_mode === 'Full Sheet') {
 			return flt(item.qty || 0);
 		}
@@ -131,7 +263,7 @@ function calculate_item_amount(item) {
 	let rate = flt(item.rate || 0) / 1.16;
 
 	if (item.category === 'Aluminium') {
-		return qty * flt(item.metres || 0) * rate;
+		return qty * rate;
 	}
 
 	if (item.category === 'Ceiling') {
@@ -139,6 +271,10 @@ function calculate_item_amount(item) {
 	}
 
 	if (item.category === 'Glass') {
+		if (item.sale_mode === 'Sheet') {
+			return qty * rate;
+		}
+
 		if (item.sale_mode === 'Full Sheet') {
 			return qty * rate;
 		}
@@ -192,6 +328,10 @@ function get_glass_polishing_rft(item) {
 		(height_sides * (flt(item.height_mm || 0) / 305))
 	);
 	return Math.trunc(value * 1000) / 1000;
+}
+
+function get_glass_dimension_review_value(item, fieldname) {
+	return mm_to_dimension_input(item[fieldname] || 0, item.dimension_uom);
 }
 
 function get_glass_form_perimeter_rft(width_ft, height_ft) {
@@ -360,6 +500,33 @@ function get_review_category_meta(category) {
 }
 
 function render_review_glass_row(item, index) {
+	if (item.sale_mode === 'Sheet') {
+		let pieces = flt(item.pcs || 0);
+		return `
+			<tr>
+				<td style="text-align:center;">-</td>
+				<td style="text-align:center;">-</td>
+				<td style="text-align:center;">-</td>
+				<td style="text-align:center;">-</td>
+				<td style="text-align:center;">-</td>
+				<td style="text-align:center;">-</td>
+				<td style="text-align:center;">-</td>
+				<td style="text-align:center;">${format_review_number(item.qty || 0)}</td>
+				<td style="white-space:nowrap;">-</td>
+				<td style="text-align:center;white-space:nowrap;">-</td>
+				<td style="text-align:center;white-space:nowrap;">-</td>
+				<td style="text-align:center;white-space:nowrap;">-</td>
+				<td style="text-align:center;">${index + 1}</td>
+				<td style="text-align:center;">${frappe.utils.escape_html(item.sheet_size || '')}</td>
+				<td style="text-align:center;">${format_review_number(item.sheet_sft || 0)}</td>
+				<td style="text-align:center;">Sheet</td>
+				<td style="text-align:center;">${pieces || '-'}</td>
+				<td style="font-weight:500;white-space:nowrap;">${get_glass_type_review_label(item)}</td>
+				<td style="white-space:pre-wrap;">${item.description ? frappe.utils.escape_html(item.description) : '-'}</td>
+			</tr>
+		`;
+	}
+
 	let pieces = flt(item.qty || 0);
 	let pw = (flt(item.width_mm || 0) / 305) * pieces;
 	let ph = (flt(item.height_mm || 0) / 305) * pieces;
@@ -383,8 +550,9 @@ function render_review_glass_row(item, index) {
 			<td style="text-align:center;white-space:nowrap;">${get_glass_count_with_price(item.notches || 0, notches_entry)}</td>
 			<td style="text-align:center;white-space:nowrap;">${get_glass_sandblast_review_label(item)}</td>
 			<td style="text-align:center;">${index + 1}</td>
-			<td style="text-align:center;">${format_review_number(item.width_mm || 0, 0)}</td>
-			<td style="text-align:center;">${format_review_number(item.height_mm || 0, 0)}</td>
+			<td style="text-align:center;">${format_review_number(get_glass_dimension_review_value(item, 'width_mm'), item.dimension_uom === 'inches' ? 2 : 0)}</td>
+			<td style="text-align:center;">${format_review_number(get_glass_dimension_review_value(item, 'height_mm'), item.dimension_uom === 'inches' ? 2 : 0)}</td>
+			<td style="text-align:center;">${get_glass_dimension_label(item.dimension_uom)}</td>
 			<td style="text-align:center;">${pieces || '-'}</td>
 			<td style="font-weight:500;white-space:nowrap;">${get_glass_type_review_label(item)}</td>
 			<td style="white-space:pre-wrap;">${item.description ? frappe.utils.escape_html(item.description) : '-'}</td>
@@ -397,11 +565,11 @@ function render_review_aluminium_row(item, index) {
 		<tr>
 			<td style="text-align:center;">${index + 1}</td>
 			<td style="font-weight:500;">${frappe.utils.escape_html(item.item_name || item.item_code || '')}</td>
+			<td style="text-align:center;">${item.aluminium_color ? frappe.utils.escape_html(item.aluminium_color) : '-'}</td>
 			<td style="white-space:pre-wrap;">${item.description ? frappe.utils.escape_html(item.description) : '-'}</td>
 			<td style="text-align:center;">${item.qty || '-'}</td>
-			<td style="text-align:center;">${format_review_number(item.metres || 0)}</td>
 			<td style="text-align:center;">
-				<span style="background:var(--subtle-fg);padding:2px 8px;border-radius:6px;font-size:12px;">${item.price_list || 'Retail'}</span>
+				<span style="background:var(--subtle-fg);padding:2px 8px;border-radius:6px;font-size:12px;">${get_item_selling_price_label(item)}</span>
 			</td>
 			<td style="text-align:right;">${format_currency(item.rate, 'KES')}</td>
 			<td style="text-align:right;font-weight:600;">${format_currency(item.amount, 'KES')}</td>
@@ -417,7 +585,7 @@ function render_review_fittings_row(item, index) {
 			<td style="white-space:pre-wrap;">${item.description ? frappe.utils.escape_html(item.description) : '-'}</td>
 			<td style="text-align:center;">${item.qty || '-'}</td>
 			<td style="text-align:center;">
-				<span style="background:var(--subtle-fg);padding:2px 8px;border-radius:6px;font-size:12px;">${item.price_list || 'Retail'}</span>
+				<span style="background:var(--subtle-fg);padding:2px 8px;border-radius:6px;font-size:12px;">${get_item_selling_price_label(item)}</span>
 			</td>
 			<td style="text-align:right;">${format_currency(item.rate, 'KES')}</td>
 			<td style="text-align:right;font-weight:600;">${format_currency(item.amount, 'KES')}</td>
@@ -434,7 +602,7 @@ function render_review_other_row(item, index) {
 			<td style="text-align:center;">${item.qty || '-'}</td>
 			${item.category === 'Ceiling' ? `<td style="text-align:center;">${format_review_number(item.square_metres || 0)}</td>` : ''}
 			<td style="text-align:center;">
-				<span style="background:var(--subtle-fg);padding:2px 8px;border-radius:6px;font-size:12px;">${item.price_list || 'Retail'}</span>
+				<span style="background:var(--subtle-fg);padding:2px 8px;border-radius:6px;font-size:12px;">${get_item_selling_price_label(item)}</span>
 			</td>
 			<td style="text-align:right;">${format_currency(item.rate, 'KES')}</td>
 			<td style="text-align:right;font-weight:600;">${format_currency(item.amount, 'KES')}</td>
@@ -548,6 +716,7 @@ function render_review_step(page) {
 								<th style="text-align:center;white-space:nowrap;">No</th>
 								<th style="text-align:center;white-space:nowrap;">WIDTH</th>
 								<th style="text-align:center;white-space:nowrap;">HEIGHT</th>
+								<th style="text-align:center;white-space:nowrap;">UOM</th>
 								<th style="text-align:center;white-space:nowrap;">Pcs</th>
 								<th style="white-space:nowrap;">Glass Type</th>
 								<th style="white-space:nowrap;">Description</th>
@@ -577,11 +746,11 @@ function render_review_step(page) {
 							<tr>
 								<th style="text-align:center;white-space:nowrap;">No</th>
 								<th style="white-space:nowrap;">Item</th>
+								<th style="text-align:center;white-space:nowrap;">Color</th>
 								<th style="white-space:nowrap;">Description</th>
-								<th style="text-align:center;white-space:nowrap;">Qty</th>
-								<th style="text-align:center;white-space:nowrap;">Metres</th>
+								<th style="text-align:center;white-space:nowrap;">Pcs</th>
 								<th style="text-align:center;white-space:nowrap;">Price List</th>
-								<th style="text-align:right;white-space:nowrap;">Rate/m</th>
+								<th style="text-align:right;white-space:nowrap;">Rate/Piece</th>
 								<th style="text-align:right;white-space:nowrap;">Amount</th>
 							</tr>
 						</thead>
@@ -716,8 +885,39 @@ function setup_customer_step(page) {
 // ────────────────────────────────────────────
 // Step 2: Add items
 // ────────────────────────────────────────────
-function add_item_row(page, category, glass_type = 'Ordinary') {
+function get_sheet_sft_from_size(item, size) {
+	let match = (item.sheet_configs || []).find(row => row.size === size);
+	return match ? flt(match.sft || 0) : 0;
+}
+
+function load_glass_sheet_configs(glass_type, callback) {
+	if (!is_sheet_glass_type(glass_type)) {
+		callback([]);
+		return;
+	}
+
+	window.qb_state.glass_sheet_configs = window.qb_state.glass_sheet_configs || {};
+	if (window.qb_state.glass_sheet_configs[glass_type]) {
+		callback(window.qb_state.glass_sheet_configs[glass_type]);
+		return;
+	}
+
+	frappe.call({
+		method: 'crystal_alluminium_works.api.get_glass_sheet_configs',
+		args: { glass_type: glass_type },
+		callback: function (r) {
+			let rows = r.message || [];
+			window.qb_state.glass_sheet_configs[glass_type] = rows;
+			callback(rows);
+		}
+	});
+}
+
+function add_item_row(page, category, glass_type = 'Ordinary', dimension_uom = QB_DEFAULT_GLASS_DIMENSION_UOM, glass_mode = 'Cut Size') {
 	let id = frappe.utils.get_random(8);
+	let glass_dimension_uom = normalize_glass_dimension_uom(dimension_uom);
+	let normalized_glass_mode = category === 'Glass' ? normalize_glass_mode(glass_mode, glass_type) : 'Cut Size';
+	let is_sheet_mode = category === 'Glass' && normalized_glass_mode === 'Sheet';
 	let item = {
 		id: id,
 		category: category,
@@ -725,12 +925,17 @@ function add_item_row(page, category, glass_type = 'Ordinary') {
 		item_name: '',
 		uom: '',
 		description: '',
-		price_list: 'Retail',
+		price_list: category === 'Aluminium' ? 'Normal Price' : (is_sheet_mode ? 'Wholesale' : 'Retail'),
 		qty: 1,
+		pcs: 1,
 		metres: 1,
+		aluminium_rate_per_kg: 0,
+		aluminium_weight_per_length: 0,
 		square_metres: 1,
 		rate: 0,
 		amount: 0,
+		dimension_uom: category === 'Glass' ? glass_dimension_uom : '',
+		aluminium_color: '',
 		// Glass-specific
 		width_mm: 0,
 		height_mm: 0,
@@ -749,6 +954,10 @@ function add_item_row(page, category, glass_type = 'Ordinary') {
 		notches: 0,
 		numbering: '',
 		sandblast_type: 'None',
+		sale_mode: is_sheet_mode ? 'Sheet' : 'Resized',
+		glass_mode: normalized_glass_mode,
+		sheet_size: '',
+		sheet_sft: 0,
 		glass_type_filter: glass_type // Temporary state tracking for filter
 	};
 
@@ -765,6 +974,19 @@ function add_item_row(page, category, glass_type = 'Ordinary') {
 					item.item_name = preferred.item_name || preferred.item_code || '';
 					item.uom = preferred.stock_uom || item.uom;
 				}
+				if (is_sheet_mode) {
+					load_glass_sheet_configs(glass_type, function (sheet_rows) {
+						item.sheet_configs = sheet_rows || [];
+						let first_sheet = item.sheet_configs[0];
+						if (first_sheet) {
+							item.sheet_size = first_sheet.size || '';
+							item.sheet_sft = flt(first_sheet.sft || 0);
+							item.qty = item.sheet_sft * flt(item.pcs || 1);
+						}
+						open_item_editor(page, item, true);
+					});
+					return;
+				}
 				open_item_editor(page, item, true);
 			}
 		});
@@ -777,23 +999,15 @@ function add_item_row(page, category, glass_type = 'Ordinary') {
 function open_glass_add_choice(page) {
 	let d = new frappe.ui.Dialog({
 		title: 'Add Glass Items',
-		fields: [
-			{
-				fieldtype: 'Select',
-				fieldname: 'entry_method',
-				label: 'Entry Method',
-				options: 'Manual\nUpload',
-				default: 'Manual',
-				reqd: 1
-			}
-		],
+		fields: get_glass_add_choice_fields(QB_DEFAULT_GLASS_DIMENSION_UOM, 'Ordinary'),
 		primary_action_label: 'Continue',
 		primary_action: function (values) {
 			d.hide();
+			let dimension_uom = normalize_glass_dimension_uom(values.dimension_uom);
 			if (values.entry_method === 'Upload') {
-				open_glass_import_dialog(page);
+				open_glass_import_dialog(page, dimension_uom);
 			} else {
-				add_item_row(page, 'Glass', d.custom_glass_type);
+				add_item_row(page, 'Glass', d.custom_glass_type, dimension_uom, values.glass_mode || 'Cut Size');
 			}
 		}
 	});
@@ -805,23 +1019,15 @@ function open_glass_add_choice(page) {
 function open_specific_glass_add_choice(page, label, glass_type) {
 	let d = new frappe.ui.Dialog({
 		title: `Add ${label} Items`,
-		fields: [
-			{
-				fieldtype: 'Select',
-				fieldname: 'entry_method',
-				label: 'Entry Method',
-				options: 'Manual\nUpload',
-				default: 'Manual',
-				reqd: 1
-			}
-		],
+		fields: get_glass_add_choice_fields(QB_DEFAULT_GLASS_DIMENSION_UOM, glass_type),
 		primary_action_label: 'Continue',
 		primary_action: function (values) {
 			d.hide();
+			let dimension_uom = normalize_glass_dimension_uom(values.dimension_uom);
 			if (values.entry_method === 'Upload') {
-				open_glass_import_dialog(page);
+				open_glass_import_dialog(page, dimension_uom);
 			} else {
-				add_item_row(page, 'Glass', glass_type);
+				add_item_row(page, 'Glass', glass_type, dimension_uom, values.glass_mode || 'Cut Size');
 			}
 		}
 	});
@@ -871,7 +1077,7 @@ function render_items_table(page) {
 					${item.item_name || '<span style="color:var(--text-muted);">-</span>'}
 				</td>
 					<td style="padding:12px 16px;">
-						<span style="background:var(--subtle-fg);padding:3px 10px;border-radius:6px;font-size:12px;">${item.price_list || 'Retail'}</span>
+						<span style="background:var(--subtle-fg);padding:3px 10px;border-radius:6px;font-size:12px;">${get_item_selling_price_label(item)}</span>
 					</td>
 					<td style="padding:12px 16px;text-align:center;">${get_item_display_qty(item)}</td>
 					<td style="padding:12px 16px;text-align:center;">${format_review_number(get_item_uom_qty(item), 2)}</td>
@@ -904,6 +1110,25 @@ function render_items_table(page) {
 function open_item_editor(page, item, is_new = false) {
 	let is_glass = item.category === 'Glass';
 	let is_ceiling = item.category === 'Ceiling';
+	let is_sheet_glass = is_glass && (item.glass_mode === 'Sheet' || item.sale_mode === 'Sheet');
+
+	if (is_sheet_glass && (!item.sheet_configs || !item.sheet_configs.length)) {
+		let glass_type = item.glass_type_filter || item.glass_type || 'Ordinary';
+		window.qb_state.glass_sheet_configs = window.qb_state.glass_sheet_configs || {};
+		if (window.qb_state.glass_sheet_configs[glass_type]) {
+			item.sheet_configs = window.qb_state.glass_sheet_configs[glass_type];
+		} else {
+			frappe.call({
+				method: 'crystal_alluminium_works.api.get_glass_sheet_configs',
+				args: { glass_type: glass_type },
+				async: false,
+				callback: function (r) {
+					item.sheet_configs = r.message || [];
+					window.qb_state.glass_sheet_configs[glass_type] = item.sheet_configs;
+				}
+			});
+		}
+	}
 
 	let fields = [
 		{
@@ -937,33 +1162,84 @@ function open_item_editor(page, item, is_new = false) {
 		{ fieldtype: 'Column Break' },
 		{
 			fieldtype: 'Select',
-			options: 'Retail\nWholesale\nSpecial',
+			options: item.category === 'Aluminium' ? QB_ALUMINIUM_PRICE_OPTIONS : 'Retail\nWholesale\nSpecial',
 			fieldname: 'price_list',
 			label: 'Selling Price',
 			reqd: 1,
-			default: item.price_list || 'Retail'
+			read_only: is_sheet_glass ? 1 : 0,
+			default: item.category === 'Aluminium' ? get_aluminium_price_label(item.price_list) : (is_sheet_glass ? 'Wholesale' : (item.price_list || 'Retail'))
 		},
 		{ fieldtype: 'Section Break' },
 		{
 			fieldtype: (item.category === 'Aluminium' || is_ceiling || is_glass) ? 'Int' : 'Float',
-			fieldname: 'qty',
-			label: 'Quantity',
-			default: item.qty || 1,
+			fieldname: is_sheet_glass ? 'pcs' : 'qty',
+			label: 'Pcs',
+			default: is_sheet_glass ? (item.pcs || 1) : (item.qty || 1),
 			reqd: 1
 		},
 		{ fieldtype: 'Column Break' },
 		{
 			fieldtype: 'Currency',
 			fieldname: 'rate',
-			label: item.category === 'Aluminium' ? 'Rate Per Metre' : (is_ceiling ? 'Rate Per Square Metre' : 'Rate'),
-			default: item.rate || 0
+			label: item.category === 'Aluminium' ? 'Rate Per Piece' : (is_ceiling ? 'Rate Per Square Metre' : 'Rate'),
+			default: item.rate || 0,
+			read_only: item.category === 'Aluminium' || is_sheet_glass ? 1 : 0
 		}
 	];
 
+	if (is_sheet_glass) {
+		let sheet_options = (item.sheet_configs || []).map(row => row.size).filter(Boolean).join('\n');
+		fields.push(
+			{ fieldtype: 'Section Break', label: 'Sheet Details' },
+			{
+				fieldtype: 'Select',
+				fieldname: 'sheet_size',
+				label: 'Size',
+				options: sheet_options,
+				default: item.sheet_size || ((item.sheet_configs || [])[0] || {}).size || '',
+				reqd: 1
+			},
+			{ fieldtype: 'Column Break' },
+			{
+				fieldtype: 'Float',
+				fieldname: 'sheet_sft',
+				label: 'SFT / Sheet',
+				read_only: 1,
+				default: item.sheet_sft || get_sheet_sft_from_size(item, item.sheet_size || ((item.sheet_configs || [])[0] || {}).size)
+			},
+			{ fieldtype: 'Section Break' },
+			{
+				fieldtype: 'Float',
+				fieldname: 'sheet_qty',
+				label: 'Qty',
+				read_only: 1,
+				default: flt(item.qty || 0) || (get_sheet_sft_from_size(item, item.sheet_size || ((item.sheet_configs || [])[0] || {}).size) * flt(item.pcs || 1))
+			},
+			{ fieldtype: 'Section Break', label: 'Item Details' },
+			{ fieldtype: 'Data', fieldname: 'glass_type', label: 'Glass Type', read_only: 1, hidden: 1, default: item.glass_type || item.glass_type_filter || '' },
+			{ fieldtype: 'Small Text', fieldname: 'description', label: 'Description', default: item.description || '' }
+		);
+	}
+
 	if (item.category === 'Aluminium') {
 		fields.push(
-			{ fieldtype: 'Float', fieldname: 'metres', label: 'Metres', default: item.metres || 1, reqd: 1 },
+			{ fieldtype: 'Section Break', label: 'Aluminium Pricing' },
+			{
+				fieldtype: 'Currency',
+				fieldname: 'aluminium_rate_per_kg',
+				label: 'Rate / Kg',
+				default: item.aluminium_rate_per_kg || 0
+			},
+			{ fieldtype: 'Column Break' },
+			{
+				fieldtype: 'Float',
+				fieldname: 'aluminium_weight_per_length',
+				label: 'Weight / Length',
+				default: item.aluminium_weight_per_length || 0
+			},
 			{ fieldtype: 'Section Break', label: 'Item Details' },
+			{ fieldtype: 'Select', fieldname: 'aluminium_color', label: 'Color', options: get_aluminium_color_options(), default: item.aluminium_color || '' },
+			{ fieldtype: 'Column Break' },
 			{ fieldtype: 'Small Text', fieldname: 'description', label: 'Description', default: item.description || '' }
 		);
 	}
@@ -974,15 +1250,17 @@ function open_item_editor(page, item, is_new = false) {
 		);
 	}
 
-	if (is_glass) {
+	if (is_glass && !is_sheet_glass) {
+		let dimensionUom = normalize_glass_dimension_uom(item.dimension_uom);
+		let dimensionLabel = get_glass_dimension_label(dimensionUom);
 		let baseWidthFt = get_glass_base_width_ft(item);
 		let baseHeightFt = get_glass_base_height_ft(item);
 		let adjustedWidthFt = get_glass_adjusted_width_ft(item);
 		let adjustedHeightFt = get_glass_adjusted_height_ft(item);
 		fields.push(
 			{ fieldtype: 'Section Break', label: 'Glass Dimensions' },
-			{ fieldtype: 'Float', fieldname: 'width_mm', label: 'Width (mm)', default: item.width_mm || 0 },
-			{ fieldtype: 'Float', fieldname: 'height_mm', label: 'Height (mm)', default: item.height_mm || 0 },
+			{ fieldtype: 'Float', fieldname: 'width_mm', label: `Width (${dimensionLabel})`, default: mm_to_dimension_input(item.width_mm || 0, dimensionUom) },
+			{ fieldtype: 'Float', fieldname: 'height_mm', label: `Height (${dimensionLabel})`, default: mm_to_dimension_input(item.height_mm || 0, dimensionUom) },
 			{ fieldtype: 'Column Break' },
 			{ fieldtype: 'Float', fieldname: 'base_width_ft', label: 'Width (ft)', read_only: 1, default: baseWidthFt },
 			{ fieldtype: 'Float', fieldname: 'base_height_ft', label: 'Height (ft)', read_only: 1, default: baseHeightFt },
@@ -1019,15 +1297,104 @@ function open_item_editor(page, item, is_new = false) {
 		primary_action_label: 'Save Item',
 		primary_action: function (values) {
 			item.item_code = values.item_code;
-			item.item_name = values.item_code;
+			item.item_name = item.item_name || values.item_code;
 			item.description = values.description || '';
 			item.price_list = values.price_list || 'Retail';
 			item.qty = values.qty || 1;
-			item.metres = item.category === 'Aluminium' ? (values.metres || 1) : 0;
+			if (item.category === 'Aluminium') {
+				item.price_list = get_aluminium_price_label(values.price_list || 'Normal Price');
+				item.metres = 1;
+				item.aluminium_rate_per_kg = values.aluminium_rate_per_kg || 0;
+				item.aluminium_weight_per_length = values.aluminium_weight_per_length || 0;
+				item.aluminium_color = values.aluminium_color || '';
+			} else {
+				item.metres = 0;
+				item.aluminium_color = '';
+			}
 			item.square_metres = is_ceiling ? (values.square_metres || 1) : 0;
 			item.rate = values.rate || 0;
 
 			if (is_glass) {
+				if (is_sheet_glass) {
+					let sheet_size = values.sheet_size || '';
+					let sheet_sft = get_sheet_sft_from_size(item, sheet_size) || flt(values.sheet_sft || 0);
+					let pcs = flt(values.pcs || 0);
+
+					if (!sheet_size || sheet_sft <= 0) {
+						frappe.msgprint('Please select a configured sheet size.');
+						return;
+					}
+					if (pcs <= 0) {
+						frappe.msgprint('Please enter Pcs greater than 0.');
+						return;
+					}
+
+					item.sale_mode = 'Sheet';
+					item.glass_mode = 'Sheet';
+					item.price_list = 'Wholesale';
+					item.pcs = pcs;
+					item.sheet_size = sheet_size;
+					item.sheet_sft = sheet_sft;
+					item.qty = sheet_sft * pcs;
+					item.area_sqft = item.qty;
+					item.width_mm = 0;
+					item.height_mm = 0;
+					item.width_allowance = 0;
+					item.height_allowance = 0;
+					item.base_width_ft = 0;
+					item.base_height_ft = 0;
+					item.width_ft = 0;
+					item.height_ft = 0;
+					item.perimeter_rft = 0;
+					item.polishing = 0;
+					item.polish_width_sides = 0;
+					item.polish_height_sides = 0;
+					item.holes = 0;
+					item.notches = 0;
+					item.numbering = '';
+					item.sandblast_type = 'None';
+					item.glass_type = values.glass_type || item.glass_type_filter || 'Ordinary';
+
+					frappe.call({
+						method: 'crystal_alluminium_works.api.calculate_glass_total',
+						args: {
+							item_code: item.item_code,
+							price_list: item.price_list,
+							qty: item.qty,
+							sale_mode: item.sale_mode,
+							width_mm: 0,
+							height_mm: 0,
+							width_allowance: 0,
+							height_allowance: 0,
+							polishing: 0,
+							polish_width_sides: 0,
+							polish_height_sides: 0,
+							holes: 0,
+							notches: 0,
+							sandblast_type: 'None'
+						},
+						freeze: true,
+						freeze_message: 'Calculating...',
+						callback: function (r) {
+							if (r.message) {
+								item.rate = r.message.base_rate ?? item.rate;
+								item.amount = r.message.total ?? 0;
+								item.glass_breakdown = r.message.breakdown || [];
+							} else {
+								item.amount = calculate_item_amount(item);
+								item.glass_breakdown = [];
+							}
+							if (is_new) {
+								window.qb_state.items.push(item);
+							}
+							d.hide();
+							render_items_table(page);
+						}
+					});
+					return;
+				}
+
+				let dimensionUom = normalize_glass_dimension_uom(item.dimension_uom);
 				let polish_width_sides = cint(values.polish_width_sides || 0);
 				let polish_height_sides = cint(values.polish_height_sides || 0);
 				if (![0, 1, 2].includes(polish_width_sides) || ![0, 1, 2].includes(polish_height_sides)) {
@@ -1036,8 +1403,9 @@ function open_item_editor(page, item, is_new = false) {
 				}
 
 				item.sale_mode = 'Resized';
-				item.width_mm = values.width_mm || 0;
-				item.height_mm = values.height_mm || 0;
+				item.dimension_uom = dimensionUom;
+				item.width_mm = dimension_input_to_mm(values.width_mm || 0, dimensionUom);
+				item.height_mm = dimension_input_to_mm(values.height_mm || 0, dimensionUom);
 				item.width_allowance = values.width_allowance || 0;
 				item.height_allowance = values.height_allowance || 0;
 				item.base_width_ft = values.base_width_ft || 0;
@@ -1116,6 +1484,18 @@ function open_item_editor(page, item, is_new = false) {
 
 	d.show();
 
+	if (item.category === 'Aluminium') {
+		ensure_aluminium_colors(function () {
+			let field = d.get_field('aluminium_color');
+			if (!field) {
+				return;
+			}
+			field.df.options = get_aluminium_color_options();
+			field.refresh();
+			d.set_value('aluminium_color', item.aluminium_color || '');
+		});
+	}
+
 	// Make the glass dialog 80% height with fixed header/footer and scrollable body
 	if (is_glass) {
 		let $modal = d.$wrapper.find('.modal-dialog');
@@ -1149,8 +1529,26 @@ function open_item_editor(page, item, is_new = false) {
 		});
 	}
 
+	if (is_sheet_glass) {
+		let update_sheet_qty = function () {
+			let sheet_size = d.get_value('sheet_size') || '';
+			let sheet_sft = get_sheet_sft_from_size(item, sheet_size);
+			let pcs = flt(d.get_value('pcs') || 0);
+			d.set_value('sheet_sft', sheet_sft);
+			d.set_value('sheet_qty', sheet_sft * pcs);
+		};
+
+		if (d.fields_dict.sheet_size && d.fields_dict.sheet_size.$input) {
+			d.fields_dict.sheet_size.$input.on('change', update_sheet_qty);
+		}
+		if (d.fields_dict.pcs && d.fields_dict.pcs.$input) {
+			d.fields_dict.pcs.$input.on('input change', update_sheet_qty);
+		}
+		setTimeout(update_sheet_qty, 0);
+	}
+
 	// Glass real-time calculation
-	if (is_glass) {
+	if (is_glass && !is_sheet_glass) {
 		let update_allowance_dimensions = function (baseWidthFt, baseHeightFt) {
 			let widthAllowance = flt(d.get_value('width_allowance') || 0);
 			let heightAllowance = flt(d.get_value('height_allowance') || 0);
@@ -1168,8 +1566,9 @@ function open_item_editor(page, item, is_new = false) {
 		};
 
 		let recalc = function () {
-			let w = d.get_value('width_mm') || 0;
-			let h = d.get_value('height_mm') || 0;
+			let dimensionUom = normalize_glass_dimension_uom(item.dimension_uom);
+			let w = dimension_input_to_mm(d.get_value('width_mm') || 0, dimensionUom);
+			let h = dimension_input_to_mm(d.get_value('height_mm') || 0, dimensionUom);
 			if (w > 0 && h > 0) {
 				frappe.call({
 					method: 'crystal_alluminium_works.pricing_engine.calculate_dimensions',
@@ -1201,35 +1600,81 @@ function open_item_editor(page, item, is_new = false) {
 		}
 	}
 
+	let fetch_item_price_rate = function (ic, price_list) {
+		frappe.call({
+			method: 'frappe.client.get_value',
+			args: {
+				doctype: 'Item Price',
+				filters: { item_code: ic, price_list: price_list, selling: 1 },
+				fieldname: 'price_list_rate'
+			},
+			callback: function (r) {
+				if (r.message && r.message.price_list_rate) {
+					d.set_value('rate', r.message.price_list_rate);
+				} else {
+					// Hidden standard_rate mirrors retail, so it remains the base fallback.
+					frappe.db.get_value('Item', ic, 'standard_rate', function (r2) {
+						if (r2 && r2.standard_rate) {
+							d.set_value('rate', r2.standard_rate);
+						}
+					});
+				}
+			}
+		});
+	};
+
+	let update_aluminium_rate_from_inputs = function () {
+		let normal_price = get_aluminium_normal_price(
+			d.get_value('aluminium_rate_per_kg') || 0,
+			d.get_value('aluminium_weight_per_length') || 0
+		);
+
+		if (normal_price > 0) {
+			d.set_value('rate', get_aluminium_rate_for_selling_price(normal_price, d.get_value('price_list')));
+			return true;
+		}
+
+		return false;
+	};
+
 	// Auto-fetch rate from Item Price when item_code or price_list changes
-	let fetch_rate = function () {
+	let fetch_rate = function (fetch_item_details = true) {
 		let ic = d.get_value('item_code');
 		let pl = d.get_value('price_list');
 		if (ic && pl) {
-			frappe.db.get_value('Item', ic, 'stock_uom', function (uom_result) {
-				item.uom = (uom_result && uom_result.stock_uom) || item.uom;
-			});
+			let lookup_price_list = item.category === 'Aluminium' ? get_aluminium_backend_price_list(pl) : pl;
 
-			frappe.call({
-				method: 'frappe.client.get_value',
-				args: {
-					doctype: 'Item Price',
-					filters: { item_code: ic, price_list: pl, selling: 1 },
-					fieldname: 'price_list_rate'
-				},
-				callback: function (r) {
-					if (r.message && r.message.price_list_rate) {
-						d.set_value('rate', r.message.price_list_rate);
-					} else {
-						// Hidden standard_rate mirrors retail, so it remains the base fallback.
-						frappe.db.get_value('Item', ic, 'standard_rate', function (r2) {
-							if (r2 && r2.standard_rate) {
-								d.set_value('rate', r2.standard_rate);
+			if (item.category === 'Aluminium') {
+				if (fetch_item_details) {
+					frappe.call({
+						method: 'frappe.client.get_value',
+						args: {
+							doctype: 'Item',
+							filters: { name: ic },
+							fieldname: ['item_name', 'stock_uom', 'custom_aluminium_rate_per_kg', 'custom_aluminium_weight_per_length']
+						},
+						callback: function (r) {
+							if (r.message) {
+								item.item_name = r.message.item_name || item.item_name || ic;
+								item.uom = r.message.stock_uom || item.uom;
+								d.set_value('aluminium_rate_per_kg', flt(r.message.custom_aluminium_rate_per_kg || 0));
+								d.set_value('aluminium_weight_per_length', flt(r.message.custom_aluminium_weight_per_length || 0));
 							}
-						});
-					}
+							if (!update_aluminium_rate_from_inputs()) {
+								fetch_item_price_rate(ic, lookup_price_list);
+							}
+						}
+					});
+				} else if (!update_aluminium_rate_from_inputs()) {
+					fetch_item_price_rate(ic, lookup_price_list);
 				}
-			});
+			} else {
+				frappe.db.get_value('Item', ic, ['item_name', 'stock_uom'], function (item_result) {
+					item.item_name = (item_result && item_result.item_name) || item.item_name || ic;
+					item.uom = (item_result && item_result.stock_uom) || item.uom;
+				});
+				fetch_item_price_rate(ic, lookup_price_list);
+			}
 
 			// Fetch glass type if category is Glass
 			if (is_glass) {
@@ -1246,19 +1691,31 @@ function open_item_editor(page, item, is_new = false) {
 
 	// Link fields do not always emit a plain "change" when picked from the suggestion list,
 	// so listen to the selection event as well to populate Retail/Wholesale automatically.
-	d.fields_dict.item_code.df.change = fetch_rate;
-	d.fields_dict.price_list.df.change = fetch_rate;
-	d.fields_dict.item_code.$input.on('change awesomplete-selectcomplete', fetch_rate);
-	d.fields_dict.price_list.$input.on('change', fetch_rate);
+	d.fields_dict.item_code.df.change = function () { fetch_rate(true); };
+	d.fields_dict.price_list.df.change = function () { fetch_rate(false); };
+	d.fields_dict.item_code.$input.on('change awesomplete-selectcomplete', function () { fetch_rate(true); });
+	d.fields_dict.price_list.$input.on('change', function () { fetch_rate(false); });
 
-	if (d.get_value('item_code') && d.get_value('price_list') && !d.get_value('rate')) {
-		fetch_rate();
+	if (item.category === 'Aluminium') {
+		let recalc_aluminium_from_inputs = function () {
+			let ic = d.get_value('item_code');
+			if (!update_aluminium_rate_from_inputs() && ic) {
+				fetch_item_price_rate(ic, get_aluminium_backend_price_list(d.get_value('price_list')));
+			}
+		};
+		d.fields_dict.aluminium_rate_per_kg.$input.on('input change', recalc_aluminium_from_inputs);
+		d.fields_dict.aluminium_weight_per_length.$input.on('input change', recalc_aluminium_from_inputs);
+	}
+
+	if (d.get_value('item_code') && d.get_value('price_list') && (item.category === 'Aluminium' || !d.get_value('rate'))) {
+		fetch_rate(true);
 	}
 
 
 }
 
-function open_glass_import_dialog(page) {
+function open_glass_import_dialog(page, dimension_uom = QB_DEFAULT_GLASS_DIMENSION_UOM) {
+	dimension_uom = normalize_glass_dimension_uom(dimension_uom);
 	let d = new frappe.ui.Dialog({
 		title: 'Import Builder Items from Excel',
 		fields: [
@@ -1268,6 +1725,7 @@ function open_glass_import_dialog(page) {
 				options: `
 						<div style="margin-bottom:12px;color:var(--text-muted);">
 							Expected columns: <b>numbering</b>, <b>width</b>, <b>height</b>, <b>w+</b>, <b>h+</b>, <b>pcs</b>, <b>holes</b>, <b>notches</b>, <b>sandblast</b>, <b>polish_width_side</b>, <b>polish_height_side</b>, <b>details</b>.
+							Widths and heights are read in the selected <b>UOM</b>.
 							For <b>sandblast</b>, use <b>1</b> for Full, <b>0.5</b> for Half, and <b>0</b> or leave it blank for None.
 							This upload now supports <b>glass items only</b>. Pick the glass category and item below, then upload the measurement rows.
 							The selected selling price is applied to all imported rows.
@@ -1296,6 +1754,14 @@ function open_glass_import_dialog(page) {
 					label: 'Selling Price',
 					options: 'Retail\nWholesale\nSpecial',
 					default: 'Retail',
+					reqd: 1
+				},
+				{
+					fieldtype: 'Select',
+					fieldname: 'dimension_uom',
+					label: 'UOM',
+					options: QB_GLASS_DIMENSION_UOM_OPTIONS,
+					default: dimension_uom,
 					reqd: 1
 				},
 				{
@@ -1387,6 +1853,7 @@ function export_review_rows(page) {
 		"No",
 		"WIDTH",
 		"HEIGHT",
+		"UOM",
 		"Pcs",
 		"Reference"
 	];
@@ -1396,6 +1863,30 @@ function export_review_rows(page) {
 	state.items.forEach((i, idx) => {
 		let isGlass = i.category === 'Glass';
 		if (!isGlass) return;
+
+		if (i.sale_mode === 'Sheet') {
+			data.push([
+				'-',
+				'-',
+				'-',
+				'-',
+				'-',
+				'-',
+				'-',
+				format_review_number(i.qty || 0),
+				'-',
+				'-',
+				'-',
+				'-',
+				idx + 1,
+				i.sheet_size || '',
+				format_review_number(i.sheet_sft || 0),
+				'Sheet',
+				flt(i.pcs || 0),
+				i.item_name || i.item_code || ''
+			]);
+			return;
+		}
 
 		let pieces = flt(i.qty || 0);
 		let pw = (flt(i.width_mm || 0) / 305) * pieces;
@@ -1417,8 +1908,9 @@ function export_review_rows(page) {
 			format_review_number(i.notches || 0, 0),
 			format_review_number(get_glass_sandblast_qty(i), 1),
 			idx + 1,
-			format_review_number(i.width_mm || 0, 0),
-			format_review_number(i.height_mm || 0, 0),
+			format_review_number(get_glass_dimension_review_value(i, 'width_mm'), i.dimension_uom === 'inches' ? 2 : 0),
+			format_review_number(get_glass_dimension_review_value(i, 'height_mm'), i.dimension_uom === 'inches' ? 2 : 0),
+			get_glass_dimension_label(i.dimension_uom),
 			pieces,
 			i.item_name || i.item_code || ''
 		]);
