@@ -68,7 +68,12 @@ def execute():
 
     for row in items:
         item = frappe.get_doc("Item", row.name)
-        item.custom_product_code = _get_product_code(item)
-        item.save(ignore_permissions=True)
+        frappe.db.set_value(
+            "Item",
+            row.name,
+            "custom_product_code",
+            _get_product_code(item),
+            update_modified=False,
+        )
 
     frappe.clear_cache(doctype="Item")

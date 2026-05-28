@@ -54,7 +54,6 @@ def execute():
         filters={"item_group": ["in", ["Glass", "Aluminium", "Fittings", "Ceiling", "Rubber", "Silicone"]]},
         fields=item_fields,
     ):
-        doc = frappe.get_doc("Item", row.name)
         product_code = CATEGORY_CODES.get(row.item_group)
         if row.item_group == "Glass":
             if _is_glass_service_item(row.item_name):
@@ -62,7 +61,6 @@ def execute():
             else:
                 glass_type = (getattr(row, "custom_glass_type", None) or "").strip() or _infer_glass_type(row.item_code, row.item_name)
                 product_code = GLASS_CODES.get(glass_type)
-        doc.custom_product_code = product_code
-        doc.save(ignore_permissions=True)
+        frappe.db.set_value("Item", row.name, "custom_product_code", product_code, update_modified=False)
 
     frappe.clear_cache(doctype="Item")

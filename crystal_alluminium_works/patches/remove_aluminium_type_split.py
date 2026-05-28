@@ -34,11 +34,12 @@ def execute():
 
     item_names = frappe.get_all("Item", filters={"item_group": "Aluminium"}, pluck="name")
     for item_name in item_names:
-        item = frappe.get_doc("Item", item_name)
-        if hasattr(item, "custom_aluminium_type"):
-            item.custom_aluminium_type = None
-        if hasattr(item, "custom_product_code"):
-            item.custom_product_code = ALUMINIUM_PRODUCT_CODE
-        item.save(ignore_permissions=True)
+        values = {}
+        if frappe.get_meta("Item").has_field("custom_aluminium_type"):
+            values["custom_aluminium_type"] = None
+        if frappe.get_meta("Item").has_field("custom_product_code"):
+            values["custom_product_code"] = ALUMINIUM_PRODUCT_CODE
+        if values:
+            frappe.db.set_value("Item", item_name, values, update_modified=False)
 
     frappe.clear_cache(doctype="Item")

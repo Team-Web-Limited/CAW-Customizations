@@ -20,11 +20,17 @@ def execute():
             doc.save(ignore_permissions=True)
 
     if frappe.db.exists("Item", "Toughened Glass"):
-        item = frappe.get_doc("Item", "Toughened Glass")
-        item.item_group = "Glass"
-        item.stock_uom = item.stock_uom or "Square Foot"
-        item.custom_glass_type = "Toughened"
-        item.save(ignore_permissions=True)
+        current_stock_uom = frappe.db.get_value("Item", "Toughened Glass", "stock_uom")
+        frappe.db.set_value(
+            "Item",
+            "Toughened Glass",
+            {
+                "item_group": "Glass",
+                "stock_uom": current_stock_uom or "Square Foot",
+                "custom_glass_type": "Toughened",
+            },
+            update_modified=False,
+        )
     elif frappe.db.exists("Item Group", "Glass"):
         item = frappe.get_doc({
             "doctype": "Item",

@@ -25,8 +25,12 @@ def execute():
             custom_field.save(ignore_permissions=True)
 
     for item in frappe.get_all("Item", filters={"item_group": "Glass"}, fields=["name", "item_code", "item_name"]):
-        doc = frappe.get_doc("Item", item.name)
-        doc.custom_glass_type = _infer_glass_type(item.item_code, item.item_name)
-        doc.save(ignore_permissions=True)
+        frappe.db.set_value(
+            "Item",
+            item.name,
+            "custom_glass_type",
+            _infer_glass_type(item.item_code, item.item_name),
+            update_modified=False,
+        )
 
     frappe.clear_cache(doctype="Item")

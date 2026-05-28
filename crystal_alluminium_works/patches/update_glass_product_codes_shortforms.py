@@ -35,8 +35,12 @@ def execute():
         if _is_glass_service_item(row.item_name):
             continue
 
-        item = frappe.get_doc("Item", row.name)
-        item.custom_product_code = GLASS_CODES.get((item.custom_glass_type or "").strip() or "Ordinary")
-        item.save(ignore_permissions=True)
+        frappe.db.set_value(
+            "Item",
+            row.name,
+            "custom_product_code",
+            GLASS_CODES.get((row.custom_glass_type or "").strip() or "Ordinary"),
+            update_modified=False,
+        )
 
     frappe.clear_cache(doctype="Item")
