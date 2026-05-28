@@ -90,7 +90,7 @@ function get_sales_order_breakdown_uom(label, parent_item) {
 
 function download_manager_pdf(doctype, docname, print_format) {
 	const print_url = frappe.urllib.get_full_url(
-		`/printview?doctype=${encodeURIComponent(doctype)}&name=${encodeURIComponent(docname)}&format=${encodeURIComponent(print_format)}&no_letterhead=1&trigger_print=1`
+		`/api/method/frappe.utils.print_format.download_pdf?doctype=${encodeURIComponent(doctype)}&name=${encodeURIComponent(docname)}&format=${encodeURIComponent(print_format)}&no_letterhead=1`
 	);
 
 	window.open(print_url, '_blank');
