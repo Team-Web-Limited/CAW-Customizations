@@ -192,7 +192,7 @@ function render_sales_invoice_other_row(item, index, doc) {
 
 function download_sales_invoice_pdf(docname) {
 	const print_url = frappe.urllib.get_full_url(
-		`/api/method/frappe.utils.print_format.download_pdf?doctype=${encodeURIComponent('Sales Invoice')}&name=${encodeURIComponent(docname)}&format=${encodeURIComponent('Crystal Sales Invoice')}&no_letterhead=1`
+		`/api/method/crystal_alluminium_works.api.download_crystal_sales_invoice_pdf?name=${encodeURIComponent(docname)}`
 	);
 
 	window.open(print_url, '_blank');

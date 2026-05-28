@@ -49,8 +49,7 @@ ALUMINIUM_PRICE_FACTOR = 1.07
 GLASS_SHEET_CONFIG_TYPES = ("Ordinary", "Ready Laminated")
 
 
-@frappe.whitelist()
-def download_crystal_quotation_pdf(name):
+def _download_crystal_pdf(doctype, name, print_format_name, ref_label, terms):
     from bs4 import BeautifulSoup
     from crystal_alluminium_works.create_print_format import build_crystal_print_format_html
     from frappe.translate import print_language
@@ -59,7 +58,7 @@ def download_crystal_quotation_pdf(name):
     from frappe.utils.jinja_globals import is_rtl
     from frappe.www.printview import get_print_style, validate_print_permission
 
-    doc = frappe.get_doc("Quotation", name)
+    doc = frappe.get_doc(doctype, name)
     validate_print_permission(doc)
 
     pdf_options = {
@@ -86,10 +85,10 @@ def download_crystal_quotation_pdf(name):
                 "title": strip_html(cstr(doc.get_title() or doc.name)),
                 "lang": frappe.local.lang,
                 "layout_direction": "rtl" if is_rtl() else "ltr",
-                "doctype": "Quotation",
+                "doctype": doctype,
                 "name": name,
                 "key": "",
-                "print_format": "Crystal Quotation",
+                "print_format": print_format_name,
                 "letterhead": "",
                 "no_letterhead": 1,
                 "pdf_generator": "wkhtmltopdf",
@@ -115,6 +114,36 @@ def download_crystal_quotation_pdf(name):
     frappe.local.response.filename = f"{name.replace(' ', '-').replace('/', '-')}.pdf"
     frappe.local.response.filecontent = pdf_file
     frappe.local.response.type = "pdf"
+
+
+@frappe.whitelist()
+def download_crystal_quotation_pdf(name):
+    _download_crystal_pdf(
+        "Quotation",
+        name,
+        "Crystal Quotation",
+        "Quotation Reference",
+        (
+            "1. Quotation valid for 14 days from date of issue.<br>"
+            "2. 60% advance payment required to commence production.<br>"
+            "3. Delivery times to be confirmed upon receipt of advance."
+        ),
+    )
+
+
+@frappe.whitelist()
+def download_crystal_sales_invoice_pdf(name):
+    _download_crystal_pdf(
+        "Sales Invoice",
+        name,
+        "Crystal Sales Invoice",
+        "Invoice Number",
+        (
+            "1. Payment is due within the stipulated time frame.<br>"
+            "2. Goods remain the property of Crystal Aluminium Works until fully paid for.<br>"
+            "3. Any discrepancies must be reported within 3 days of delivery."
+        ),
+    )
 
 
 def _dimension_range_has_field(fieldname):

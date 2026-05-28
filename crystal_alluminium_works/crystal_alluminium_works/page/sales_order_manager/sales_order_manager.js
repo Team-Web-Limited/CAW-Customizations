@@ -89,6 +89,15 @@ function get_sales_order_breakdown_uom(label, parent_item) {
 }
 
 function download_manager_pdf(doctype, docname, print_format) {
+	if (doctype === 'Sales Invoice' && print_format === 'Crystal Sales Invoice') {
+		const print_url = frappe.urllib.get_full_url(
+			`/api/method/crystal_alluminium_works.api.download_crystal_sales_invoice_pdf?name=${encodeURIComponent(docname)}`
+		);
+
+		window.open(print_url, '_blank');
+		return;
+	}
+
 	const print_url = frappe.urllib.get_full_url(
 		`/api/method/frappe.utils.print_format.download_pdf?doctype=${encodeURIComponent(doctype)}&name=${encodeURIComponent(docname)}&format=${encodeURIComponent(print_format)}&no_letterhead=1`
 	);
