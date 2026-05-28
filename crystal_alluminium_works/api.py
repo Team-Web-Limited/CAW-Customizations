@@ -4,7 +4,7 @@ from frappe.model.rename_doc import rename_doc
 from frappe.utils.file_manager import save_file
 from frappe.utils import flt
 from crystal_alluminium_works.pricing_engine import GLASS_SERVICE_ITEM_DEFS, ensure_glass_service_items
-from crystal_alluminium_works.create_custom_fields import GLASS_SALE_MODE_OPTIONS
+from crystal_alluminium_works.create_custom_fields import GLASS_SALE_MODE_OPTIONS, ITEM_GLASS_TYPE_OPTIONS
 from crystal_alluminium_works.setup_glass_sheet_config import run_setup as setup_glass_sheet_config
 
 GLASS_TYPE_OPTIONS = ["Ordinary", "Laminated", "Ready Laminated", "Toughened"]
@@ -155,6 +155,38 @@ def _item_has_field(fieldname):
     return frappe.get_meta("Item").has_field(fieldname)
 
 
+def _ensure_glass_type_storage():
+    if not _item_has_field("custom_glass_type"):
+        from crystal_alluminium_works.create_custom_fields import add_item_custom_fields
+        add_item_custom_fields()
+
+    custom_field_name = frappe.db.exists("Custom Field", {"dt": "Item", "fieldname": "custom_glass_type"})
+    if not custom_field_name:
+        return
+
+    current_options = frappe.db.get_value("Custom Field", custom_field_name, "options") or ""
+    if current_options == ITEM_GLASS_TYPE_OPTIONS:
+        return
+
+    custom_field = frappe.get_doc("Custom Field", custom_field_name)
+    custom_field.options = ITEM_GLASS_TYPE_OPTIONS
+    custom_field.save(ignore_permissions=True)
+    frappe.clear_cache(doctype="Item")
+
+
+def _infer_glass_type(item_code=None, item_name=None, fallback=None):
+    source = f"{item_code or ''} {item_name or ''}".lower()
+    if "ready laminated" in source:
+        return "Ready Laminated"
+    if "toughened" in source:
+        return "Toughened"
+    if "laminated" in source:
+        return "Laminated"
+    if fallback in GLASS_TYPE_OPTIONS:
+        return fallback
+    return "Ordinary"
+
+
 def _get_aluminium_price_components(rate_per_kg=0, weight_per_length=0):
     normal_price = flt(rate_per_kg) * flt(weight_per_length)
     mill_finished_price = normal_price / ALUMINIUM_PRICE_FACTOR if ALUMINIUM_PRICE_FACTOR else normal_price
@@ -262,15 +294,20 @@ def _get_builder_item_by_product_code(product_code, allowed_groups=None):
         "item_group": ["in", allowed_groups],
         "custom_product_code": product_code,
     }
+    item_fields = ["name", "item_code", "item_name", "stock_uom", "item_group"]
+    if _item_has_field("custom_glass_type"):
+        item_fields.append("custom_glass_type")
     items = frappe.get_all(
         "Item",
         filters=filters,
-        fields=["name", "item_code", "item_name", "stock_uom", "item_group", "custom_glass_type"],
+        fields=item_fields,
     )
     items = [
         item for item in items
         if not (item.get("item_group") == "Glass" and _is_glass_service_item(item.get("item_name")))
     ]
+    for item in items:
+        item.custom_glass_type = _infer_glass_type(item.item_code, item.item_name, item.get("custom_glass_type"))
 
     if not items:
         group_label = " or ".join(allowed_groups)
@@ -287,14 +324,15 @@ def _get_builder_item_by_item_code(item_code, product_code=None, allowed_groups=
     if not item_code:
         frappe.throw("Item code is required for this import row.")
 
-    item = frappe.db.get_value(
-        "Item",
-        item_code,
-        ["name", "item_code", "item_name", "stock_uom", "item_group", "custom_product_code", "custom_glass_type"],
-        as_dict=True,
-    )
+    item_fields = ["name", "item_code", "item_name", "stock_uom", "item_group", "custom_product_code"]
+    if _item_has_field("custom_glass_type"):
+        item_fields.append("custom_glass_type")
+
+    item = frappe.db.get_value("Item", item_code, item_fields, as_dict=True)
     if not item:
         frappe.throw(f"No item was found for item code {item_code}.")
+
+    item.custom_glass_type = _infer_glass_type(item.item_code, item.item_name, item.get("custom_glass_type"))
 
     if allowed_groups and item.item_group not in allowed_groups:
         group_label = ", ".join(allowed_groups)
@@ -1265,11 +1303,14 @@ def get_items_with_prices(category):
     storage_category = _get_storage_category(category)
     if storage_category == "Aluminium":
         _ensure_aluminium_pricing_storage()
+    glass_type_field_exists = _item_has_field("custom_glass_type")
     filters = {"item_group": storage_category}
-    if category in GLASS_CATEGORY_TO_TYPE:
+    if category in GLASS_CATEGORY_TO_TYPE and glass_type_field_exists:
         filters["custom_glass_type"] = GLASS_CATEGORY_TO_TYPE[category]
 
-    item_fields = ["name", "item_code", "item_name", "stock_uom", "standard_rate", "custom_glass_type"]
+    item_fields = ["name", "item_code", "item_name", "stock_uom", "standard_rate"]
+    if glass_type_field_exists:
+        item_fields.append("custom_glass_type")
     if _item_has_field("custom_product_code"):
         item_fields.append("custom_product_code")
     if storage_category == "Aluminium":
@@ -1283,6 +1324,11 @@ def get_items_with_prices(category):
     if storage_category == "Glass":
         service_keywords = ["Polishing", "Drilling", "Sandblasting", "Hole", "Notching", "Notch"]
         items = [i for i in items if not any(k in (i.item_name or "") for k in service_keywords)]
+        for item in items:
+            item.custom_glass_type = _infer_glass_type(item.item_code, item.item_name, item.get("custom_glass_type"))
+        if category in GLASS_CATEGORY_TO_TYPE and not glass_type_field_exists:
+            expected_glass_type = GLASS_CATEGORY_TO_TYPE[category]
+            items = [item for item in items if item.custom_glass_type == expected_glass_type]
     
     # Fetch Item Prices for these items
     item_codes = [i.name for i in items]
@@ -1457,6 +1503,7 @@ def save_custom_item(data):
         frappe.throw("Aluminium rate/kg and weight/length cannot be negative.")
 
     if storage_category == "Glass":
+        _ensure_glass_type_storage()
         _ensure_glass_type_options()
     elif storage_category == "Aluminium":
         _ensure_aluminium_pricing_storage()
@@ -1483,8 +1530,9 @@ def save_custom_item(data):
             "stock_uom": uom,
             "is_stock_item": 0,
             "standard_rate": retail_rate,
-            "custom_glass_type": glass_type if storage_category == "Glass" else None,
         })
+        if _item_has_field("custom_glass_type"):
+            item.custom_glass_type = glass_type if storage_category == "Glass" else None
         if _item_has_field("custom_aluminium_type"):
             item.custom_aluminium_type = aluminium_type if storage_category == "Aluminium" else None
         if _item_has_field("custom_aluminium_rate_per_kg"):
@@ -1507,7 +1555,8 @@ def save_custom_item(data):
         item.item_group = storage_category
         item.stock_uom = uom
         item.standard_rate = retail_rate
-        item.custom_glass_type = glass_type if storage_category == "Glass" else None
+        if _item_has_field("custom_glass_type"):
+            item.custom_glass_type = glass_type if storage_category == "Glass" else None
         if _item_has_field("custom_aluminium_type"):
             item.custom_aluminium_type = aluminium_type if storage_category == "Aluminium" else None
         if _item_has_field("custom_aluminium_rate_per_kg"):

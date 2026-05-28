@@ -4,6 +4,7 @@
 
 [post_model_sync]
 # Patches added in this section will be executed after doctypes are migrated
+crystal_alluminium_works.patches.create_item_glass_type_field
 crystal_alluminium_works.patches.add_aluminium_metres_field
 crystal_alluminium_works.patches.add_ceiling_square_metres_field
 crystal_alluminium_works.patches.add_glass_inches_and_toughened

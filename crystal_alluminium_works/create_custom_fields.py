@@ -3,6 +3,7 @@ from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 
 PRODUCT_CATEGORY_OPTIONS = "\nAluminium\nGlass\nFittings\nCeiling\nRubber\nSilicone"
 GLASS_SALE_MODE_OPTIONS = "Resized\nFull Sheet\nSheet"
+ITEM_GLASS_TYPE_OPTIONS = "Ordinary\nLaminated\nReady Laminated\nToughened"
 
 
 def _get_crystal_item_fields(read_only=False):
@@ -295,6 +296,22 @@ def add_custom_fields():
 
     create_custom_fields(custom_fields)
     print("Custom fields added to Quotation Item, Sales Order Item, Sales Invoice Item, and Sales Invoice")
+
+
+def add_item_custom_fields():
+    create_custom_fields({
+        "Item": [
+            {
+                "fieldname": "custom_glass_type",
+                "label": "Glass Type",
+                "fieldtype": "Select",
+                "options": ITEM_GLASS_TYPE_OPTIONS,
+                "insert_after": "item_group",
+                "depends_on": "eval:doc.item_group=='Glass'",
+            },
+        ]
+    })
+    frappe.clear_cache(doctype="Item")
 
 
 if __name__ == "__main__":
