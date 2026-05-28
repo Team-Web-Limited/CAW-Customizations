@@ -243,6 +243,10 @@ def build_crystal_print_format_html(ref_label, terms):
     {{% set outstanding_display_amount = total_amount %}}
 {{% elif doc.doctype == 'Sales Invoice' %}}
     {{% set paid_display_amount = frappe.utils.flt(total_amount - outstanding_display_amount) %}}
+    {{% if paid_display_amount > -0.5 and paid_display_amount < 0.5 %}}
+        {{% set paid_display_amount = 0 %}}
+        {{% set outstanding_display_amount = total_amount %}}
+    {{% endif %}}
 {{% endif %}}
 
 <div class="row" style="margin-top: 30px;">
