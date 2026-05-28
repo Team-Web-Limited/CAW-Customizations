@@ -49,28 +49,24 @@ ALUMINIUM_PRICE_FACTOR = 1.07
 GLASS_SHEET_CONFIG_TYPES = ("Ordinary", "Ready Laminated")
 
 
-def _ensure_crystal_quotation_print_format():
-    print_format = frappe.db.get_value(
-        "Print Format",
-        "Crystal Quotation",
-        ["html", "disabled"],
-        as_dict=True,
-    )
-    needs_refresh = (
-        not print_format
-        or print_format.disabled
-        or "Crystal Aluminium Works" not in (print_format.html or "")
-        or "cq-table" not in (print_format.html or "")
-    )
+@frappe.whitelist()
+def download_crystal_quotation_pdf(name):
+    from bs4 import BeautifulSoup
+    from crystal_alluminium_works.create_print_format import build_crystal_print_format_html
+    from frappe.translate import print_language
+    from frappe.utils import cstr, strip_html
+    from frappe.utils.pdf import get_pdf
+    from frappe.utils.jinja_globals import is_rtl
+    from frappe.www.printview import get_print_style, validate_print_permission
 
-    if not needs_refresh:
-        return
+    doc = frappe.get_doc("Quotation", name)
+    validate_print_permission(doc)
 
-    from crystal_alluminium_works.create_print_format import create_crystal_print_format
-
-    create_crystal_print_format(
-        doctype="Quotation",
-        print_format_name="Crystal Quotation",
+    pdf_options = {
+        "load-error-handling": "ignore",
+        "load-media-error-handling": "ignore",
+    }
+    template_html = build_crystal_print_format_html(
         ref_label="Quotation Reference",
         terms=(
             "1. Quotation valid for 14 days from date of issue.<br>"
@@ -78,34 +74,25 @@ def _ensure_crystal_quotation_print_format():
             "3. Delivery times to be confirmed upon receipt of advance."
         ),
     )
-    frappe.db.set_value("Print Format", "Crystal Quotation", "disabled", 0)
-    frappe.clear_cache(doctype="Print Format")
-
-
-@frappe.whitelist()
-def download_crystal_quotation_pdf(name):
-    from bs4 import BeautifulSoup
-    from frappe.translate import print_language
-    from frappe.utils.pdf import get_pdf
-    from frappe.www.printview import validate_print_permission
-
-    doc = frappe.get_doc("Quotation", name)
-    validate_print_permission(doc)
-    _ensure_crystal_quotation_print_format()
-
-    pdf_options = {
-        "load-error-handling": "ignore",
-        "load-media-error-handling": "ignore",
-    }
 
     with print_language(doc.get("language") or frappe.local.lang):
-        html = frappe.get_print(
-            "Quotation",
-            name,
-            "Crystal Quotation",
-            doc=doc,
-            no_letterhead=1,
-            pdf_generator="wkhtmltopdf",
+        body = frappe.render_template(template_html, {"doc": doc})
+        html = frappe.get_template("www/printview.html").render(
+            {
+                "body": body,
+                "print_style": get_print_style(),
+                "comment": frappe.session.user,
+                "title": strip_html(cstr(doc.get_title() or doc.name)),
+                "lang": frappe.local.lang,
+                "layout_direction": "rtl" if is_rtl() else "ltr",
+                "doctype": "Quotation",
+                "name": name,
+                "key": "",
+                "print_format": "Crystal Quotation",
+                "letterhead": "",
+                "no_letterhead": 1,
+                "pdf_generator": "wkhtmltopdf",
+            }
         )
 
     soup = BeautifulSoup(html, "html5lib")

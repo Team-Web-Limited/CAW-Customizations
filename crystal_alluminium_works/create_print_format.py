@@ -1,6 +1,6 @@
 import frappe
 
-def create_crystal_print_format(doctype, print_format_name, ref_label, terms):
+def build_crystal_print_format_html(ref_label, terms):
     html = f"""
 {{% macro short_uom(value) %}}
     {{% set normalized = (value or '')|trim|lower %}}
@@ -280,6 +280,12 @@ def create_crystal_print_format(doctype, print_format_name, ref_label, terms):
     </div>
 </div>
 """
+
+    return html
+
+
+def create_crystal_print_format(doctype, print_format_name, ref_label, terms):
+    html = build_crystal_print_format_html(ref_label, terms)
 
     if not frappe.db.exists("Print Format", print_format_name):
         doc = frappe.get_doc({
