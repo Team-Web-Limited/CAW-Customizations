@@ -49,6 +49,39 @@ ALUMINIUM_PRICE_FACTOR = 1.07
 GLASS_SHEET_CONFIG_TYPES = ("Ordinary", "Ready Laminated")
 
 
+def _ensure_crystal_quotation_print_format():
+    print_format = frappe.db.get_value(
+        "Print Format",
+        "Crystal Quotation",
+        ["html", "disabled"],
+        as_dict=True,
+    )
+    needs_refresh = (
+        not print_format
+        or print_format.disabled
+        or "Crystal Aluminium Works" not in (print_format.html or "")
+        or "cq-table" not in (print_format.html or "")
+    )
+
+    if not needs_refresh:
+        return
+
+    from crystal_alluminium_works.create_print_format import create_crystal_print_format
+
+    create_crystal_print_format(
+        doctype="Quotation",
+        print_format_name="Crystal Quotation",
+        ref_label="Quotation Reference",
+        terms=(
+            "1. Quotation valid for 14 days from date of issue.<br>"
+            "2. 60% advance payment required to commence production.<br>"
+            "3. Delivery times to be confirmed upon receipt of advance."
+        ),
+    )
+    frappe.db.set_value("Print Format", "Crystal Quotation", "disabled", 0)
+    frappe.clear_cache(doctype="Print Format")
+
+
 @frappe.whitelist()
 def download_crystal_quotation_pdf(name):
     from bs4 import BeautifulSoup
@@ -58,6 +91,7 @@ def download_crystal_quotation_pdf(name):
 
     doc = frappe.get_doc("Quotation", name)
     validate_print_permission(doc)
+    _ensure_crystal_quotation_print_format()
 
     pdf_options = {
         "load-error-handling": "ignore",
