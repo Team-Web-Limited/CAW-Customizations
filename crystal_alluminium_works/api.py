@@ -6,6 +6,7 @@ from frappe.utils import flt
 from crystal_alluminium_works.pricing_engine import GLASS_SERVICE_ITEM_DEFS, ensure_glass_service_items
 from crystal_alluminium_works.create_custom_fields import GLASS_SALE_MODE_OPTIONS, ITEM_GLASS_TYPE_OPTIONS
 from crystal_alluminium_works.setup_glass_sheet_config import run_setup as setup_glass_sheet_config
+from crystal_alluminium_works.setup_ceiling_config import create_doctype as setup_ceiling_configuration_doctype
 
 GLASS_TYPE_OPTIONS = ["Ordinary", "Laminated", "Ready Laminated", "Toughened"]
 ALUMINIUM_PRODUCT_CODE = "A01"
@@ -101,6 +102,10 @@ def _ensure_aluminium_pricing_storage():
 
 def _ensure_glass_sheet_config_storage():
     setup_glass_sheet_config()
+
+
+def _ensure_ceiling_configuration_storage():
+    setup_ceiling_configuration_doctype()
 
 
 def _ensure_glass_sale_mode_options():
@@ -1303,6 +1308,8 @@ def get_items_with_prices(category):
     storage_category = _get_storage_category(category)
     if storage_category == "Aluminium":
         _ensure_aluminium_pricing_storage()
+    elif category == "Ceiling":
+        _ensure_ceiling_configuration_storage()
     glass_type_field_exists = _item_has_field("custom_glass_type")
     filters = {"item_group": storage_category}
     if category in GLASS_CATEGORY_TO_TYPE and glass_type_field_exists:
@@ -1511,6 +1518,8 @@ def save_custom_item(data):
         retail_rate = aluminium_prices["normal_price"]
         wholesale_rate = aluminium_prices["mill_finished_price"]
         special_rate = aluminium_prices["special_price"]
+    elif category == "Ceiling":
+        _ensure_ceiling_configuration_storage()
     
     # Determine UOM based on category
     uom = _get_category_uom(category)
