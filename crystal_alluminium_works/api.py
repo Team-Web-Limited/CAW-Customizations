@@ -179,6 +179,12 @@ def _ensure_glass_type_storage():
     frappe.clear_cache(doctype="Item")
 
 
+def _ensure_product_code_storage():
+    if not _item_has_field("custom_product_code"):
+        from crystal_alluminium_works.create_custom_fields import add_item_custom_fields
+        add_item_custom_fields()
+
+
 def _infer_glass_type(item_code=None, item_name=None, fallback=None):
     source = f"{item_code or ''} {item_name or ''}".lower()
     if "ready laminated" in source:
@@ -190,6 +196,20 @@ def _infer_glass_type(item_code=None, item_name=None, fallback=None):
     if fallback in GLASS_TYPE_OPTIONS:
         return fallback
     return "Ordinary"
+
+
+def _infer_product_code(item_group=None, item_code=None, item_name=None, glass_type=None, fallback=None):
+    if fallback:
+        return fallback
+
+    item_group = (item_group or "").strip()
+    if item_group == "Glass":
+        if _is_glass_service_item(item_name):
+            return None
+        return GLASS_TYPE_TO_PRODUCT_CODE.get(_infer_glass_type(item_code, item_name, glass_type))
+    if item_group == "Aluminium":
+        return ALUMINIUM_PRODUCT_CODE
+    return CATEGORY_PRODUCT_CODES.get(item_group)
 
 
 def _get_aluminium_price_components(rate_per_kg=0, weight_per_length=0):
@@ -295,13 +315,15 @@ def _get_builder_item_by_product_code(product_code, allowed_groups=None):
         frappe.throw("Product code is required for import.")
 
     allowed_groups = allowed_groups or ["Glass", "Aluminium"]
-    filters = {
-        "item_group": ["in", allowed_groups],
-        "custom_product_code": product_code,
-    }
+    has_product_code_field = _item_has_field("custom_product_code")
+    filters = {"item_group": ["in", allowed_groups]}
+    if has_product_code_field:
+        filters["custom_product_code"] = product_code
     item_fields = ["name", "item_code", "item_name", "stock_uom", "item_group"]
     if _item_has_field("custom_glass_type"):
         item_fields.append("custom_glass_type")
+    if has_product_code_field:
+        item_fields.append("custom_product_code")
     items = frappe.get_all(
         "Item",
         filters=filters,
@@ -313,6 +335,16 @@ def _get_builder_item_by_product_code(product_code, allowed_groups=None):
     ]
     for item in items:
         item.custom_glass_type = _infer_glass_type(item.item_code, item.item_name, item.get("custom_glass_type"))
+        item.custom_product_code = _infer_product_code(
+            item.item_group,
+            item.item_code,
+            item.item_name,
+            item.custom_glass_type,
+            item.get("custom_product_code"),
+        )
+
+    if not has_product_code_field:
+        items = [item for item in items if (item.custom_product_code or "").strip().upper() == product_code]
 
     if not items:
         group_label = " or ".join(allowed_groups)
@@ -329,7 +361,9 @@ def _get_builder_item_by_item_code(item_code, product_code=None, allowed_groups=
     if not item_code:
         frappe.throw("Item code is required for this import row.")
 
-    item_fields = ["name", "item_code", "item_name", "stock_uom", "item_group", "custom_product_code"]
+    item_fields = ["name", "item_code", "item_name", "stock_uom", "item_group"]
+    if _item_has_field("custom_product_code"):
+        item_fields.append("custom_product_code")
     if _item_has_field("custom_glass_type"):
         item_fields.append("custom_glass_type")
 
@@ -338,6 +372,13 @@ def _get_builder_item_by_item_code(item_code, product_code=None, allowed_groups=
         frappe.throw(f"No item was found for item code {item_code}.")
 
     item.custom_glass_type = _infer_glass_type(item.item_code, item.item_name, item.get("custom_glass_type"))
+    item.custom_product_code = _infer_product_code(
+        item.item_group,
+        item.item_code,
+        item.item_name,
+        item.custom_glass_type,
+        item.get("custom_product_code"),
+    )
 
     if allowed_groups and item.item_group not in allowed_groups:
         group_label = ", ".join(allowed_groups)
@@ -1511,14 +1552,17 @@ def save_custom_item(data):
 
     if storage_category == "Glass":
         _ensure_glass_type_storage()
+        _ensure_product_code_storage()
         _ensure_glass_type_options()
     elif storage_category == "Aluminium":
+        _ensure_product_code_storage()
         _ensure_aluminium_pricing_storage()
         aluminium_prices = _get_aluminium_price_components(aluminium_rate_per_kg, aluminium_weight_per_length)
         retail_rate = aluminium_prices["normal_price"]
         wholesale_rate = aluminium_prices["mill_finished_price"]
         special_rate = aluminium_prices["special_price"]
     elif category == "Ceiling":
+        _ensure_product_code_storage()
         _ensure_ceiling_configuration_storage()
     
     # Determine UOM based on category

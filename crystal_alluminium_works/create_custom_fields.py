@@ -309,6 +309,13 @@ def add_item_custom_fields():
                 "insert_after": "item_group",
                 "depends_on": "eval:doc.item_group=='Glass'",
             },
+            {
+                "fieldname": "custom_product_code",
+                "label": "Product Code",
+                "fieldtype": "Data",
+                "insert_after": "custom_glass_type",
+                "read_only": 1,
+            },
         ]
     })
     frappe.clear_cache(doctype="Item")
