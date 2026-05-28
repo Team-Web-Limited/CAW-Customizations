@@ -65,6 +65,7 @@ def download_crystal_quotation_pdf(name):
     pdf_options = {
         "load-error-handling": "ignore",
         "load-media-error-handling": "ignore",
+        "zoom": "0.75",
     }
     template_html = build_crystal_print_format_html(
         ref_label="Quotation Reference",
