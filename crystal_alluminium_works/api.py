@@ -1,5 +1,6 @@
 import frappe
 import json
+import os
 from frappe.model.rename_doc import rename_doc
 from frappe.utils.file_manager import save_file
 from frappe.utils import flt
@@ -46,6 +47,52 @@ TOUGHENED_GLASS_INTERVAL_SET = "Toughened Glass"
 VAT_RATE = 0.16
 ALUMINIUM_PRICE_FACTOR = 1.07
 GLASS_SHEET_CONFIG_TYPES = ("Ordinary", "Ready Laminated")
+
+
+@frappe.whitelist()
+def download_crystal_quotation_pdf(name):
+    from bs4 import BeautifulSoup
+    from frappe.translate import print_language
+    from frappe.utils.pdf import get_pdf
+    from frappe.www.printview import validate_print_permission
+
+    doc = frappe.get_doc("Quotation", name)
+    validate_print_permission(doc)
+
+    pdf_options = {
+        "load-error-handling": "ignore",
+        "load-media-error-handling": "ignore",
+    }
+
+    with print_language(doc.get("language") or frappe.local.lang):
+        html = frappe.get_print(
+            "Quotation",
+            name,
+            "Crystal Quotation",
+            doc=doc,
+            no_letterhead=1,
+            pdf_generator="wkhtmltopdf",
+        )
+
+    soup = BeautifulSoup(html, "html5lib")
+    for stylesheet in soup.find_all("link", rel=lambda rel: rel and "stylesheet" in rel):
+        href = (stylesheet.get("href") or "").split("?", 1)[0]
+        if not href.startswith("/assets/"):
+            continue
+
+        css_path = os.path.join(frappe.local.sites_path, href.lstrip("/"))
+        if not os.path.exists(css_path):
+            continue
+
+        style = soup.new_tag("style")
+        style.string = frappe.read_file(css_path)
+        stylesheet.replace_with(style)
+
+    pdf_file = get_pdf(str(soup), options=pdf_options)
+
+    frappe.local.response.filename = f"{name.replace(' ', '-').replace('/', '-')}.pdf"
+    frappe.local.response.filecontent = pdf_file
+    frappe.local.response.type = "pdf"
 
 
 def _dimension_range_has_field(fieldname):

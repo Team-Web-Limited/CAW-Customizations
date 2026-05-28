@@ -851,7 +851,7 @@ function bind_action_events(page, doc, sales_orders, sales_invoices) {
 	// ── Print PDF ──
 	$('#btn-print').on('click', () => {
 		let print_url = frappe.urllib.get_full_url(
-			`/api/method/frappe.utils.print_format.download_pdf?doctype=Quotation&name=${encodeURIComponent(doc.name)}&format=Crystal%20Quotation&no_letterhead=1`
+			`/api/method/crystal_alluminium_works.api.download_crystal_quotation_pdf?name=${encodeURIComponent(doc.name)}`
 		);
 		window.open(print_url, '_blank');
 	});
