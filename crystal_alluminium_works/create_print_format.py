@@ -72,11 +72,11 @@ def build_crystal_print_format_html(ref_label, terms):
     }}
 </style>
 
-{{% set has_aluminium_rows = namespace(value=false) %}}
+{{% set has_color_rows = namespace(value=false) %}}
 {{% set has_glass_rows = namespace(value=false) %}}
 {{% for row in doc.items %}}
-    {{% if not row.custom_auto_generated and (row.custom_product_category or '') == 'Aluminium' %}}
-        {{% set has_aluminium_rows.value = true %}}
+    {{% if not row.custom_auto_generated and (row.custom_aluminium_color or '')|trim %}}
+        {{% set has_color_rows.value = true %}}
     {{% endif %}}
     {{% if not row.custom_auto_generated and (row.custom_product_category or '') == 'Glass' %}}
         {{% set has_glass_rows.value = true %}}
@@ -88,7 +88,7 @@ def build_crystal_print_format_html(ref_label, terms):
         <tr>
             <th style="text-align: left; white-space: nowrap;">Code</th>
             <th style="text-align: left; white-space: nowrap;">Item</th>
-            {{% if has_aluminium_rows.value %}}
+            {{% if has_color_rows.value %}}
             <th style="text-align: center; white-space: nowrap;">Color</th>
             {{% endif %}}
             <th style="text-align: center; white-space: nowrap;">Pcs</th>
@@ -118,8 +118,17 @@ def build_crystal_print_format_html(ref_label, terms):
                     {{% set qty = parent.custom_aluminium_metres or 0 %}}
                     {{% set uom = parent.uom or 'Meter' %}}
                 {{% elif parent_category == 'Ceiling' %}}
-                    {{% set qty = parent.custom_ceiling_sq_m or 0 %}}
-                    {{% set uom = parent.uom or 'Square Meter' %}}
+                    {{% if frappe.utils.flt(parent.custom_ceiling_sq_m or 0) > 0 %}}
+                        {{% set qty = parent.custom_ceiling_sq_m or 0 %}}
+                        {{% set uom = parent.uom or 'Square Meter' %}}
+                    {{% else %}}
+                        {{% set qty = parent.qty or 0 %}}
+                        {{% if parent.item_code in ['AMC', 'AGC'] %}}
+                            {{% set uom = parent.uom or 'Square Meter' %}}
+                        {{% else %}}
+                            {{% set uom = parent.uom or 'Nos' %}}
+                        {{% endif %}}
+                    {{% endif %}}
                 {{% elif parent_category == 'Glass' %}}
                     {{% if parent.custom_glass_sale_mode == 'Full Sheet' %}}
                         {{% set qty = parent.qty or 0 %}}
@@ -160,9 +169,13 @@ def build_crystal_print_format_html(ref_label, terms):
                 {{% if parent_category == 'Glass' %}}
                     {{% set display_width = frappe.utils.flt(parent.custom_width_mm or 0, 0) or '-' %}}
                     {{% set display_height = frappe.utils.flt(parent.custom_height_mm or 0, 0) or '-' %}}
-                    {{% if parent.custom_glass_sale_mode not in ['Full Sheet', 'Sheet'] and frappe.utils.flt(parent.custom_area_sqft or 0) %}}
+                    {{% if parent.custom_glass_sale_mode not in ['Full Sheet', 'Sheet'] and frappe.utils.flt(parent.custom_area_sqft or 0) > 0 %}}
                         {{% set display_rate = (parent.rate or 0) / frappe.utils.flt(parent.custom_area_sqft or 0) %}}
                     {{% endif %}}
+                {{% elif parent_category == 'Aluminium' and frappe.utils.flt(parent.custom_aluminium_metres or 0) > 0 %}}
+                    {{% set display_rate = (parent.rate or 0) / frappe.utils.flt(parent.custom_aluminium_metres or 0) %}}
+                {{% elif parent_category == 'Ceiling' and frappe.utils.flt(parent.custom_ceiling_sq_m or 0) > 0 %}}
+                    {{% set display_rate = (parent.rate or 0) / frappe.utils.flt(parent.custom_ceiling_sq_m or 0) %}}
                 {{% endif %}}
                 {{% for child in child_rows.items %}}
                     {{% set child_label = ((child.item_name or child.item_code or '')|lower) %}}
@@ -177,11 +190,9 @@ def build_crystal_print_format_html(ref_label, terms):
                 <tr>
                     <td style="font-weight: bold; white-space: nowrap;">{{{{ parent.item_code or '' }}}}</td>
                     <td>{{{{ parent.item_name or parent.item_code or '' }}}}</td>
-                    {{% if has_aluminium_rows.value %}}
+                    {{% if has_color_rows.value %}}
                     <td style="text-align: center; white-space: nowrap;">
-                        {{% if parent_category == 'Aluminium' %}}
-                            {{{{ parent.custom_aluminium_color or '-' }}}}
-                        {{% else %}}-{{% endif %}}
+                        {{{{ parent.custom_aluminium_color or '-' }}}}
                     </td>
                     {{% endif %}}
                     <td style="text-align: center; white-space: nowrap;">{{{{ frappe.utils.flt(pieces, 2) }}}}</td>
@@ -217,7 +228,7 @@ def build_crystal_print_format_html(ref_label, terms):
         {{% endfor %}}
         {{% if doc.doctype == 'Quotation' %}}
         <tr>
-            <td colspan="{{{{ 3 if has_aluminium_rows.value else 2 }}}}" style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
+            <td colspan="{{{{ 3 if has_color_rows.value else 2 }}}}" style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
             <td style="text-align: center; white-space: nowrap; font-weight: bold;">{{{{ frappe.utils.flt(quotation_totals.pcs, 2) }}}}</td>
             <td style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
             <td style="text-align: center; white-space: nowrap; font-weight: bold;">{{{{ frappe.utils.flt(quotation_totals.qty, 3) }}}}</td>

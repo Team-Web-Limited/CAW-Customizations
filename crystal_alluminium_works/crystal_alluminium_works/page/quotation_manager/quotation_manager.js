@@ -12,6 +12,14 @@ frappe.pages['quotation-manager'].on_page_load = function(wrapper) {
 	wrapper.page = page; // Store page for use in on_page_show
 };
 
+const QM_CEILING_COMPONENTS = [
+	{ label: 'Board', ratio: 0.36, mode: 'divide' },
+	{ label: 'MainT', ratio: 0.25, mode: 'multiply' },
+	{ label: 'Sub Cross 4ft', ratio: 1.33, mode: 'multiply' },
+	{ label: 'Sub Cross 2ft', ratio: 1.33, mode: 'multiply' },
+	{ label: 'Wall angle', ratio: 0.25, mode: 'multiply' }
+];
+
 function get_manager_item_uom_label(item) {
 	if (item.custom_product_category === 'Glass' && item.custom_glass_sale_mode === 'Full Sheet') {
 		return 'Nos';
@@ -92,6 +100,15 @@ function format_manager_review_number(value, precision = 3) {
 	let number = flt(value || 0);
 	let rounded = parseFloat(number.toFixed(precision));
 	return Number.isFinite(rounded) ? rounded : 0;
+}
+
+function get_manager_ceiling_component_breakdown(quantity) {
+	quantity = flt(quantity || 0);
+	return QM_CEILING_COMPONENTS.map(component => {
+		let ratio = flt(component.ratio || 0);
+		let qty = component.mode === 'divide' && ratio ? quantity / ratio : quantity * ratio;
+		return { label: component.label, qty: Math.trunc(qty) };
+	});
 }
 
 function get_manager_polish_sides_label(item) {
@@ -201,14 +218,37 @@ function render_manager_review_fittings_row(item, index, doc) {
 	`;
 }
 
-function render_manager_review_other_row(item, index, doc) {
+function render_manager_review_ceiling_row(item, index, doc, display_amount = null) {
+	let price_list = doc ? doc.selling_price_list : 'Retail';
+	let quantity = flt(item.custom_ceiling_sq_m || 0);
+	let is_bundle = quantity > 0;
+	let rate = is_bundle && quantity ? (flt(item.rate || 0) / quantity) : flt(item.rate || 0);
+	let amount = display_amount === null ? item.amount : display_amount;
+	let components = get_manager_ceiling_component_breakdown(quantity);
+
+	return `
+		<tr>
+			<td style="text-align:center;">${index + 1}</td>
+			<td style="font-weight:500;">${frappe.utils.escape_html(item.item_name || item.item_code || '')}</td>
+			<td style="text-align:center;">${item.qty || '-'}</td>
+			<td style="text-align:center;">${is_bundle ? format_manager_review_number(quantity) : '-'}</td>
+			<td style="text-align:center;white-space:nowrap;">${is_bundle ? 'sft' : '-'}</td>
+			${QM_CEILING_COMPONENTS.map((component, idx) => `<td style="text-align:center;white-space:nowrap;">${is_bundle ? format_manager_review_number((components[idx] || {}).qty, 0) : '-'}</td>`).join('')}
+			<td style="text-align:center;">
+				<span style="background:var(--subtle-fg);padding:2px 8px;border-radius:6px;font-size:12px;">${price_list}</span>
+			</td>
+			<td style="text-align:right;">${format_currency(rate, doc ? doc.currency : 'KES')}</td>
+			<td style="text-align:right;font-weight:600;">${format_currency(amount, doc ? doc.currency : 'KES')}</td>
+		</tr>
+	`;
+}
+
+function render_manager_review_other_row(item, index, doc, display_amount = null) {
 	let category = item.custom_product_category || item.item_group || 'Other';
-	let cat_color = {'Ceiling':'#2ecc71','Fittings':'#e67e22','Rubber':'#8e44ad','Silicone':'#16a085'}[category] || '#7f8c8d';
+	let cat_color = {'Fittings':'#e67e22','Rubber':'#8e44ad','Silicone':'#16a085'}[category] || '#7f8c8d';
 	let price_list = doc ? doc.selling_price_list : 'Retail';
 	let rate = item.rate;
-	if (category === 'Ceiling' && item.custom_ceiling_sq_m) {
-		rate = item.rate / item.custom_ceiling_sq_m;
-	}
+	let amount = display_amount === null ? item.amount : display_amount;
 	return `
 		<tr>
 			<td style="text-align:center;">${index + 1}</td>
@@ -222,7 +262,7 @@ function render_manager_review_other_row(item, index, doc) {
 				<span style="background:var(--subtle-fg);padding:2px 8px;border-radius:6px;font-size:12px;">${price_list}</span>
 			</td>
 			<td style="text-align:right;">${format_currency(rate, doc ? doc.currency : 'KES')}</td>
-			<td style="text-align:right;font-weight:600;">${format_currency(item.amount, doc ? doc.currency : 'KES')}</td>
+			<td style="text-align:right;font-weight:600;">${format_currency(amount, doc ? doc.currency : 'KES')}</td>
 		</tr>
 	`;
 }
@@ -301,8 +341,9 @@ function render_quotation_dashboard(page, quotation_name, wrapper) {
 		let glass_items = manual_items.filter(i => i.custom_product_category === 'Glass');
 		let aluminium_items = manual_items.filter(i => i.custom_product_category === 'Aluminium');
 		let fittings_items = manual_items.filter(i => i.custom_product_category === 'Fittings');
+		let ceiling_items = manual_items.filter(i => i.custom_product_category === 'Ceiling');
 		let other_items = manual_items.filter(i =>
-			!['Glass', 'Aluminium', 'Fittings'].includes(i.custom_product_category)
+			!['Glass', 'Aluminium', 'Fittings', 'Ceiling'].includes(i.custom_product_category)
 		);
 
 		let service_rows_by_parent = {};
@@ -323,6 +364,7 @@ function render_quotation_dashboard(page, quotation_name, wrapper) {
 		let glass_total = glass_items.reduce((s, i) => s + get_item_total(i), 0);
 		let aluminium_total = aluminium_items.reduce((s, i) => s + get_item_total(i), 0);
 		let fittings_total = fittings_items.reduce((s, i) => s + get_item_total(i), 0);
+		let ceiling_total = ceiling_items.reduce((s, i) => s + get_item_total(i), 0);
 		let other_total = other_items.reduce((s, i) => s + get_item_total(i), 0);
 
 		let glass_html = '';
@@ -424,6 +466,38 @@ function render_quotation_dashboard(page, quotation_name, wrapper) {
 			`;
 		}
 
+		let ceiling_html = '';
+		if (ceiling_items.length) {
+			ceiling_html = `
+				<div style="margin-bottom:24px;">
+					<h5 style="margin:0 0 10px 0;font-size:15px;font-weight:600;color:#2ecc71;display:flex;align-items:center;gap:8px;">
+						<span style="background:#2ecc7120;padding:3px 10px;border-radius:10px;font-size:12px;">🟩</span> Ceiling Items
+						<span style="margin-left:auto;font-size:13px;color:var(--text-muted);font-weight:500;">Subtotal: ${format_currency(ceiling_total, doc.currency)}</span>
+					</h5>
+					<div class="qm-table-wrap">
+						<table class="qm-table qm-review-table" style="background:var(--card-bg); margin-bottom:0; min-width:1180px;">
+							<thead>
+								<tr>
+									<th style="text-align:center;white-space:nowrap;">No</th>
+									<th style="white-space:nowrap;">Item</th>
+									<th style="text-align:center;white-space:nowrap;">Qty</th>
+									<th style="text-align:center;white-space:nowrap;">Quantity</th>
+									<th style="text-align:center;white-space:nowrap;">UOM</th>
+									${QM_CEILING_COMPONENTS.map(component => `<th style="text-align:center;white-space:nowrap;">${frappe.utils.escape_html(component.label)}</th>`).join('')}
+									<th style="text-align:center;white-space:nowrap;">Price List</th>
+									<th style="text-align:right;white-space:nowrap;">Rate</th>
+									<th style="text-align:right;white-space:nowrap;">Amount</th>
+								</tr>
+							</thead>
+							<tbody>
+								${ceiling_items.map((i, index) => render_manager_review_ceiling_row(i, index, doc, get_item_total(i))).join('')}
+							</tbody>
+						</table>
+					</div>
+				</div>
+			`;
+		}
+
 		let other_html = '';
 		if (other_items.length) {
 			other_html = `
@@ -447,7 +521,7 @@ function render_quotation_dashboard(page, quotation_name, wrapper) {
 								</tr>
 							</thead>
 							<tbody>
-								${other_items.map((i, index) => render_manager_review_other_row(i, index, doc)).join('')}
+								${other_items.map((i, index) => render_manager_review_other_row(i, index, doc, get_item_total(i))).join('')}
 							</tbody>
 						</table>
 					</div>
@@ -543,8 +617,9 @@ function render_quotation_dashboard(page, quotation_name, wrapper) {
 					${glass_html}
 					${aluminium_html}
 					${fittings_html}
+					${ceiling_html}
 					${other_html}
-					${(!glass_html && !aluminium_html && !fittings_html && !other_html) ? '<p style="text-align:center;color:var(--text-muted);padding:20px;">No items in this quotation.</p>' : ''}
+					${(!glass_html && !aluminium_html && !fittings_html && !ceiling_html && !other_html) ? '<p style="text-align:center;color:var(--text-muted);padding:20px;">No items in this quotation.</p>' : ''}
 				</div>
 				<div class="qm-total-row">
 					<span style="font-size: 16px; font-weight: 600;">Grand Total</span>
@@ -716,12 +791,14 @@ function bind_action_events(page, doc, sales_orders, sales_invoices) {
 				pcs: item.custom_glass_sale_mode === 'Sheet' ? sheet_details.pcs : item.qty,
 				metres: aluminium_metres || 1,
 				aluminium_color: item.custom_aluminium_color || '',
-				square_metres: ceiling_sq_m || 1,
-					rate: category === 'Aluminium' && aluminium_metres
-						? (item.rate / aluminium_metres)
-						: (category === 'Ceiling' && ceiling_sq_m
-							? (item.rate / ceiling_sq_m)
-							: (category === 'Glass' ? get_builder_glass_base_rate(item) : item.rate)),
+				quantity: ceiling_sq_m || 0,
+				square_metres: ceiling_sq_m || 0,
+				ceiling_mode: ceiling_sq_m ? 'bundle' : 'single',
+				rate: category === 'Aluminium' && aluminium_metres
+					? (item.rate / aluminium_metres)
+					: (category === 'Ceiling' && ceiling_sq_m
+						? (item.rate / ceiling_sq_m)
+						: (category === 'Glass' ? get_builder_glass_base_rate(item) : item.rate)),
 					amount: display_amount,
 					// Glass-specific
 					sale_mode: item.custom_glass_sale_mode || 'Resized',

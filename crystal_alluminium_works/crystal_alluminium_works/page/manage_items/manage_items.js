@@ -93,6 +93,7 @@ function bind_manage_items_events(page) {
 		$(page.body).find('.mi-config-btn').toggle(is_glass);
 		$(page.body).find('.mi-service-btn').toggle(is_glass);
 		$(page.body).find('.mi-color-btn').toggle(is_aluminium);
+		$(page.body).find('.mi-export-aluminium-btn').toggle(is_aluminium);
 		$(page.body).find('.mi-sheets-btn').toggle(is_sheet_glass);
 	};
 
@@ -125,6 +126,10 @@ function bind_manage_items_events(page) {
 
 	$(page.body).on('click', '.mi-color-btn', function() {
 		open_aluminium_colors_modal(page);
+	});
+
+	$(page.body).on('click', '.mi-export-aluminium-btn', function() {
+		export_aluminium_items();
 	});
 
 	// Add new item
@@ -353,6 +358,19 @@ function open_upload_modal(page, category) {
 			});
 		});
 	}
+}
+
+function export_aluminium_items() {
+	frappe.call({
+		method: 'crystal_alluminium_works.api.export_aluminium_items',
+		freeze: true,
+		freeze_message: 'Preparing aluminium export...',
+		callback: function(r) {
+			if (!r.exc && r.message && r.message.file_url) {
+				window.open(r.message.file_url, '_blank');
+			}
+		}
+	});
 }
 
 function load_category_tab(page, category) {
@@ -1169,6 +1187,7 @@ function get_manage_items_html() {
 			<h2 style="margin:0;font-weight:600;">Product Catalog</h2>
 			<div style="display:flex; gap:8px;">
 				<button class="btn btn-default mi-color-btn" style="display:none;">⚙️ Configure Color</button>
+				<button class="btn btn-default mi-export-aluminium-btn" style="display:none;">Export Aluminium</button>
 				<button class="btn btn-default mi-config-btn" style="display:none;">⚙️ Configure Intervals</button>
 				<button class="btn btn-default mi-sheets-btn" style="display:none;">⚙️ Configure Sheets</button>
 				<button class="btn btn-default mi-service-btn" style="display:none;">⚙️ Configure Service Rates</button>

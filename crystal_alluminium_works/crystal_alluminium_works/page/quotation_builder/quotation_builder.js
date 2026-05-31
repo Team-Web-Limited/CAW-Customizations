@@ -46,6 +46,27 @@ const QB_ALUMINIUM_PRICE_LIST_TO_LABEL = {
 	'Special': 'Special Price'
 };
 const QB_SHEET_GLASS_TYPES = new Set(['Ordinary', 'Ready Laminated']);
+const QB_CEILING_COMPONENTS = [
+	{ label: 'Board', ratio: 0.36, mode: 'divide' },
+	{ label: 'MainT', ratio: 0.25, mode: 'multiply' },
+	{ label: 'Sub Cross 4ft', ratio: 1.33, mode: 'multiply' },
+	{ label: 'Sub Cross 2ft', ratio: 1.33, mode: 'multiply' },
+	{ label: 'Wall angle', ratio: 0.25, mode: 'multiply' }
+];
+const QB_CEILING_COMPONENT_ITEM_CODES = QB_CEILING_COMPONENTS.map(component => component.label);
+const QB_CEILING_BOARD_ITEM_CODES = new Set(['AMC', 'AGC']);
+
+function is_ceiling_board_item(item) {
+	return QB_CEILING_BOARD_ITEM_CODES.has((item.item_code || '').trim());
+}
+
+function get_ceiling_single_review_label(item) {
+	let item_code = (item.item_code || '').trim();
+	if (is_ceiling_board_item(item)) {
+		return 'Board';
+	}
+	return (item.item_name || item.item_code || '').trim();
+}
 
 function normalize_glass_dimension_uom(uom) {
 	return (uom || '').toLowerCase() === 'inches' ? 'inches' : 'mm';
@@ -92,6 +113,10 @@ function get_item_selling_price_label(item) {
 	return item.category === 'Aluminium' ? get_aluminium_price_label(item.price_list) : (item.price_list || 'Retail');
 }
 
+function get_ceiling_mode_price_list(ceiling_mode) {
+	return ceiling_mode === 'bundle' ? 'Wholesale' : 'Retail';
+}
+
 function is_sheet_glass_type(glass_type) {
 	return QB_SHEET_GLASS_TYPES.has(glass_type || '');
 }
@@ -136,13 +161,17 @@ function get_glass_add_choice_fields(default_uom, glass_type) {
 }
 
 function get_aluminium_color_options() {
-	let options = [''];
+	let options = ['None'];
 	(window.qb_state.aluminium_colors || []).forEach(color => {
-		if (color) {
+		if (color && color.trim().toLowerCase() !== 'none') {
 			options.push(color);
 		}
 	});
 	return options.join('\n');
+}
+
+function normalize_aluminium_color_selection(value) {
+	return value === 'None' ? '' : (value || '');
 }
 
 function ensure_aluminium_colors(callback) {
@@ -189,6 +218,10 @@ function bind_events(page) {
 			d.show();
 			return;
 		}
+		if (category === 'Ceiling') {
+			open_ceiling_add_choice(page);
+			return;
+		}
 		add_item_row(page, category);
 	});
 
@@ -207,6 +240,10 @@ function get_item_display_qty(item) {
 		return flt(item.pcs || 0);
 	}
 
+	if (item.category === 'Ceiling') {
+		return item.ceiling_mode === 'bundle' ? 1 : flt(item.qty || 0);
+	}
+
 	return item.qty;
 }
 
@@ -219,12 +256,15 @@ function get_item_uom_label(item) {
 		return 'len';
 	}
 
-	if (item.uom) {
-		return item.uom;
+	if (item.category === 'Ceiling') {
+		if (item.ceiling_mode === 'bundle' || is_ceiling_board_item(item)) {
+			return item.uom || 'Square Meter';
+		}
+		return item.uom || 'Nos';
 	}
 
-	if (item.category === 'Ceiling') {
-		return 'Square Meter';
+	if (item.uom) {
+		return item.uom;
 	}
 
 	if (item.category === 'Glass') {
@@ -240,7 +280,9 @@ function get_item_uom_qty(item) {
 	}
 
 	if (item.category === 'Ceiling') {
-		return flt(item.square_metres || 0);
+		return item.ceiling_mode === 'bundle'
+			? flt(item.quantity || item.square_metres || 0)
+			: flt(item.qty || 0);
 	}
 
 	if (item.category === 'Glass') {
@@ -267,7 +309,10 @@ function calculate_item_amount(item) {
 	}
 
 	if (item.category === 'Ceiling') {
-		return qty * flt(item.square_metres || 0) * rate;
+		if (item.ceiling_mode === 'bundle') {
+			return flt(item.quantity || item.square_metres || 0) * rate;
+		}
+		return qty * rate;
 	}
 
 	if (item.category === 'Glass') {
@@ -307,6 +352,62 @@ function format_review_number(value, precision = 3) {
 	let number = flt(value || 0);
 	let rounded = parseFloat(number.toFixed(precision));
 	return Number.isFinite(rounded) ? rounded : 0;
+}
+
+function get_ceiling_component_breakdown(quantity) {
+	quantity = flt(quantity || 0);
+	return QB_CEILING_COMPONENTS.map(component => {
+		let ratio = flt(component.ratio || 0);
+		let qty = component.mode === 'divide' && ratio ? quantity / ratio : quantity * ratio;
+		return { label: component.label, qty: Math.trunc(qty) };
+	});
+}
+
+function render_ceiling_component_breakdown(quantity) {
+	let rows = get_ceiling_component_breakdown(quantity);
+	return `
+		<div style="margin-top:6px;color:var(--text-muted);font-size:12px;line-height:1.5;">
+			${rows.map(row => `${frappe.utils.escape_html(row.label)}: ${format_review_number(row.qty, 2)} pcs`).join('<br>')}
+		</div>
+	`;
+}
+
+function get_ceiling_review_config(items) {
+	let has_bundle = (items || []).some(item => item.ceiling_mode === 'bundle');
+	if (has_bundle) {
+		return {
+			has_bundle: true,
+			show_quantity: true,
+			show_uom: true,
+			columns: QB_CEILING_COMPONENTS.map(component => ({
+				label: component.label,
+				key: component.label,
+				bundle_component: true
+			}))
+		};
+	}
+
+	let seen = new Set();
+	let columns = [];
+	(items || []).forEach(item => {
+		let label = get_ceiling_single_review_label(item);
+		if (!label || seen.has(label)) {
+			return;
+		}
+		seen.add(label);
+		columns.push({
+			label: label,
+			key: label,
+			bundle_component: false
+		});
+	});
+
+	return {
+		has_bundle: false,
+		show_quantity: false,
+		show_uom: true,
+		columns: columns
+	};
 }
 
 function get_polish_sides_label(item) {
@@ -593,14 +694,30 @@ function render_review_fittings_row(item, index) {
 	`;
 }
 
-function render_review_other_row(item, index) {
+function render_review_other_row(item, index, ceiling_review = null) {
+	let is_ceiling_bundle = item.category === 'Ceiling' && item.ceiling_mode === 'bundle';
+	let ceiling_quantity = item.quantity || item.square_metres || 0;
+	let ceiling_components = is_ceiling_bundle ? get_ceiling_component_breakdown(ceiling_quantity) : [];
+	let ceiling_cells = '';
+	if (item.category === 'Ceiling' && ceiling_review) {
+		ceiling_cells = ceiling_review.columns.map((column, column_index) => {
+			if (ceiling_review.has_bundle) {
+				return `<td style="text-align:center;white-space:nowrap;">${is_ceiling_bundle ? format_review_number((ceiling_components[column_index] || {}).qty, 0) : '-'}</td>`;
+			}
+
+			let item_label = get_ceiling_single_review_label(item);
+			return `<td style="text-align:center;white-space:nowrap;">${item_label === column.key ? format_review_number(item.qty || 0, 0) : '-'}</td>`;
+		}).join('');
+	}
 	return `
 		<tr>
 			<td style="text-align:center;">${index + 1}</td>
 			<td style="font-weight:500;">${frappe.utils.escape_html(item.item_name || item.item_code || '')}</td>
-			<td style="white-space:pre-wrap;">${item.description ? frappe.utils.escape_html(item.description) : '-'}</td>
+			${item.category !== 'Ceiling' ? `<td style="white-space:pre-wrap;">${item.description ? frappe.utils.escape_html(item.description) : '-'}</td>` : ''}
 			<td style="text-align:center;">${item.qty || '-'}</td>
-			${item.category === 'Ceiling' ? `<td style="text-align:center;">${format_review_number(item.square_metres || 0)}</td>` : ''}
+			${item.category === 'Ceiling' && ceiling_review && ceiling_review.show_quantity ? `<td style="text-align:center;">${is_ceiling_bundle ? format_review_number(ceiling_quantity) : '-'}</td>` : ''}
+			${item.category === 'Ceiling' && ceiling_review && ceiling_review.show_uom ? `<td style="text-align:center;white-space:nowrap;">${get_item_uom_label(item)}</td>` : ''}
+			${item.category === 'Ceiling' ? ceiling_cells : ''}
 			<td style="text-align:center;">
 				<span style="background:var(--subtle-fg);padding:2px 8px;border-radius:6px;font-size:12px;">${get_item_selling_price_label(item)}</span>
 			</td>
@@ -618,6 +735,7 @@ function render_review_category_section(items, category) {
 	let meta = get_review_category_meta(category);
 	let subtotal = items.reduce((sum, item) => sum + (item.amount || 0), 0);
 	let is_ceiling = category === 'Ceiling';
+	let ceiling_review = is_ceiling ? get_ceiling_review_config(items) : null;
 
 	return `
 		<div style="margin-bottom:24px;">
@@ -631,16 +749,18 @@ function render_review_category_section(items, category) {
 						<tr>
 							<th style="text-align:center;white-space:nowrap;">No</th>
 							<th style="white-space:nowrap;">Item</th>
-							<th style="white-space:nowrap;">Description</th>
+							${!is_ceiling ? '<th style="white-space:nowrap;">Description</th>' : ''}
 							<th style="text-align:center;white-space:nowrap;">Qty</th>
-							${is_ceiling ? '<th style="text-align:center;white-space:nowrap;">Square Metres</th>' : ''}
+							${is_ceiling && ceiling_review.show_quantity ? '<th style="text-align:center;white-space:nowrap;">Quantity</th>' : ''}
+							${is_ceiling && ceiling_review.show_uom ? '<th style="text-align:center;white-space:nowrap;">UOM</th>' : ''}
+							${is_ceiling ? ceiling_review.columns.map(column => `<th style="text-align:center;white-space:nowrap;">${frappe.utils.escape_html(column.label)}</th>`).join('') : ''}
 							<th style="text-align:center;white-space:nowrap;">Price List</th>
-							<th style="text-align:right;white-space:nowrap;">${is_ceiling ? 'Rate / Sq M' : 'Rate'}</th>
+							<th style="text-align:right;white-space:nowrap;">Rate</th>
 							<th style="text-align:right;white-space:nowrap;">Amount</th>
 						</tr>
 					</thead>
 					<tbody>
-						${items.map((item, index) => render_review_other_row(item, index)).join('')}
+						${items.map((item, index) => render_review_other_row(item, index, ceiling_review)).join('')}
 					</tbody>
 				</table>
 			</div>
@@ -913,7 +1033,7 @@ function load_glass_sheet_configs(glass_type, callback) {
 	});
 }
 
-function add_item_row(page, category, glass_type = 'Ordinary', dimension_uom = QB_DEFAULT_GLASS_DIMENSION_UOM, glass_mode = 'Cut Size') {
+function add_item_row(page, category, glass_type = 'Ordinary', dimension_uom = QB_DEFAULT_GLASS_DIMENSION_UOM, glass_mode = 'Cut Size', ceiling_mode = 'single') {
 	let id = frappe.utils.get_random(8);
 	let glass_dimension_uom = normalize_glass_dimension_uom(dimension_uom);
 	let normalized_glass_mode = category === 'Glass' ? normalize_glass_mode(glass_mode, glass_type) : 'Cut Size';
@@ -925,13 +1045,17 @@ function add_item_row(page, category, glass_type = 'Ordinary', dimension_uom = Q
 		item_name: '',
 		uom: '',
 		description: '',
-		price_list: category === 'Aluminium' ? 'Normal Price' : (is_sheet_mode ? 'Wholesale' : 'Retail'),
+		price_list: category === 'Aluminium'
+			? 'Normal Price'
+			: (category === 'Ceiling' ? get_ceiling_mode_price_list(ceiling_mode) : (is_sheet_mode ? 'Wholesale' : 'Retail')),
 		qty: 1,
 		pcs: 1,
 		metres: 1,
 		aluminium_rate_per_kg: 0,
 		aluminium_weight_per_length: 0,
-		square_metres: 1,
+		quantity: category === 'Ceiling' ? 100 : 0,
+		square_metres: category === 'Ceiling' ? 100 : 0,
+		ceiling_mode: category === 'Ceiling' ? ceiling_mode : '',
 		rate: 0,
 		amount: 0,
 		dimension_uom: category === 'Glass' ? glass_dimension_uom : '',
@@ -995,6 +1119,29 @@ function add_item_row(page, category, glass_type = 'Ordinary', dimension_uom = Q
 
 	open_item_editor(page, item, true);
 } // Added to close add_item_row
+
+function open_ceiling_add_choice(page) {
+	let d = new frappe.ui.Dialog({
+		title: 'Add Ceiling Item',
+		fields: [
+			{
+				fieldtype: 'Select',
+				fieldname: 'ceiling_mode',
+				label: 'Type',
+				options: 'Single Item\nCeiling Bundle',
+				default: 'Single Item',
+				reqd: 1
+			}
+		],
+		primary_action_label: 'Continue',
+		primary_action: function (values) {
+			d.hide();
+			let ceiling_mode = values.ceiling_mode === 'Ceiling Bundle' ? 'bundle' : 'single';
+			add_item_row(page, 'Ceiling', 'Ordinary', QB_DEFAULT_GLASS_DIMENSION_UOM, 'Cut Size', ceiling_mode);
+		}
+	});
+	d.show();
+}
 
 function open_glass_add_choice(page) {
 	let d = new frappe.ui.Dialog({
@@ -1064,6 +1211,12 @@ function render_items_table(page) {
 			let tip = item.glass_breakdown.map(b => `${b.label}: ${format_currency(b.amount, 'KES')}`).join('\n');
 			breakdown_html = `<span title="${tip}" style="margin-left:4px;cursor:help;font-size:11px;color:var(--text-muted);">📋</span>`;
 		}
+		if (item.category === 'Ceiling' && item.ceiling_mode === 'bundle') {
+			let tip = get_ceiling_component_breakdown(item.quantity || item.square_metres || 0)
+				.map(b => `${b.label}: ${format_review_number(b.qty, 2)} pcs`)
+				.join('\n');
+			breakdown_html = `<span title="${tip}" style="margin-left:4px;cursor:help;font-size:11px;color:var(--text-muted);">📋</span>`;
+		}
 
 		$tbody.append(`
 			<tr data-id="${item.id}">
@@ -1110,6 +1263,13 @@ function render_items_table(page) {
 function open_item_editor(page, item, is_new = false) {
 	let is_glass = item.category === 'Glass';
 	let is_ceiling = item.category === 'Ceiling';
+	if (is_ceiling && !item.ceiling_mode) {
+		item.ceiling_mode = flt(item.quantity || item.square_metres || 0) > 0 ? 'bundle' : 'single';
+	}
+	let is_ceiling_bundle = is_ceiling && item.ceiling_mode === 'bundle';
+	if (is_ceiling) {
+		item.price_list = get_ceiling_mode_price_list(item.ceiling_mode);
+	}
 	let is_sheet_glass = is_glass && (item.glass_mode === 'Sheet' || item.sale_mode === 'Sheet');
 
 	if (is_sheet_glass && (!item.sheet_configs || !item.sheet_configs.length)) {
@@ -1155,6 +1315,14 @@ function open_item_editor(page, item, is_new = false) {
 
 					return { filters: f };
 				}
+				if (item.category === 'Ceiling' && item.ceiling_mode === 'bundle') {
+					return {
+						filters: [
+							['Item', 'item_group', '=', 'Ceiling'],
+							['Item', 'item_code', 'in', Array.from(QB_CEILING_BOARD_ITEM_CODES)]
+						]
+					};
+				}
 				return { filters: filters };
 			},
 			default: item.item_code
@@ -1166,8 +1334,10 @@ function open_item_editor(page, item, is_new = false) {
 			fieldname: 'price_list',
 			label: 'Selling Price',
 			reqd: 1,
-			read_only: is_sheet_glass ? 1 : 0,
-			default: item.category === 'Aluminium' ? get_aluminium_price_label(item.price_list) : (is_sheet_glass ? 'Wholesale' : (item.price_list || 'Retail'))
+			read_only: is_sheet_glass || is_ceiling ? 1 : 0,
+			default: item.category === 'Aluminium'
+				? get_aluminium_price_label(item.price_list)
+				: (is_ceiling ? get_ceiling_mode_price_list(item.ceiling_mode) : (is_sheet_glass ? 'Wholesale' : (item.price_list || 'Retail')))
 		},
 		{ fieldtype: 'Section Break' },
 		{
@@ -1175,13 +1345,17 @@ function open_item_editor(page, item, is_new = false) {
 			fieldname: is_sheet_glass ? 'pcs' : 'qty',
 			label: 'Pcs',
 			default: is_sheet_glass ? (item.pcs || 1) : (item.qty || 1),
-			reqd: 1
+			reqd: is_ceiling_bundle ? 0 : 1,
+			read_only: is_ceiling_bundle ? 1 : 0,
+			hidden: is_ceiling_bundle ? 1 : 0
 		},
 		{ fieldtype: 'Column Break' },
 		{
 			fieldtype: 'Currency',
 			fieldname: 'rate',
-			label: item.category === 'Aluminium' ? 'Rate Per Piece' : (is_ceiling ? 'Rate Per Square Metre' : 'Rate'),
+			label: item.category === 'Aluminium'
+				? 'Rate Per Piece'
+				: (is_ceiling ? (is_ceiling_bundle ? 'Rate Per Sqm' : 'Rate Per Piece') : 'Rate'),
 			default: item.rate || 0,
 			read_only: item.category === 'Aluminium' || is_sheet_glass ? 1 : 0
 		}
@@ -1238,15 +1412,15 @@ function open_item_editor(page, item, is_new = false) {
 				default: item.aluminium_weight_per_length || 0
 			},
 			{ fieldtype: 'Section Break', label: 'Item Details' },
-			{ fieldtype: 'Select', fieldname: 'aluminium_color', label: 'Color', options: get_aluminium_color_options(), default: item.aluminium_color || '' },
+			{ fieldtype: 'Select', fieldname: 'aluminium_color', label: 'Color', options: get_aluminium_color_options(), default: item.aluminium_color || 'None' },
 			{ fieldtype: 'Column Break' },
 			{ fieldtype: 'Small Text', fieldname: 'description', label: 'Description', default: item.description || '' }
 		);
 	}
 
-	if (is_ceiling) {
+	if (is_ceiling_bundle) {
 		fields.push(
-			{ fieldtype: 'Float', fieldname: 'square_metres', label: 'Square Metres', default: item.square_metres || 1, reqd: 1 }
+			{ fieldtype: 'Float', fieldname: 'quantity', label: 'Quantity (sqm)', default: item.quantity || item.square_metres || 100, reqd: 1 }
 		);
 	}
 
@@ -1299,20 +1473,57 @@ function open_item_editor(page, item, is_new = false) {
 			item.item_code = values.item_code;
 			item.item_name = item.item_name || values.item_code;
 			item.description = values.description || '';
-			item.price_list = values.price_list || 'Retail';
+			item.price_list = is_ceiling ? get_ceiling_mode_price_list(item.ceiling_mode) : (values.price_list || 'Retail');
 			item.qty = values.qty || 1;
+			item.ceiling_mode = is_ceiling ? (item.ceiling_mode || 'single') : '';
 			if (item.category === 'Aluminium') {
 				item.price_list = get_aluminium_price_label(values.price_list || 'Normal Price');
 				item.metres = 1;
 				item.aluminium_rate_per_kg = values.aluminium_rate_per_kg || 0;
 				item.aluminium_weight_per_length = values.aluminium_weight_per_length || 0;
-				item.aluminium_color = values.aluminium_color || '';
+				item.aluminium_color = normalize_aluminium_color_selection(values.aluminium_color);
 			} else {
 				item.metres = 0;
 				item.aluminium_color = '';
 			}
-			item.square_metres = is_ceiling ? (values.square_metres || 1) : 0;
+			item.quantity = is_ceiling_bundle ? (values.quantity || 100) : 0;
+			item.square_metres = item.quantity;
 			item.rate = values.rate || 0;
+
+			if (is_ceiling_bundle) {
+				item.qty = 1;
+				frappe.call({
+					method: 'crystal_alluminium_works.api.calculate_ceiling_total',
+					args: {
+						item_code: item.item_code,
+						price_list: item.price_list,
+						quantity: item.quantity
+					},
+					freeze: true,
+					freeze_message: 'Calculating...',
+					callback: function (r) {
+						if (r.message) {
+							item.rate = r.message.base_rate ?? item.rate;
+							item.amount = r.message.total ?? calculate_item_amount(item);
+							item.ceiling_breakdown = r.message.breakdown || [];
+						} else {
+							item.amount = calculate_item_amount(item);
+							item.ceiling_breakdown = [];
+						}
+						if (is_new) {
+							window.qb_state.items.push(item);
+						}
+						d.hide();
+						render_items_table(page);
+					}
+				});
+				return;
+			}
+
+			if (is_ceiling) {
+				item.amount = calculate_item_amount(item);
+				item.ceiling_breakdown = [];
+			}
 
 			if (is_glass) {
 				if (is_sheet_glass) {
@@ -1492,7 +1703,7 @@ function open_item_editor(page, item, is_new = false) {
 			}
 			field.df.options = get_aluminium_color_options();
 			field.refresh();
-			d.set_value('aluminium_color', item.aluminium_color || '');
+			d.set_value('aluminium_color', item.aluminium_color || 'None');
 		});
 	}
 

@@ -4,7 +4,14 @@ import os
 from frappe.model.rename_doc import rename_doc
 from frappe.utils.file_manager import save_file
 from frappe.utils import flt
-from crystal_alluminium_works.pricing_engine import GLASS_SERVICE_ITEM_DEFS, ensure_glass_service_items
+from crystal_alluminium_works.pricing_engine import (
+    CEILING_COMPONENTS,
+    GLASS_SERVICE_ITEM_DEFS,
+    ensure_glass_service_items,
+    ensure_ceiling_component_items,
+    get_ceiling_whole_piece_qty,
+    get_item_rate,
+)
 from crystal_alluminium_works.create_custom_fields import GLASS_SALE_MODE_OPTIONS, ITEM_GLASS_TYPE_OPTIONS
 from crystal_alluminium_works.setup_glass_sheet_config import run_setup as setup_glass_sheet_config
 from crystal_alluminium_works.setup_ceiling_config import create_doctype as setup_ceiling_configuration_doctype
@@ -383,6 +390,9 @@ def _get_selling_rate(item_code, price_list):
 def _get_builder_price_list(category, price_list):
     if category == "Aluminium":
         return ALUMINIUM_BUILDER_PRICE_LIST_MAP.get(price_list or "", "Retail")
+    if category == "Ceiling":
+        normalized = (price_list or "").strip().lower()
+        return "Wholesale" if normalized == "wholesale" else "Retail"
     return price_list or "Retail"
 
 
@@ -950,7 +960,11 @@ def create_quotation_from_builder(customer, items, quotation_name=None):
     
     for item in items:
         category = item.get("category", "")
-        row_price_list = _get_builder_price_list(category, item.get("price_list"))
+        if category == "Ceiling":
+            enforced_price_list = "Wholesale" if item.get("ceiling_mode") == "bundle" else "Retail"
+            row_price_list = _get_builder_price_list(category, enforced_price_list)
+        else:
+            row_price_list = _get_builder_price_list(category, item.get("price_list"))
         row_data = {
             "item_code": item.get("item_code"),
             "qty": item.get("qty", 1),
@@ -1004,12 +1018,18 @@ def create_quotation_from_builder(customer, items, quotation_name=None):
             })
             row_data["custom_aluminium_color"] = item.get("aluminium_color") or None
         elif category == "Ceiling":
-            square_metres = frappe.utils.flt(item.get("square_metres", 1) or 1)
-            rate_per_sq_m = frappe.utils.flt(item.get("rate", 0)) / 1.16
-            row_data.update({
-                "rate": square_metres * rate_per_sq_m,
-                "custom_ceiling_sq_m": square_metres,
-            })
+            if item.get("ceiling_mode") == "bundle":
+                square_metres = frappe.utils.flt(item.get("quantity", item.get("square_metres", 100)) or 100)
+                row_data.update({
+                    "qty": 1,
+                    "rate": square_metres * frappe.utils.flt(item.get("rate", 0)),
+                    "custom_ceiling_sq_m": square_metres,
+                })
+            else:
+                row_data.update({
+                    "qty": item.get("qty", 1),
+                    "custom_ceiling_sq_m": 0,
+                })
 
         quo.append("items", row_data)
     
@@ -1439,6 +1459,43 @@ def calculate_glass_total(item_code, price_list, qty, sale_mode, width_mm, heigh
     }
 
 @frappe.whitelist()
+def calculate_ceiling_total(item_code, price_list, quantity):
+    quantity = frappe.utils.flt(quantity or 100)
+    price_list = price_list or "Retail"
+    parent_rate = get_item_rate(item_code, price_list, fallback_rate=0) / 1.16
+    parent_amount = quantity * parent_rate
+    breakdown = [{
+        "label": frappe.get_cached_value("Item", item_code, "item_name") or item_code,
+        "qty": quantity,
+        "rate": parent_rate,
+        "amount": parent_amount,
+    }]
+    total = parent_amount
+
+    # Ensure component items exist so we can fetch their prices
+    try:
+        ensure_ceiling_component_items()
+    except Exception:
+        pass
+
+    for component in CEILING_COMPONENTS:
+        piece_qty = get_ceiling_whole_piece_qty(quantity, component["ratio"], component["mode"])
+        comp_code = component.get("item_code")
+        breakdown.append({
+            "label": frappe.get_cached_value("Item", comp_code, "item_name") or comp_code,
+            "qty": piece_qty,
+            "rate": 0,
+            "amount": 0,
+        })
+
+    return {
+        "total": total,
+        "base_rate": parent_rate,
+        "base_qty": 1,
+        "breakdown": breakdown,
+    }
+
+@frappe.whitelist()
 def get_items_with_prices(category):
     """
     Fetches all items in the given category, along with their
@@ -1475,6 +1532,20 @@ def get_items_with_prices(category):
         if category in GLASS_CATEGORY_TO_TYPE and not glass_type_field_exists:
             expected_glass_type = GLASS_CATEGORY_TO_TYPE[category]
             items = [item for item in items if item.custom_glass_type == expected_glass_type]
+    elif storage_category == "Ceiling":
+        deduped_items = {}
+        for item in items:
+            label = (item.item_name or item.item_code or "").strip()
+            existing = deduped_items.get(label)
+            if not existing:
+                deduped_items[label] = item
+                continue
+
+            existing_score = 1 if existing.name == existing.item_name else 0
+            current_score = 1 if item.name == item.item_name else 0
+            if current_score > existing_score:
+                deduped_items[label] = item
+        items = list(deduped_items.values())
     
     # Fetch Item Prices for these items
     item_codes = [i.name for i in items]
@@ -1859,6 +1930,40 @@ def download_aluminium_items_template():
         3.6,
     ]]
     return _build_xlsx_file("aluminium_items_template", rows)
+
+
+@frappe.whitelist()
+def export_aluminium_items():
+    _ensure_aluminium_pricing_storage()
+
+    fields = ["item_name", "item_code"]
+    if _item_has_field("custom_aluminium_rate_per_kg"):
+        fields.append("custom_aluminium_rate_per_kg")
+    if _item_has_field("custom_aluminium_weight_per_length"):
+        fields.append("custom_aluminium_weight_per_length")
+
+    items = frappe.get_all(
+        "Item",
+        filters={"item_group": "Aluminium", "disabled": 0},
+        fields=fields,
+        order_by="item_code asc",
+    )
+
+    rows = [[
+        "item_name",
+        "code",
+        "rate_per_kg",
+        "weight_per_length",
+    ]]
+    for item in items:
+        rows.append([
+            item.item_name or "",
+            item.item_code or "",
+            flt(getattr(item, "custom_aluminium_rate_per_kg", 0) or 0),
+            flt(getattr(item, "custom_aluminium_weight_per_length", 0) or 0),
+        ])
+
+    return _build_xlsx_file("aluminium_items_export", rows)
 
 
 def _normalize_glass_dimension_uom(dimension_uom=None):

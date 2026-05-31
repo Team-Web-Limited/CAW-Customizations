@@ -11,6 +11,19 @@ GLASS_SERVICE_ITEM_DEFS = {
     "Glass Sandblasting": {"item_name": "Glass Sandblasting", "uom": "Square Foot"},
 }
 
+CEILING_COMPONENTS = [
+    {"item_code": "Board", "ratio": 0.36, "mode": "divide", "uses_parent_item": True},
+    {"item_code": "MainT", "ratio": 0.25, "mode": "multiply"},
+    {"item_code": "Sub Cross 4ft", "ratio": 1.33, "mode": "multiply"},
+    {"item_code": "Sub Cross 2ft", "ratio": 1.33, "mode": "multiply"},
+    {"item_code": "Wall angle", "ratio": 0.25, "mode": "multiply"},
+]
+LEGACY_CEILING_ITEM_ALIASES = {
+    "SC4ft": "Sub Cross 4ft",
+    "SC2ft": "Sub Cross 2ft",
+    "WA": "Wall angle",
+}
+
 
 def _dimension_range_has_field(fieldname):
     return frappe.db.has_column("Dimension Range", fieldname)
@@ -127,6 +140,160 @@ def ensure_glass_service_item(item_code):
 def ensure_glass_service_items():
     for item_code in GLASS_SERVICE_ITEM_DEFS:
         ensure_glass_service_item(item_code)
+
+
+def ensure_ceiling_component_items():
+    """
+    Ensure standard ceiling component Items exist in the Item master.
+    Creates simple non-stock service items under Item Group 'Ceiling' with UOM 'Nos'.
+    """
+    # ensure UOM exists
+    if not frappe.db.exists("UOM", "Nos"):
+        frappe.get_doc({
+            "doctype": "UOM",
+            "uom_name": "Nos",
+        }).insert(ignore_permissions=True)
+
+    # ensure Item Group exists
+    if not frappe.db.exists("Item Group", "Ceiling"):
+        frappe.get_doc({
+            "doctype": "Item Group",
+            "item_group_name": "Ceiling",
+            "parent_item_group": "All Item Groups",
+            "is_group": 0,
+        }).insert(ignore_permissions=True)
+
+    cleanup_legacy_ceiling_item_aliases()
+
+    for comp in CEILING_COMPONENTS:
+        if comp.get("uses_parent_item"):
+            continue
+
+        item_code = comp.get("item_code")
+        if not item_code:
+            continue
+
+        if frappe.db.exists("Item", item_code):
+            item_doc = frappe.get_doc("Item", item_code)
+            # Un-disable if present but disabled
+            if item_doc.disabled:
+                item_doc.disabled = 0
+            if item_doc.stock_uom != "Nos":
+                item_doc.stock_uom = "Nos"
+            item_doc.set("uoms", [{"uom": "Nos", "conversion_factor": 1}])
+            item_doc.save(ignore_permissions=True)
+            if frappe.get_meta("Item").has_field("custom_product_code"):
+                frappe.db.set_value("Item", item_code, "custom_product_code", "C01", update_modified=False)
+            continue
+
+        item = frappe.get_doc({
+            "doctype": "Item",
+            "item_code": item_code,
+            "item_name": item_code,
+            "item_group": "Ceiling",
+            "stock_uom": "Nos",
+            "is_stock_item": 0,
+            "include_item_in_manufacturing": 0,
+            "standard_rate": 0,
+            "uoms": [{"uom": "Nos", "conversion_factor": 1}],
+        })
+        if frappe.get_meta("Item").has_field("custom_product_code"):
+            item.custom_product_code = "C01"
+        try:
+            item.insert(ignore_permissions=True)
+        except Exception:
+            # best-effort: skip on any failure
+            pass
+
+
+def cleanup_legacy_ceiling_item_aliases():
+    for legacy_code, canonical_code in LEGACY_CEILING_ITEM_ALIASES.items():
+        if not frappe.db.exists("Item", legacy_code):
+            continue
+        if not frappe.db.exists("Item", canonical_code):
+            continue
+
+        migrate_legacy_ceiling_item_alias_data(legacy_code, canonical_code)
+
+        # Remove old aliases entirely when the canonical ceiling item exists.
+        # This keeps the catalog editable and avoids users seeing duplicate names.
+        try:
+            frappe.delete_doc("Item", legacy_code, ignore_permissions=True, force=1)
+        except Exception:
+            if not frappe.db.get_value("Item", legacy_code, "disabled"):
+                frappe.db.set_value("Item", legacy_code, "disabled", 1, update_modified=False)
+
+
+def migrate_legacy_ceiling_item_alias_data(legacy_code, canonical_code):
+    legacy_standard_rate = frappe.utils.flt(frappe.db.get_value("Item", legacy_code, "standard_rate") or 0)
+    canonical_standard_rate = frappe.utils.flt(frappe.db.get_value("Item", canonical_code, "standard_rate") or 0)
+    if legacy_standard_rate and not canonical_standard_rate:
+        frappe.db.set_value("Item", canonical_code, "standard_rate", legacy_standard_rate, update_modified=False)
+
+    legacy_prices = frappe.get_all(
+        "Item Price",
+        filters={"item_code": legacy_code, "price_list": ("in", ["Retail", "Wholesale", "Special"])},
+        fields=["price_list", "price_list_rate"],
+    )
+    for legacy_price in legacy_prices:
+        price_list = legacy_price.get("price_list")
+        legacy_rate = frappe.utils.flt(legacy_price.get("price_list_rate") or 0)
+        if not price_list or not legacy_rate:
+            continue
+
+        canonical_price_name = frappe.db.get_value(
+            "Item Price",
+            {"item_code": canonical_code, "price_list": price_list},
+            "name",
+        )
+        canonical_rate = frappe.utils.flt(
+            frappe.db.get_value(
+                "Item Price",
+                {"item_code": canonical_code, "price_list": price_list},
+                "price_list_rate",
+            ) or 0
+        )
+        if canonical_price_name:
+            if not canonical_rate:
+                frappe.db.set_value("Item Price", canonical_price_name, "price_list_rate", legacy_rate, update_modified=False)
+            continue
+
+        item_price = frappe.get_doc({
+            "doctype": "Item Price",
+            "item_code": canonical_code,
+            "price_list": price_list,
+            "price_list_rate": legacy_rate,
+            "selling": 1,
+        })
+        item_price.insert(ignore_permissions=True)
+
+
+def get_item_rate(item_code, price_list=None, fallback_rate=0):
+    price_list = price_list or "Retail"
+    rate = frappe.db.get_value(
+        "Item Price",
+        {"item_code": item_code, "price_list": price_list, "selling": 1},
+        "price_list_rate",
+    )
+    if rate is None:
+        rate = frappe.get_cached_value("Item", item_code, "standard_rate")
+    return frappe.utils.flt(rate if rate is not None else fallback_rate)
+
+
+def get_ceiling_piece_qty(quantity, ratio, mode):
+    quantity = frappe.utils.flt(quantity or 0)
+    ratio = frappe.utils.flt(ratio or 0)
+    if not quantity or not ratio:
+        return 0
+    if mode == "divide":
+        return quantity / ratio
+    return quantity * ratio
+
+
+def get_ceiling_whole_piece_qty(quantity, ratio, mode):
+    piece_qty = get_ceiling_piece_qty(quantity, ratio, mode)
+    return int(piece_qty)
+
 
 def process_glass_item(row, parent_idx):
     """
@@ -280,10 +447,46 @@ def process_glass_item(row, parent_idx):
     return auto_rows
 
 def calculate_ceiling_pricing(row, parent_idx):
-    # Acoustic ceiling: rate = 800 per sqm
-    base_rate = (frappe.get_cached_value("Item", row.item_code, "standard_rate") or 800.0) / 1.16
-    row.rate = base_rate
+    quantity = frappe.utils.flt(getattr(row, "custom_ceiling_sq_m", 0) or getattr(row, "qty", 0) or 100)
+    price_list = "Wholesale" if frappe.utils.flt(getattr(row, "custom_ceiling_sq_m", 0) or 0) else "Retail"
+    if not frappe.utils.flt(getattr(row, "custom_ceiling_sq_m", 0) or 0):
+        row.amount = frappe.utils.flt(getattr(row, "qty", 0) or 0) * frappe.utils.flt(getattr(row, "rate", 0) or 0)
+        return []
+
+    board_component = next((component for component in CEILING_COMPONENTS if component.get("uses_parent_item")), None)
+    parent_rate = get_item_rate(row.item_code, price_list, fallback_rate=800.0) / 1.16
+    row.qty = 1
+    row.rate = quantity * parent_rate
     row.amount = row.qty * row.rate
-    
-    # Return empty list because we are not generating individual component items yet
-    return []
+
+    ensure_ceiling_component_items()
+
+    shared_row_values = {
+        "description": getattr(row, "description", None) or getattr(row, "item_name", None),
+        "income_account": getattr(row, "income_account", None),
+        "cost_center": getattr(row, "cost_center", None),
+    }
+
+    auto_rows = []
+    for component in CEILING_COMPONENTS:
+        if component.get("uses_parent_item"):
+            continue
+
+        item_code = component.get("item_code")
+        piece_qty = get_ceiling_whole_piece_qty(quantity, component["ratio"], component["mode"])
+        auto_rows.append({
+            "item_code": item_code,
+            "item_name": frappe.get_cached_value("Item", item_code, "item_name") or item_code,
+            "uom": frappe.get_cached_value("Item", item_code, "stock_uom") or "Nos",
+            "conversion_factor": 1.0,
+            "qty": piece_qty,
+            "ordered_qty": 0.0,
+            "rate": 0.0,
+            "amount": 0.0,
+            "custom_auto_generated": 1,
+            "custom_parent_row_idx": parent_idx,
+            "custom_product_category": "Ceiling",
+            "custom_price_list": price_list,
+        } | shared_row_values)
+
+    return auto_rows

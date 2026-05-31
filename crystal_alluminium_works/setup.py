@@ -98,6 +98,10 @@ def setup_seed_data():
     create_item("Toughened Glass", "Toughened Glass", "Glass", "Square Foot", 1, 200.0)
     
     create_item("Acoustic Ceiling", "Acoustic Ceiling", "Ceiling", "Square Meter", 1, 800.0)
+    create_item("MainT", "MainT", "Ceiling", "Nos", 0, 0.0)
+    create_item("Sub Cross 4ft", "Sub Cross 4ft", "Ceiling", "Nos", 0, 0.0)
+    create_item("Sub Cross 2ft", "Sub Cross 2ft", "Ceiling", "Nos", 0, 0.0)
+    create_item("Wall angle", "Wall angle", "Ceiling", "Nos", 0, 0.0)
     
     # Optional sample items
     create_item("Sample Aluminium Profile", "Sample Aluminium Profile", "Aluminium", "Meter", 1, 500.0)
@@ -117,10 +121,11 @@ def setup_seed_data():
 
     # 5. Ceiling Composition
     compositions = [
-        ("4ftT", 2.5),
-        ("2ftT", 2.5),
-        ("Angle", 3.0),
-        ("Board", 0.36)
+        ("Board", 0.36),
+        ("MainT", 0.25),
+        ("Sub Cross 4ft", 1.33),
+        ("Sub Cross 2ft", 1.33),
+        ("Wall angle", 0.25),
     ]
     for c in compositions:
         create_ceiling_composition(*c)
