@@ -4,6 +4,25 @@ const MI_SHEET_GLASS_CATEGORIES = new Set(['Ordinary Glass', 'Ready Laminated Gl
 const MI_STANDARD_INTERVAL_SET = 'Standard Glass';
 const MI_TOUGHENED_INTERVAL_SET = 'Toughened Glass';
 const MI_ALUMINIUM_PRICE_FACTOR = 1.07;
+const MI_HOLE_RATE_TYPES = [
+	{ label: '5mm', fieldname: 'hole_rate_5mm' },
+	{ label: '6mm', fieldname: 'hole_rate_6mm' },
+	{ label: '8mm', fieldname: 'hole_rate_8mm' },
+	{ label: '10mm', fieldname: 'hole_rate_10mm' },
+	{ label: '15mm', fieldname: 'hole_rate_15mm' },
+	{ label: '20mm', fieldname: 'hole_rate_20mm' }
+];
+const MI_POLISH_RATE_TYPES = [
+	{ label: '4-6', fieldname: 'polishing_rate_4_6' },
+	{ label: '8-10', fieldname: 'polishing_rate_8_10' },
+	{ label: '14-35', fieldname: 'polishing_rate_14_35' }
+];
+const MI_NOTCH_RATE_TYPES = [
+	{ label: 'Standard', fieldname: 'notch_rate_standard' },
+	{ label: 'Small', fieldname: 'notch_rate_small' },
+	{ label: 'Mirror Screws', fieldname: 'notch_rate_mirror_screws' },
+	{ label: 'Timber Box', fieldname: 'notch_rate_timber_box' }
+];
 const MI_DEFAULT_PRODUCT_CODES = {
 	'Aluminium': 'A01',
 	'Ordinary Glass': 'OG',
@@ -37,10 +56,6 @@ function is_sheet_config_category(category) {
 
 function get_interval_set_for_category(category) {
 	return category === 'Toughened Glass' ? MI_TOUGHENED_INTERVAL_SET : MI_STANDARD_INTERVAL_SET;
-}
-
-function get_sheet_glass_type_for_category(category) {
-	return category === 'Ready Laminated Glass' ? 'Ready Laminated' : 'Ordinary';
 }
 
 function get_default_product_code(category) {
@@ -89,11 +104,18 @@ function bind_manage_items_events(page) {
 	let update_config_buttons = function(category) {
 		let is_glass = is_glass_category(category);
 		let is_aluminium = category === 'Aluminium';
+		let is_standard_export_category = ['Ceiling', 'Rubber', 'Fittings', 'Silicone'].includes(category);
 		let is_sheet_glass = is_sheet_config_category(category);
 		$(page.body).find('.mi-config-btn').toggle(is_glass);
 		$(page.body).find('.mi-service-btn').toggle(is_glass);
 		$(page.body).find('.mi-color-btn').toggle(is_aluminium);
 		$(page.body).find('.mi-export-aluminium-btn').toggle(is_aluminium);
+		$(page.body).find('.mi-export-glass-btn')
+			.toggle(is_glass)
+			.text(`Export ${category}`);
+		$(page.body).find('.mi-export-standard-btn')
+			.toggle(is_standard_export_category)
+			.text(`Export ${category}`);
 		$(page.body).find('.mi-sheets-btn').toggle(is_sheet_glass);
 	};
 
@@ -130,6 +152,16 @@ function bind_manage_items_events(page) {
 
 	$(page.body).on('click', '.mi-export-aluminium-btn', function() {
 		export_aluminium_items();
+	});
+
+	$(page.body).on('click', '.mi-export-glass-btn', function() {
+		let category = $(page.body).find('.mi-tab.active').data('category');
+		export_glass_items(category);
+	});
+
+	$(page.body).on('click', '.mi-export-standard-btn', function() {
+		let category = $(page.body).find('.mi-tab.active').data('category');
+		export_standard_items(category);
 	});
 
 	// Add new item
@@ -365,6 +397,34 @@ function export_aluminium_items() {
 		method: 'crystal_alluminium_works.api.export_aluminium_items',
 		freeze: true,
 		freeze_message: 'Preparing aluminium export...',
+		callback: function(r) {
+			if (!r.exc && r.message && r.message.file_url) {
+				window.open(r.message.file_url, '_blank');
+			}
+		}
+	});
+}
+
+function export_glass_items(category) {
+	frappe.call({
+		method: 'crystal_alluminium_works.api.export_glass_items',
+		args: { category },
+		freeze: true,
+		freeze_message: `Preparing ${category} export...`,
+		callback: function(r) {
+			if (!r.exc && r.message && r.message.file_url) {
+				window.open(r.message.file_url, '_blank');
+			}
+		}
+	});
+}
+
+function export_standard_items(category) {
+	frappe.call({
+		method: 'crystal_alluminium_works.api.export_standard_items',
+		args: { category },
+		freeze: true,
+		freeze_message: `Preparing ${category} export...`,
 		callback: function(r) {
 			if (!r.exc && r.message && r.message.file_url) {
 				window.open(r.message.file_url, '_blank');
@@ -756,9 +816,6 @@ function open_intervals_modal(page) {
 }
 
 function open_sheets_modal(page) {
-	let active_category = $(page.body).find('.mi-tab.active').data('category');
-	let default_glass_type = get_sheet_glass_type_for_category(active_category);
-
 	function parse_sheet_size(size) {
 		let parts = String(size || '')
 			.split(/x/i)
@@ -773,14 +830,6 @@ function open_sheets_modal(page) {
 	let d = new frappe.ui.Dialog({
 		title: 'Glass Sheet Sizes',
 		fields: [
-			{
-				fieldtype: 'Select',
-				fieldname: 'glass_type',
-				label: 'Glass Type',
-				options: 'Ordinary\nReady Laminated',
-				default: default_glass_type,
-				reqd: 1
-			},
 			{ fieldtype: 'HTML', fieldname: 'grid' }
 		],
 		primary_action_label: 'Save Sheets',
@@ -801,8 +850,7 @@ function open_sheets_modal(page) {
 			frappe.call({
 				method: 'crystal_alluminium_works.api.save_glass_sheet_configs',
 				args: {
-					rows: JSON.stringify(rows),
-					glass_type: d.get_value('glass_type')
+					rows: JSON.stringify(rows)
 				},
 				freeze: true,
 				callback: function(r) {
@@ -858,11 +906,10 @@ function open_sheets_modal(page) {
 		d.get_field('grid').$wrapper.html(html);
 	}
 
-	function load_sheet_rows(glass_type) {
+	function load_sheet_rows() {
 		d.get_field('grid').$wrapper.html('<div style="padding:16px;color:var(--text-muted);">Loading sheet sizes...</div>');
 		frappe.call({
 			method: 'crystal_alluminium_works.api.get_glass_sheet_configs',
-			args: { glass_type: glass_type },
 			callback: function(r) {
 				render_sheets_grid(r.message || []);
 			}
@@ -870,11 +917,7 @@ function open_sheets_modal(page) {
 	}
 
 	d.show();
-	load_sheet_rows(default_glass_type);
-
-	d.fields_dict.glass_type.$input.on('change', function() {
-		load_sheet_rows(d.get_value('glass_type'));
-	});
+	load_sheet_rows();
 
 	d.$wrapper.on('click', '.mi-add-sheet-row', function() {
 		d.$wrapper.find('tbody').append(`
@@ -897,35 +940,100 @@ function open_sheets_modal(page) {
 	});
 }
 
+function get_hole_rate_fields() {
+	let fields = [
+		{ fieldtype: 'Section Break', label: 'Hole Rates' }
+	];
+
+	MI_HOLE_RATE_TYPES.forEach((type, index) => {
+		if (index > 0) {
+			fields.push({ fieldtype: 'Section Break' });
+		}
+		fields.push(
+			{ fieldtype: 'Currency', fieldname: type.fieldname, label: `${type.label} Hole Rate`, reqd: 1, default: 0 },
+			{ fieldtype: 'Column Break' },
+			{ fieldtype: 'Currency', fieldname: `${type.fieldname}_exclusive`, label: `${type.label} Hole Exclusive`, read_only: 1, default: 0 }
+		);
+	});
+
+	return fields;
+}
+
+function get_polish_rate_fields() {
+	let fields = [
+		{ fieldtype: 'Section Break', label: 'Polish Rates' }
+	];
+
+	MI_POLISH_RATE_TYPES.forEach((type, index) => {
+		if (index > 0) {
+			fields.push({ fieldtype: 'Section Break' });
+		}
+		fields.push(
+			{ fieldtype: 'Currency', fieldname: type.fieldname, label: `${type.label} Polish Rate`, reqd: 1, default: 0 },
+			{ fieldtype: 'Column Break' },
+			{ fieldtype: 'Currency', fieldname: `${type.fieldname}_exclusive`, label: `${type.label} Polish Exclusive`, read_only: 1, default: 0 }
+		);
+	});
+
+	return fields;
+}
+
+function get_notch_rate_fields() {
+	let fields = [
+		{ fieldtype: 'Section Break', label: 'Notch Rates' }
+	];
+
+	MI_NOTCH_RATE_TYPES.forEach((type, index) => {
+		if (index > 0) {
+			fields.push({ fieldtype: 'Section Break' });
+		}
+		fields.push(
+			{ fieldtype: 'Currency', fieldname: type.fieldname, label: `${type.label} Notch Rate`, reqd: 1, default: 0 },
+			{ fieldtype: 'Column Break' },
+			{ fieldtype: 'Currency', fieldname: `${type.fieldname}_exclusive`, label: `${type.label} Notch Exclusive`, read_only: 1, default: 0 }
+		);
+	});
+
+	return fields;
+}
+
 function open_service_rates_modal(page) {
 	let d = new frappe.ui.Dialog({
 		title: 'Global Glass Service Rates',
 		fields: [
-			{ fieldtype: 'Currency', fieldname: 'polishing_rate', label: 'Polishing Rate (per rft)', reqd: 1 },
-			{ fieldtype: 'Currency', fieldname: 'polishing_exclusive', label: 'Polishing Exclusive', read_only: 1, default: 0 },
-			{ fieldtype: 'Column Break' },
-			{ fieldtype: 'Currency', fieldname: 'hole_rate', label: 'Hole Rate (per hole)', reqd: 1 },
-			{ fieldtype: 'Currency', fieldname: 'hole_exclusive', label: 'Hole Exclusive', read_only: 1, default: 0 },
+			...get_polish_rate_fields(),
+			...get_hole_rate_fields(),
+			...get_notch_rate_fields(),
 			{ fieldtype: 'Section Break' },
-			{ fieldtype: 'Currency', fieldname: 'notch_rate', label: 'Notch Rate (per notch)', reqd: 1 },
-			{ fieldtype: 'Currency', fieldname: 'notch_exclusive', label: 'Notch Exclusive', read_only: 1, default: 0 },
-			{ fieldtype: 'Column Break' },
 			{ fieldtype: 'Currency', fieldname: 'sandblast_rate', label: 'Sandblast Rate (per sqft)', reqd: 1 },
-			{ fieldtype: 'Currency', fieldname: 'sandblast_exclusive', label: 'Sandblast Exclusive', read_only: 1, default: 0 }
+			{ fieldtype: 'Currency', fieldname: 'sandblast_exclusive', label: 'Sandblast Exclusive', read_only: 1, default: 0 },
+			{ fieldtype: 'Currency', fieldname: 'half_sandblast_rate', label: 'Half Sandblast Rate', read_only: 1, default: 0 },
+			{ fieldtype: 'Currency', fieldname: 'half_sandblast_exclusive', label: 'Half Sandblast Exclusive', read_only: 1, default: 0 }
 		],
 		primary_action_label: 'Save Rates',
 		primary_action: function(values) {
+			let field_values = {
+				polishing_rate: values.polishing_rate_4_6,
+				hole_rate: values.hole_rate_5mm,
+				notch_rate: values.notch_rate_standard,
+				sandblast_rate: values.sandblast_rate
+			};
+			MI_POLISH_RATE_TYPES.forEach(type => {
+				field_values[type.fieldname] = values[type.fieldname];
+			});
+			MI_HOLE_RATE_TYPES.forEach(type => {
+				field_values[type.fieldname] = values[type.fieldname];
+			});
+			MI_NOTCH_RATE_TYPES.forEach(type => {
+				field_values[type.fieldname] = values[type.fieldname];
+			});
+
 			frappe.call({
 				method: 'frappe.client.set_value',
 				args: {
 					doctype: 'Glass Pricing Settings',
 					name: 'Glass Pricing Settings',
-					fieldname: {
-						polishing_rate: values.polishing_rate,
-						hole_rate: values.hole_rate,
-						notch_rate: values.notch_rate,
-						sandblast_rate: values.sandblast_rate
-					}
+					fieldname: field_values
 				},
 				freeze: true,
 				callback: function(r) {
@@ -940,6 +1048,11 @@ function open_service_rates_modal(page) {
 
 	d.show();
 	d.set_message("Loading rates...");
+	d.$wrapper.find('.modal-dialog').css('max-width', '900px');
+	d.$wrapper.find('.modal-body').css({
+		'max-height': '70vh',
+		'overflow-y': 'auto'
+	});
 
 	// Bind dynamic exclusive rate calculation
 	const bind_service_exclusive = (base_field, exclusive_field) => {
@@ -950,10 +1063,25 @@ function open_service_rates_modal(page) {
 			});
 		}
 	};
-	bind_service_exclusive('polishing_rate', 'polishing_exclusive');
-	bind_service_exclusive('hole_rate', 'hole_exclusive');
-	bind_service_exclusive('notch_rate', 'notch_exclusive');
 	bind_service_exclusive('sandblast_rate', 'sandblast_exclusive');
+	MI_POLISH_RATE_TYPES.forEach(type => {
+		bind_service_exclusive(type.fieldname, `${type.fieldname}_exclusive`);
+	});
+	MI_HOLE_RATE_TYPES.forEach(type => {
+		bind_service_exclusive(type.fieldname, `${type.fieldname}_exclusive`);
+	});
+	MI_NOTCH_RATE_TYPES.forEach(type => {
+		bind_service_exclusive(type.fieldname, `${type.fieldname}_exclusive`);
+	});
+
+	if (d.fields_dict.sandblast_rate && d.fields_dict.half_sandblast_rate) {
+		d.fields_dict.sandblast_rate.$input.on('input', () => {
+			let val = flt(d.get_value('sandblast_rate') || 0);
+			let half_rate = flt(val / 2);
+			d.set_value('half_sandblast_rate', half_rate);
+			d.set_value('half_sandblast_exclusive', flt(half_rate / 1.16));
+		});
+	}
 
 	frappe.call({
 		method: 'frappe.client.get',
@@ -966,32 +1094,62 @@ function open_service_rates_modal(page) {
 			}
 			
 			if (r.message) {
-				d.set_values({
-					polishing_rate: r.message.polishing_rate || 0,
-					polishing_exclusive: flt((r.message.polishing_rate || 0) / 1.16),
-					hole_rate: r.message.hole_rate || 0,
-					hole_exclusive: flt((r.message.hole_rate || 0) / 1.16),
-					notch_rate: r.message.notch_rate || 0,
-					notch_exclusive: flt((r.message.notch_rate || 0) / 1.16),
+				let values = {
 					sandblast_rate: r.message.sandblast_rate || 0,
-					sandblast_exclusive: flt((r.message.sandblast_rate || 0) / 1.16)
+					sandblast_exclusive: flt((r.message.sandblast_rate || 0) / 1.16),
+					half_sandblast_rate: flt((r.message.sandblast_rate || 0) / 2),
+					half_sandblast_exclusive: flt(((r.message.sandblast_rate || 0) / 2) / 1.16)
+				};
+				MI_POLISH_RATE_TYPES.forEach(type => {
+					let rate = r.message[type.fieldname];
+					if (type.fieldname === 'polishing_rate_4_6' && (rate === undefined || rate === null || rate === '')) {
+						rate = r.message.polishing_rate || 0;
+					}
+					values[type.fieldname] = rate || 0;
+					values[`${type.fieldname}_exclusive`] = flt((rate || 0) / 1.16);
 				});
+				MI_HOLE_RATE_TYPES.forEach(type => {
+					let rate = r.message[type.fieldname];
+					if (type.fieldname === 'hole_rate_5mm' && (rate === undefined || rate === null || rate === '')) {
+						rate = r.message.hole_rate || 0;
+					}
+					values[type.fieldname] = rate || 0;
+					values[`${type.fieldname}_exclusive`] = flt((rate || 0) / 1.16);
+				});
+				MI_NOTCH_RATE_TYPES.forEach(type => {
+					let rate = r.message[type.fieldname];
+					if (type.fieldname === 'notch_rate_standard' && (rate === undefined || rate === null || rate === '')) {
+						rate = r.message.notch_rate || 0;
+					}
+					values[type.fieldname] = rate || 0;
+					values[`${type.fieldname}_exclusive`] = flt((rate || 0) / 1.16);
+				});
+				d.set_values(values);
 			}
 		},
 		error: function(r) {
 			if (d.clear_message) d.clear_message();
 			console.log(r);
 			// Fallback to 0 if the doctype hasn't been saved yet
-			d.set_values({
-				polishing_rate: 0,
-				polishing_exclusive: 0,
-				hole_rate: 0,
-				hole_exclusive: 0,
-				notch_rate: 0,
-				notch_exclusive: 0,
+			let values = {
 				sandblast_rate: 0,
-				sandblast_exclusive: 0
+				sandblast_exclusive: 0,
+				half_sandblast_rate: 0,
+				half_sandblast_exclusive: 0
+			};
+			MI_POLISH_RATE_TYPES.forEach(type => {
+				values[type.fieldname] = 0;
+				values[`${type.fieldname}_exclusive`] = 0;
 			});
+			MI_HOLE_RATE_TYPES.forEach(type => {
+				values[type.fieldname] = 0;
+				values[`${type.fieldname}_exclusive`] = 0;
+			});
+			MI_NOTCH_RATE_TYPES.forEach(type => {
+				values[type.fieldname] = 0;
+				values[`${type.fieldname}_exclusive`] = 0;
+			});
+			d.set_values(values);
 		}
 	});
 }
@@ -1188,6 +1346,8 @@ function get_manage_items_html() {
 			<div style="display:flex; gap:8px;">
 				<button class="btn btn-default mi-color-btn" style="display:none;">⚙️ Configure Color</button>
 				<button class="btn btn-default mi-export-aluminium-btn" style="display:none;">Export Aluminium</button>
+				<button class="btn btn-default mi-export-glass-btn" style="display:none;">Export Glass</button>
+				<button class="btn btn-default mi-export-standard-btn" style="display:none;">Export Items</button>
 				<button class="btn btn-default mi-config-btn" style="display:none;">⚙️ Configure Intervals</button>
 				<button class="btn btn-default mi-sheets-btn" style="display:none;">⚙️ Configure Sheets</button>
 				<button class="btn btn-default mi-service-btn" style="display:none;">⚙️ Configure Service Rates</button>

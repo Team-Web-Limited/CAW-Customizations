@@ -36,8 +36,21 @@ def create_doctypes():
             "fields": [
                 {"fieldname": "base_rate", "fieldtype": "Currency", "label": "Base Rate", "default": "90"},
                 {"fieldname": "polishing_rate", "fieldtype": "Currency", "label": "Polishing Rate", "default": "20"},
+                {"fieldname": "polishing_rate_4_6", "fieldtype": "Currency", "label": "4-6 Polish Rate", "default": "20"},
+                {"fieldname": "polishing_rate_8_10", "fieldtype": "Currency", "label": "8-10 Polish Rate", "default": "20"},
+                {"fieldname": "polishing_rate_14_35", "fieldtype": "Currency", "label": "14-35 Polish Rate", "default": "20"},
                 {"fieldname": "hole_rate", "fieldtype": "Currency", "label": "Hole Rate", "default": "25"},
+                {"fieldname": "hole_rate_5mm", "fieldtype": "Currency", "label": "5mm Hole Rate", "default": "25"},
+                {"fieldname": "hole_rate_6mm", "fieldtype": "Currency", "label": "6mm Hole Rate", "default": "25"},
+                {"fieldname": "hole_rate_8mm", "fieldtype": "Currency", "label": "8mm Hole Rate", "default": "25"},
+                {"fieldname": "hole_rate_10mm", "fieldtype": "Currency", "label": "10mm Hole Rate", "default": "25"},
+                {"fieldname": "hole_rate_15mm", "fieldtype": "Currency", "label": "15mm Hole Rate", "default": "25"},
+                {"fieldname": "hole_rate_20mm", "fieldtype": "Currency", "label": "20mm Hole Rate", "default": "25"},
                 {"fieldname": "notch_rate", "fieldtype": "Currency", "label": "Notch Rate", "default": "25"},
+                {"fieldname": "notch_rate_standard", "fieldtype": "Currency", "label": "Standard Notch Rate", "default": "25"},
+                {"fieldname": "notch_rate_small", "fieldtype": "Currency", "label": "Small Notch Rate", "default": "25"},
+                {"fieldname": "notch_rate_mirror_screws", "fieldtype": "Currency", "label": "Mirror Screws Notch Rate", "default": "25"},
+                {"fieldname": "notch_rate_timber_box", "fieldtype": "Currency", "label": "Timber Box Notch Rate", "default": "25"},
                 {"fieldname": "sandblast_rate", "fieldtype": "Currency", "label": "Sandblast Rate", "default": "70"}
             ],
             "permissions": [{"role": "System Manager", "read": 1, "write": 1, "create": 1}]

@@ -145,6 +145,7 @@ def build_crystal_print_format_html(ref_label, terms):
                         {{% set qty = parent.qty or 0 %}}
                         {{% set uom = 'Nos' %}}
                     {{% elif parent.custom_glass_sale_mode == 'Sheet' %}}
+                        {{% set pieces = parent.custom_sheet_pcs or 0 %}}
                         {{% set qty = parent.qty or 0 %}}
                         {{% set uom = parent.uom or 'Square Foot' %}}
                     {{% else %}}

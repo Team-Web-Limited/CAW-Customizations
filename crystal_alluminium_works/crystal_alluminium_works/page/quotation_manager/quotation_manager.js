@@ -115,6 +115,18 @@ function format_manager_review_number(value, precision = 3) {
 	return Number.isFinite(rounded) ? rounded : 0;
 }
 
+function get_manager_sheet_size_dimensions(size) {
+	let parts = String(size || '')
+		.split(/x/i)
+		.map(part => (part || '').trim())
+		.filter(Boolean);
+
+	return {
+		width: parts[0] || '',
+		height: parts[1] || ''
+	};
+}
+
 function get_manager_ceiling_component_breakdown(quantity) {
 	quantity = flt(quantity || 0);
 	return QM_CEILING_COMPONENTS.map(component => {
@@ -170,6 +182,30 @@ async function get_sheet_builder_details(item, glass_type) {
 }
 
 function render_manager_review_glass_row(item, index) {
+	if (item.custom_glass_sale_mode === 'Sheet') {
+		let pieces = flt(item.custom_sheet_pcs || item.qty || 0);
+		let sheet_dimensions = get_manager_sheet_size_dimensions(item.custom_sheet_size);
+		return `
+			<tr>
+				<td style="text-align:center; white-space:nowrap;">-</td>
+				<td style="text-align:center; white-space:nowrap;">-</td>
+				<td style="text-align:center; white-space:nowrap;">-</td>
+				<td style="text-align:center; white-space:nowrap;">-</td>
+				<td style="text-align:center; white-space:nowrap;">-</td>
+				<td style="text-align:center; white-space:nowrap;">-</td>
+				<td style="text-align:center; white-space:nowrap;">-</td>
+				<td style="text-align:center; white-space:nowrap;">${format_manager_review_number(item.qty || item.custom_sheet_sft || 0)}</td>
+				<td style="white-space:nowrap;">-</td>
+				<td style="text-align:center; white-space:nowrap;">${item.custom_numbering || '-'}</td>
+				<td style="text-align:center; white-space:nowrap;">${sheet_dimensions.width ? frappe.utils.escape_html(sheet_dimensions.width) : '-'}</td>
+				<td style="text-align:center; white-space:nowrap;">${sheet_dimensions.height ? frappe.utils.escape_html(sheet_dimensions.height) : '-'}</td>
+				<td style="text-align:center; white-space:nowrap;">${pieces || '-'}</td>
+				<td style="font-weight:500; white-space:nowrap;">${frappe.utils.escape_html(item.item_name || item.item_code || '')}</td>
+				<td style="white-space:pre-wrap;">${item.description ? frappe.utils.escape_html(item.description) : '-'}</td>
+			</tr>
+		`;
+	}
+
 	let pieces = flt(item.qty || 0);
 	let pw = (flt(item.custom_width_mm || 0) / 305) * pieces;
 	let ph = (flt(item.custom_height_mm || 0) / 305) * pieces;

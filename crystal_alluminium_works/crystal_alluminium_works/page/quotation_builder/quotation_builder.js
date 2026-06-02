@@ -46,6 +46,7 @@ const QB_ALUMINIUM_PRICE_LIST_TO_LABEL = {
 	'Special': 'Special Price'
 };
 const QB_SHEET_GLASS_TYPES = new Set(['Ordinary', 'Ready Laminated']);
+const QB_SHARED_GLASS_SHEET_CONFIG_KEY = 'Shared';
 const QB_CEILING_COMPONENTS = [
 	{ label: 'Board', ratio: 0.36, mode: 'divide' },
 	{ label: 'MainT', ratio: 0.25, mode: 'multiply' },
@@ -603,6 +604,7 @@ function get_review_category_meta(category) {
 function render_review_glass_row(item, index) {
 	if (item.sale_mode === 'Sheet') {
 		let pieces = flt(item.pcs || 0);
+		let sheet_dimensions = get_sheet_size_dimensions(item.sheet_size);
 		return `
 			<tr>
 				<td style="text-align:center;">-</td>
@@ -618,9 +620,9 @@ function render_review_glass_row(item, index) {
 				<td style="text-align:center;white-space:nowrap;">-</td>
 				<td style="text-align:center;white-space:nowrap;">-</td>
 				<td style="text-align:center;">${item.numbering || '-'}</td>
-				<td style="text-align:center;">${frappe.utils.escape_html(item.sheet_size || '')}</td>
-				<td style="text-align:center;">${format_review_number(item.sheet_sft || 0)}</td>
-				<td style="text-align:center;">Sheet</td>
+				<td style="text-align:center;">${sheet_dimensions.width ? frappe.utils.escape_html(sheet_dimensions.width) : '-'}</td>
+				<td style="text-align:center;">${sheet_dimensions.height ? frappe.utils.escape_html(sheet_dimensions.height) : '-'}</td>
+				<td style="text-align:center;">SFT</td>
 				<td style="text-align:center;">${pieces || '-'}</td>
 				<td style="font-weight:500;white-space:nowrap;">${get_glass_type_review_label(item)}</td>
 				<td style="white-space:pre-wrap;">${item.description ? frappe.utils.escape_html(item.description) : '-'}</td>
@@ -1010,6 +1012,18 @@ function get_sheet_sft_from_size(item, size) {
 	return match ? flt(match.sft || 0) : 0;
 }
 
+function get_sheet_size_dimensions(size) {
+	let parts = String(size || '')
+		.split(/x/i)
+		.map(part => (part || '').trim())
+		.filter(Boolean);
+
+	return {
+		width: parts[0] || '',
+		height: parts[1] || ''
+	};
+}
+
 function load_glass_sheet_configs(glass_type, callback) {
 	if (!is_sheet_glass_type(glass_type)) {
 		callback([]);
@@ -1017,17 +1031,16 @@ function load_glass_sheet_configs(glass_type, callback) {
 	}
 
 	window.qb_state.glass_sheet_configs = window.qb_state.glass_sheet_configs || {};
-	if (window.qb_state.glass_sheet_configs[glass_type]) {
-		callback(window.qb_state.glass_sheet_configs[glass_type]);
+	if (window.qb_state.glass_sheet_configs[QB_SHARED_GLASS_SHEET_CONFIG_KEY]) {
+		callback(window.qb_state.glass_sheet_configs[QB_SHARED_GLASS_SHEET_CONFIG_KEY]);
 		return;
 	}
 
 	frappe.call({
 		method: 'crystal_alluminium_works.api.get_glass_sheet_configs',
-		args: { glass_type: glass_type },
 		callback: function (r) {
 			let rows = r.message || [];
-			window.qb_state.glass_sheet_configs[glass_type] = rows;
+			window.qb_state.glass_sheet_configs[QB_SHARED_GLASS_SHEET_CONFIG_KEY] = rows;
 			callback(rows);
 		}
 	});
@@ -1273,18 +1286,16 @@ function open_item_editor(page, item, is_new = false) {
 	let is_sheet_glass = is_glass && (item.glass_mode === 'Sheet' || item.sale_mode === 'Sheet');
 
 	if (is_sheet_glass && (!item.sheet_configs || !item.sheet_configs.length)) {
-		let glass_type = item.glass_type_filter || item.glass_type || 'Ordinary';
 		window.qb_state.glass_sheet_configs = window.qb_state.glass_sheet_configs || {};
-		if (window.qb_state.glass_sheet_configs[glass_type]) {
-			item.sheet_configs = window.qb_state.glass_sheet_configs[glass_type];
+		if (window.qb_state.glass_sheet_configs[QB_SHARED_GLASS_SHEET_CONFIG_KEY]) {
+			item.sheet_configs = window.qb_state.glass_sheet_configs[QB_SHARED_GLASS_SHEET_CONFIG_KEY];
 		} else {
 			frappe.call({
 				method: 'crystal_alluminium_works.api.get_glass_sheet_configs',
-				args: { glass_type: glass_type },
 				async: false,
 				callback: function (r) {
 					item.sheet_configs = r.message || [];
-					window.qb_state.glass_sheet_configs[glass_type] = item.sheet_configs;
+					window.qb_state.glass_sheet_configs[QB_SHARED_GLASS_SHEET_CONFIG_KEY] = item.sheet_configs;
 				}
 			});
 		}
@@ -2078,6 +2089,7 @@ function export_review_rows(page) {
 		if (!isGlass) return;
 
 		if (i.sale_mode === 'Sheet') {
+			let sheet_dimensions = get_sheet_size_dimensions(i.sheet_size);
 			data.push([
 				'-',
 				'-',
@@ -2092,9 +2104,9 @@ function export_review_rows(page) {
 				'-',
 				'-',
 				idx + 1,
-				i.sheet_size || '',
-				format_review_number(i.sheet_sft || 0),
-				'Sheet',
+				sheet_dimensions.width || '',
+				sheet_dimensions.height || '',
+				'SFT',
 				flt(i.pcs || 0),
 				i.item_name || i.item_code || ''
 			]);

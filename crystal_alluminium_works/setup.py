@@ -135,8 +135,17 @@ def setup_seed_data():
     settings = frappe.get_single("Glass Pricing Settings")
     settings.base_rate = 90
     settings.polishing_rate = 20
+    for fieldname in ("polishing_rate_4_6", "polishing_rate_8_10", "polishing_rate_14_35"):
+        if hasattr(settings, fieldname):
+            setattr(settings, fieldname, 20)
     settings.hole_rate = 25
+    for fieldname in ("hole_rate_5mm", "hole_rate_6mm", "hole_rate_8mm", "hole_rate_10mm", "hole_rate_15mm", "hole_rate_20mm"):
+        if hasattr(settings, fieldname):
+            setattr(settings, fieldname, 25)
     settings.notch_rate = getattr(settings, "notch_rate", 25) or 25
+    for fieldname in ("notch_rate_standard", "notch_rate_small", "notch_rate_mirror_screws", "notch_rate_timber_box"):
+        if hasattr(settings, fieldname):
+            setattr(settings, fieldname, 25)
     settings.sandblast_rate = 70
     settings.save()
     print("Seeded Glass Pricing Settings")

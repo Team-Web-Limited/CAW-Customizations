@@ -53,7 +53,7 @@ STANDARD_GLASS_INTERVAL_SET = "Standard Glass"
 TOUGHENED_GLASS_INTERVAL_SET = "Toughened Glass"
 VAT_RATE = 0.16
 ALUMINIUM_PRICE_FACTOR = 1.07
-GLASS_SHEET_CONFIG_TYPES = ("Ordinary", "Ready Laminated")
+SHARED_GLASS_SHEET_CONFIG_TYPE = "Ordinary"
 
 
 def _download_crystal_pdf(doctype, name, print_format_name, ref_label, terms):
@@ -237,11 +237,8 @@ def _ensure_glass_sale_mode_options():
             frappe.clear_cache(doctype=doctype)
 
 
-def _normalize_glass_sheet_type(glass_type):
-    glass_type = (glass_type or "").strip()
-    if glass_type not in GLASS_SHEET_CONFIG_TYPES:
-        frappe.throw("Glass sheet configuration is only supported for Ordinary and Ready Laminated.")
-    return glass_type
+def _get_shared_glass_sheet_type():
+    return SHARED_GLASS_SHEET_CONFIG_TYPE
 
 
 def _ensure_glass_type_options():
@@ -1970,6 +1967,116 @@ def export_aluminium_items():
     return _build_xlsx_file("aluminium_items_export", rows)
 
 
+@frappe.whitelist()
+def export_glass_items(category):
+    storage_category = _get_storage_category(category)
+    if storage_category != "Glass":
+        frappe.throw("Glass export is only available for glass categories.")
+
+    glass_type_field_exists = _item_has_field("custom_glass_type")
+    item_fields = ["item_code", "item_name", "standard_rate"]
+    if glass_type_field_exists:
+        item_fields.append("custom_glass_type")
+
+    items = frappe.get_all(
+        "Item",
+        filters={"item_group": "Glass", "disabled": 0},
+        fields=item_fields,
+        order_by="item_code asc",
+    )
+
+    expected_glass_type = _get_glass_type_for_category(category)
+    filtered_items = []
+    for item in items:
+        resolved_glass_type = _infer_glass_type(item.item_code, item.item_name, item.get("custom_glass_type"))
+        if resolved_glass_type != expected_glass_type or _is_glass_service_item(item.item_name):
+            continue
+        filtered_items.append(item)
+
+    item_codes = [item.item_code for item in filtered_items]
+    price_map = {}
+    if item_codes:
+        prices = frappe.get_all(
+            "Item Price",
+            filters={
+                "item_code": ("in", item_codes),
+                "price_list": ("in", ["Retail", "Wholesale", "Special"]),
+                "selling": 1,
+            },
+            fields=["item_code", "price_list", "price_list_rate"],
+        )
+        for price in prices:
+            price_map.setdefault(price.item_code, {})[price.price_list] = flt(price.price_list_rate or 0)
+
+    rows = [[
+        "description",
+        "code",
+        "wholesale_rate",
+        "retail_rate",
+        "special_rate",
+    ]]
+    for item in filtered_items:
+        rows.append([
+            item.item_name or "",
+            item.item_code or "",
+            price_map.get(item.item_code, {}).get("Wholesale", 0),
+            price_map.get(item.item_code, {}).get("Retail", flt(item.standard_rate or 0)),
+            price_map.get(item.item_code, {}).get("Special", 0),
+        ])
+
+    filename = frappe.scrub(f"{category}_items_export") or "glass_items_export"
+    return _build_xlsx_file(filename, rows)
+
+
+@frappe.whitelist()
+def export_standard_items(category):
+    storage_category = _get_storage_category(category)
+    if storage_category in ("Aluminium", "Glass"):
+        frappe.throw("This export is only available for non-glass, non-aluminium categories.")
+
+    item_fields = ["item_code", "item_name", "standard_rate"]
+    items = frappe.get_all(
+        "Item",
+        filters={"item_group": storage_category, "disabled": 0},
+        fields=item_fields,
+        order_by="item_code asc",
+    )
+
+    item_codes = [item.item_code for item in items]
+    price_map = {}
+    if item_codes:
+        prices = frappe.get_all(
+            "Item Price",
+            filters={
+                "item_code": ("in", item_codes),
+                "price_list": ("in", ["Retail", "Wholesale", "Special"]),
+                "selling": 1,
+            },
+            fields=["item_code", "price_list", "price_list_rate"],
+        )
+        for price in prices:
+            price_map.setdefault(price.item_code, {})[price.price_list] = flt(price.price_list_rate or 0)
+
+    rows = [[
+        "description",
+        "code",
+        "wholesale_rate",
+        "retail_rate",
+        "special_rate",
+    ]]
+    for item in items:
+        rows.append([
+            item.item_name or "",
+            item.item_code or "",
+            price_map.get(item.item_code, {}).get("Wholesale", 0),
+            price_map.get(item.item_code, {}).get("Retail", flt(item.standard_rate or 0)),
+            price_map.get(item.item_code, {}).get("Special", 0),
+        ])
+
+    filename = frappe.scrub(f"{category}_items_export") or "items_export"
+    return _build_xlsx_file(filename, rows)
+
+
 def _normalize_glass_dimension_uom(dimension_uom=None):
     return "inches" if (dimension_uom or "").strip().lower() == "inches" else "mm"
 
@@ -2190,10 +2297,19 @@ def save_dimension_intervals(intervals, interval_set=None):
 @frappe.whitelist()
 def get_glass_sheet_configs(glass_type=None):
     _ensure_glass_sheet_config_storage()
-    glass_type = _normalize_glass_sheet_type(glass_type or "Ordinary")
+    shared_glass_type = _get_shared_glass_sheet_type()
+    rows = frappe.get_all(
+        "Glass Sheet Config",
+        filters={"glass_type": shared_glass_type},
+        fields=["size", "sft"],
+        order_by="creation asc",
+    )
+    if rows:
+        return rows
+
     return frappe.get_all(
         "Glass Sheet Config",
-        filters={"glass_type": glass_type},
+        filters={"glass_type": ("!=", shared_glass_type)},
         fields=["size", "sft"],
         order_by="creation asc",
     )
@@ -2202,10 +2318,10 @@ def get_glass_sheet_configs(glass_type=None):
 @frappe.whitelist()
 def save_glass_sheet_configs(rows, glass_type=None):
     _ensure_glass_sheet_config_storage()
-    glass_type = _normalize_glass_sheet_type(glass_type or "Ordinary")
+    shared_glass_type = _get_shared_glass_sheet_type()
     rows = json.loads(rows) if isinstance(rows, str) else (rows or [])
 
-    existing = frappe.get_all("Glass Sheet Config", filters={"glass_type": glass_type}, pluck="name")
+    existing = frappe.get_all("Glass Sheet Config", pluck="name")
     for name in existing:
         frappe.delete_doc("Glass Sheet Config", name, ignore_permissions=True, force=1)
 
@@ -2217,7 +2333,7 @@ def save_glass_sheet_configs(rows, glass_type=None):
 
         frappe.get_doc({
             "doctype": "Glass Sheet Config",
-            "glass_type": glass_type,
+            "glass_type": shared_glass_type,
             "size": size,
             "sft": sft,
         }).insert(ignore_permissions=True)
