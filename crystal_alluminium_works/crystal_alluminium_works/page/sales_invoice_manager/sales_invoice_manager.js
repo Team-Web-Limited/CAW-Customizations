@@ -13,6 +13,84 @@ frappe.pages['sales-invoice-manager'].on_page_load = function(wrapper) {
 };
 
 const SALES_INVOICE_VAT_RATE = 0.16;
+const SALES_INVOICE_CEILING_COMPONENTS = [
+	{ label: 'Board', ratio: 0.36, mode: 'divide' },
+	{ label: 'MainT', ratio: 0.25, mode: 'multiply' },
+	{ label: 'Sub Cross 4ft', ratio: 1.33, mode: 'multiply' },
+	{ label: 'Sub Cross 2ft', ratio: 1.33, mode: 'multiply' },
+	{ label: 'Wall angle', ratio: 0.25, mode: 'multiply' }
+];
+const SALES_INVOICE_CEILING_BOARD_ITEM_CODES = new Set(['AMC', 'AGC']);
+
+function sales_invoice_is_ceiling_bundle(item) {
+	return flt(item.custom_ceiling_sq_m || 0) > 0;
+}
+
+function sales_invoice_is_ceiling_board_item(item) {
+	return SALES_INVOICE_CEILING_BOARD_ITEM_CODES.has((item.item_code || '').trim());
+}
+
+function get_sales_invoice_ceiling_single_label(item) {
+	if (sales_invoice_is_ceiling_board_item(item)) {
+		return 'Board';
+	}
+
+	return (item.item_name || item.item_code || '').trim();
+}
+
+function get_sales_invoice_ceiling_review_config(items) {
+	let has_bundle = (items || []).some(sales_invoice_is_ceiling_bundle);
+	if (has_bundle) {
+		return {
+			has_bundle: true,
+			show_quantity: true,
+			show_uom: true,
+			columns: SALES_INVOICE_CEILING_COMPONENTS.map(component => ({
+				label: component.label,
+				key: component.label,
+				bundle_component: true
+			}))
+		};
+	}
+
+	let seen = new Set();
+	let columns = [];
+	(items || []).forEach(item => {
+		let label = get_sales_invoice_ceiling_single_label(item);
+		if (!label || seen.has(label)) {
+			return;
+		}
+		seen.add(label);
+		columns.push({
+			label: label,
+			key: label,
+			bundle_component: false
+		});
+	});
+
+	return {
+		has_bundle: false,
+		show_quantity: false,
+		show_uom: true,
+		columns: columns
+	};
+}
+
+function get_sales_invoice_ceiling_component_qty(item, column, child_rows) {
+	let quantity = flt(item.custom_ceiling_sq_m || 0);
+	if (!quantity) {
+		return '-';
+	}
+
+	if (column.key === 'Board') {
+		return Math.trunc(quantity / 0.36);
+	}
+
+	let component_row = (child_rows || []).find(child =>
+		(child.item_code || child.item_name || '').trim() === column.key
+	);
+	return component_row ? Math.trunc(flt(component_row.qty || 0)) : '-';
+}
 
 function get_sales_invoice_item_uom_label(item) {
 	if (item.custom_product_category === 'Glass' && item.custom_glass_sale_mode === 'Full Sheet') {
@@ -166,12 +244,9 @@ function render_sales_invoice_fittings_row(item, index, doc) {
 
 function render_sales_invoice_other_row(item, index, doc) {
 	let category = item.custom_product_category || item.item_group || 'Other';
-	let cat_color = {'Ceiling':'#2ecc71','Fittings':'#e67e22','Rubber':'#8e44ad','Silicone':'#16a085'}[category] || '#7f8c8d';
+	let cat_color = {'Fittings':'#e67e22','Rubber':'#8e44ad','Silicone':'#16a085'}[category] || '#7f8c8d';
 	let price_list = doc ? doc.selling_price_list : 'Retail';
 	let rate = item.rate;
-	if (category === 'Ceiling' && item.custom_ceiling_sq_m) {
-		rate = item.rate / item.custom_ceiling_sq_m;
-	}
 	return `
 		<tr>
 			<td style="text-align:center;">${index + 1}</td>
@@ -186,6 +261,47 @@ function render_sales_invoice_other_row(item, index, doc) {
 			</td>
 			<td style="text-align:right;">${format_currency(rate, doc ? doc.currency : 'KES')}</td>
 			<td style="text-align:right;font-weight:600;">${format_currency(item.amount, doc ? doc.currency : 'KES')}</td>
+		</tr>
+	`;
+}
+
+function render_sales_invoice_ceiling_row(item, index, doc, ceiling_review, service_rows_by_parent) {
+	let is_bundle = sales_invoice_is_ceiling_bundle(item);
+	let child_rows = service_rows_by_parent[item.idx] || [];
+	let ceiling_quantity = flt(item.custom_ceiling_sq_m || 0);
+	let item_label = get_sales_invoice_ceiling_single_label(item);
+	let price_list = item.custom_price_list || (doc ? doc.selling_price_list : 'Retail');
+	let rate = is_bundle && ceiling_quantity ? item.rate / ceiling_quantity : item.rate;
+	let amount = item.amount + child_rows.reduce((sum, child) => sum + (child.amount || 0), 0);
+	let uom = get_sales_invoice_item_uom_label(item);
+
+	if (is_bundle || sales_invoice_is_ceiling_board_item(item)) {
+		uom = uom || 'Square Meter';
+	} else {
+		uom = uom || 'Nos';
+	}
+
+	let ceiling_cells = ceiling_review.columns.map(column => {
+		if (is_bundle) {
+			return `<td style="text-align:center;white-space:nowrap;">${get_sales_invoice_ceiling_component_qty(item, column, child_rows)}</td>`;
+		}
+
+		return `<td style="text-align:center;white-space:nowrap;">${item_label === column.key ? format_sales_invoice_review_number(item.qty || 0, 0) : '-'}</td>`;
+	}).join('');
+
+	return `
+		<tr>
+			<td style="text-align:center;">${index + 1}</td>
+			<td style="font-weight:500;">${frappe.utils.escape_html(item.item_name || item.item_code || '')}</td>
+			<td style="text-align:center;">${format_sales_invoice_review_number(item.qty || 0, 2)}</td>
+			${ceiling_review.show_quantity ? `<td style="text-align:center;">${is_bundle ? format_sales_invoice_review_number(ceiling_quantity) : '-'}</td>` : ''}
+			${ceiling_review.show_uom ? `<td style="text-align:center;white-space:nowrap;">${frappe.utils.escape_html(uom)}</td>` : ''}
+			${ceiling_cells}
+			<td style="text-align:center;">
+				<span style="background:var(--subtle-fg);padding:2px 8px;border-radius:6px;font-size:12px;">${frappe.utils.escape_html(price_list)}</span>
+			</td>
+			<td style="text-align:right;">${format_currency(rate, doc ? doc.currency : 'KES')}</td>
+			<td style="text-align:right;font-weight:600;">${format_currency(amount, doc ? doc.currency : 'KES')}</td>
 		</tr>
 	`;
 }
@@ -414,8 +530,9 @@ async function render_sales_invoice_dashboard(page, invoice_name, wrapper, defau
 		const glass_items = manual_items.filter(i => i.custom_product_category === 'Glass');
 		const aluminium_items = manual_items.filter(i => i.custom_product_category === 'Aluminium');
 		const fittings_items = manual_items.filter(i => i.custom_product_category === 'Fittings');
+		const ceiling_items = manual_items.filter(i => i.custom_product_category === 'Ceiling');
 		const other_items = manual_items.filter(i =>
-			!['Glass', 'Aluminium', 'Fittings'].includes(i.custom_product_category)
+			!['Glass', 'Aluminium', 'Fittings', 'Ceiling'].includes(i.custom_product_category)
 		);
 
 		let service_rows_by_parent = {};
@@ -436,6 +553,7 @@ async function render_sales_invoice_dashboard(page, invoice_name, wrapper, defau
 		let glass_total = glass_items.reduce((s, i) => s + get_item_total(i), 0);
 		let aluminium_total = aluminium_items.reduce((s, i) => s + get_item_total(i), 0);
 		let fittings_total = fittings_items.reduce((s, i) => s + get_item_total(i), 0);
+		let ceiling_total = ceiling_items.reduce((s, i) => s + get_item_total(i), 0);
 		let other_total = other_items.reduce((s, i) => s + get_item_total(i), 0);
 
 		let glass_html = '';
@@ -531,6 +649,39 @@ async function render_sales_invoice_dashboard(page, invoice_name, wrapper, defau
 							</thead>
 							<tbody>
 								${fittings_items.map((i, index) => render_sales_invoice_fittings_row(i, index, doc)).join('')}
+							</tbody>
+						</table>
+					</div>
+				</div>
+			`;
+		}
+
+		let ceiling_html = '';
+		if (ceiling_items.length) {
+			let ceiling_review = get_sales_invoice_ceiling_review_config(ceiling_items);
+			ceiling_html = `
+				<div style="margin-bottom:24px;">
+					<h5 style="margin:0 0 10px 0;font-size:15px;font-weight:600;color:#2ecc71;display:flex;align-items:center;gap:8px;">
+						<span style="background:#2ecc7120;padding:3px 10px;border-radius:10px;font-size:12px;">🟩</span> Ceiling Items
+						<span style="margin-left:auto;font-size:13px;color:var(--text-muted);font-weight:500;">Subtotal: ${format_currency(ceiling_total, doc.currency)}</span>
+					</h5>
+					<div class="sim-table-wrap">
+						<table class="sim-table sim-review-table" style="background:var(--card-bg); margin-bottom:0; min-width:900px;">
+							<thead>
+								<tr>
+									<th style="text-align:center;white-space:nowrap;">No</th>
+									<th style="white-space:nowrap;">Item</th>
+									<th style="text-align:center;white-space:nowrap;">Qty</th>
+									${ceiling_review.show_quantity ? '<th style="text-align:center;white-space:nowrap;">Quantity</th>' : ''}
+									${ceiling_review.show_uom ? '<th style="text-align:center;white-space:nowrap;">UOM</th>' : ''}
+									${ceiling_review.columns.map(column => `<th style="text-align:center;white-space:nowrap;">${frappe.utils.escape_html(column.label)}</th>`).join('')}
+									<th style="text-align:center;white-space:nowrap;">Price List</th>
+									<th style="text-align:right;white-space:nowrap;">Rate</th>
+									<th style="text-align:right;white-space:nowrap;">Amount</th>
+								</tr>
+							</thead>
+							<tbody>
+								${ceiling_items.map((i, index) => render_sales_invoice_ceiling_row(i, index, doc, ceiling_review, service_rows_by_parent)).join('')}
 							</tbody>
 						</table>
 					</div>
@@ -724,8 +875,9 @@ async function render_sales_invoice_dashboard(page, invoice_name, wrapper, defau
 					${glass_html}
 					${aluminium_html}
 					${fittings_html}
+					${ceiling_html}
 					${other_html}
-					${(!glass_html && !aluminium_html && !fittings_html && !other_html) ? '<p style="text-align:center;color:var(--text-muted);padding:20px;">No items in this invoice.</p>' : ''}
+					${(!glass_html && !aluminium_html && !fittings_html && !ceiling_html && !other_html) ? '<p style="text-align:center;color:var(--text-muted);padding:20px;">No items in this invoice.</p>' : ''}
 				</div>
 				<div class="sim-total-row">
 					<span style="font-size: 16px; font-weight: 600;">Grand Total</span>

@@ -19,6 +19,19 @@ const QM_CEILING_COMPONENTS = [
 	{ label: 'Sub Cross 2ft', ratio: 1.33, mode: 'multiply' },
 	{ label: 'Wall angle', ratio: 0.25, mode: 'multiply' }
 ];
+const QM_CEILING_BOARD_ITEM_CODES = new Set(['AMC', 'AGC']);
+
+function is_manager_ceiling_board_item(item) {
+	return QM_CEILING_BOARD_ITEM_CODES.has((item.item_code || '').trim());
+}
+
+function get_manager_ceiling_single_label(item) {
+	if (is_manager_ceiling_board_item(item)) {
+		return 'Board';
+	}
+
+	return (item.item_name || item.item_code || '').trim();
+}
 
 function get_manager_item_uom_label(item) {
 	if (item.custom_product_category === 'Glass' && item.custom_glass_sale_mode === 'Full Sheet') {
@@ -172,7 +185,7 @@ function render_manager_review_glass_row(item, index) {
 			<td style="text-align:center; white-space:nowrap;">${format_manager_review_number(item.custom_perimeter_rft || 0)}</td>
 			<td style="text-align:center; white-space:nowrap;">${format_manager_review_number(item.custom_area_sqft || 0)}</td>
 			<td style="white-space:nowrap;">${get_manager_polish_sides_label(item) || '-'}</td>
-			<td style="text-align:center; white-space:nowrap;">${index + 1}</td>
+			<td style="text-align:center; white-space:nowrap;">${item.custom_numbering || '-'}</td>
 			<td style="text-align:center; white-space:nowrap;">${format_manager_review_number(item.custom_width_mm || 0, 0)}</td>
 			<td style="text-align:center; white-space:nowrap;">${format_manager_review_number(item.custom_height_mm || 0, 0)}</td>
 			<td style="text-align:center; white-space:nowrap;">${pieces || '-'}</td>
@@ -225,15 +238,22 @@ function render_manager_review_ceiling_row(item, index, doc, display_amount = nu
 	let rate = is_bundle && quantity ? (flt(item.rate || 0) / quantity) : flt(item.rate || 0);
 	let amount = display_amount === null ? item.amount : display_amount;
 	let components = get_manager_ceiling_component_breakdown(quantity);
+	let item_label = get_manager_ceiling_single_label(item);
+	let component_cells = QM_CEILING_COMPONENTS.map((component, idx) => {
+		if (is_bundle) {
+			return format_manager_review_number((components[idx] || {}).qty, 0);
+		}
+
+		return item_label === component.label ? format_manager_review_number(item.qty || 0, 0) : '-';
+	}).map(value => `<td style="text-align:center;white-space:nowrap;">${value}</td>`).join('');
 
 	return `
 		<tr>
 			<td style="text-align:center;">${index + 1}</td>
 			<td style="font-weight:500;">${frappe.utils.escape_html(item.item_name || item.item_code || '')}</td>
-			<td style="text-align:center;">${item.qty || '-'}</td>
 			<td style="text-align:center;">${is_bundle ? format_manager_review_number(quantity) : '-'}</td>
 			<td style="text-align:center;white-space:nowrap;">${is_bundle ? 'sft' : '-'}</td>
-			${QM_CEILING_COMPONENTS.map((component, idx) => `<td style="text-align:center;white-space:nowrap;">${is_bundle ? format_manager_review_number((components[idx] || {}).qty, 0) : '-'}</td>`).join('')}
+			${component_cells}
 			<td style="text-align:center;">
 				<span style="background:var(--subtle-fg);padding:2px 8px;border-radius:6px;font-size:12px;">${price_list}</span>
 			</td>
@@ -480,7 +500,6 @@ function render_quotation_dashboard(page, quotation_name, wrapper) {
 								<tr>
 									<th style="text-align:center;white-space:nowrap;">No</th>
 									<th style="white-space:nowrap;">Item</th>
-									<th style="text-align:center;white-space:nowrap;">Qty</th>
 									<th style="text-align:center;white-space:nowrap;">Quantity</th>
 									<th style="text-align:center;white-space:nowrap;">UOM</th>
 									${QM_CEILING_COMPONENTS.map(component => `<th style="text-align:center;white-space:nowrap;">${frappe.utils.escape_html(component.label)}</th>`).join('')}

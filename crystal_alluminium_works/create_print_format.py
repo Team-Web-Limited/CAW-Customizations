@@ -6,7 +6,7 @@ def build_crystal_print_format_html(ref_label, terms):
     {{% set normalized = (value or '')|trim|lower %}}
     {{% if normalized == 'square foot' %}}sft
     {{% elif normalized == 'square meter' %}}sqm
-    {{% elif normalized in ['meter', 'metre'] %}}m
+    {{% elif normalized in ['meter', 'metre', 'len'] %}}len
     {{% elif normalized in ['running foot', 'rft'] %}}rft
     {{% elif normalized == 'nos' %}}nos
     {{% else %}}{{{{ value or '-' }}}}{{% endif %}}
@@ -74,6 +74,12 @@ def build_crystal_print_format_html(ref_label, terms):
 
 {{% set has_color_rows = namespace(value=false) %}}
 {{% set has_glass_rows = namespace(value=false) %}}
+{{% set has_non_ceiling_parent = namespace(value=false) %}}
+{{% set has_ceiling_parent = namespace(value=false) %}}
+{{% set has_ceiling_bundle = namespace(value=false) %}}
+{{% set ceiling_single_labels = namespace(items=[]) %}}
+{{% set ceiling_component_labels = ['Board', 'MainT', 'Sub Cross 4ft', 'Sub Cross 2ft', 'Wall angle'] %}}
+{{% set ceiling_board_item_codes = ['AMC', 'AGC'] %}}
 {{% for row in doc.items %}}
     {{% if not row.custom_auto_generated and (row.custom_aluminium_color or '')|trim %}}
         {{% set has_color_rows.value = true %}}
@@ -81,8 +87,25 @@ def build_crystal_print_format_html(ref_label, terms):
     {{% if not row.custom_auto_generated and (row.custom_product_category or '') == 'Glass' %}}
         {{% set has_glass_rows.value = true %}}
     {{% endif %}}
+    {{% if not row.custom_auto_generated %}}
+        {{% set row_category = row.custom_product_category or '' %}}
+        {{% if row_category == 'Ceiling' %}}
+            {{% set has_ceiling_parent.value = true %}}
+            {{% if frappe.utils.flt(row.custom_ceiling_sq_m or 0) > 0 %}}
+                {{% set has_ceiling_bundle.value = true %}}
+            {{% else %}}
+                {{% set single_label = 'Board' if row.item_code in ceiling_board_item_codes else (row.item_name or row.item_code or '') %}}
+                {{% if single_label and single_label not in ceiling_single_labels.items %}}
+                    {{% set ceiling_single_labels.items = ceiling_single_labels.items + [single_label] %}}
+                {{% endif %}}
+            {{% endif %}}
+        {{% else %}}
+            {{% set has_non_ceiling_parent.value = true %}}
+        {{% endif %}}
+    {{% endif %}}
 {{% endfor %}}
 
+{{% if has_non_ceiling_parent.value %}}
 <table class="cq-table">
     <thead>
         <tr>
@@ -109,7 +132,7 @@ def build_crystal_print_format_html(ref_label, terms):
     <tbody>
         {{% set quotation_totals = namespace(pcs=0, qty=0, holes=0, notches=0) %}}
         {{% for parent in doc.items %}}
-            {{% if not parent.custom_auto_generated %}}
+            {{% if not parent.custom_auto_generated and (parent.custom_product_category or '') != 'Ceiling' %}}
                 {{% set parent_category = parent.custom_product_category or '' %}}
                 {{% set pieces = parent.qty or 0 %}}
                 {{% set qty = parent.qty or 0 %}}
@@ -117,18 +140,6 @@ def build_crystal_print_format_html(ref_label, terms):
                 {{% if parent_category == 'Aluminium' %}}
                     {{% set qty = parent.custom_aluminium_metres or 0 %}}
                     {{% set uom = parent.uom or 'Meter' %}}
-                {{% elif parent_category == 'Ceiling' %}}
-                    {{% if frappe.utils.flt(parent.custom_ceiling_sq_m or 0) > 0 %}}
-                        {{% set qty = parent.custom_ceiling_sq_m or 0 %}}
-                        {{% set uom = parent.uom or 'Square Meter' %}}
-                    {{% else %}}
-                        {{% set qty = parent.qty or 0 %}}
-                        {{% if parent.item_code in ['AMC', 'AGC'] %}}
-                            {{% set uom = parent.uom or 'Square Meter' %}}
-                        {{% else %}}
-                            {{% set uom = parent.uom or 'Nos' %}}
-                        {{% endif %}}
-                    {{% endif %}}
                 {{% elif parent_category == 'Glass' %}}
                     {{% if parent.custom_glass_sale_mode == 'Full Sheet' %}}
                         {{% set qty = parent.qty or 0 %}}
@@ -174,8 +185,6 @@ def build_crystal_print_format_html(ref_label, terms):
                     {{% endif %}}
                 {{% elif parent_category == 'Aluminium' and frappe.utils.flt(parent.custom_aluminium_metres or 0) > 0 %}}
                     {{% set display_rate = (parent.rate or 0) / frappe.utils.flt(parent.custom_aluminium_metres or 0) %}}
-                {{% elif parent_category == 'Ceiling' and frappe.utils.flt(parent.custom_ceiling_sq_m or 0) > 0 %}}
-                    {{% set display_rate = (parent.rate or 0) / frappe.utils.flt(parent.custom_ceiling_sq_m or 0) %}}
                 {{% endif %}}
                 {{% for child in child_rows.items %}}
                     {{% set child_label = ((child.item_name or child.item_code or '')|lower) %}}
@@ -199,7 +208,9 @@ def build_crystal_print_format_html(ref_label, terms):
                     <td style="text-align: right; white-space: nowrap;">{{{{ frappe.format_value(display_rate, df={{'fieldtype': 'Currency'}}, doc=doc) }}}}</td>
                     <td style="text-align: center; white-space: nowrap;">{{{{ frappe.utils.flt(qty, 3) }}}}</td>
                     <td style="text-align: center; white-space: nowrap;">{{{{ short_uom(uom) }}}}</td>
-                    <td style="text-align: center; white-space: nowrap;">{{{{ parent.idx or '-' }}}}</td>
+                    <td style="text-align: center; white-space: nowrap;">
+                        {{% if parent_category == 'Glass' %}}{{{{ parent.custom_numbering or '-' }}}}{{% else %}}-{{% endif %}}
+                    </td>
                     {{% if has_glass_rows.value %}}
                     <td style="text-align: center; white-space: nowrap;">{{{{ display_width }}}}</td>
                     <td style="text-align: center; white-space: nowrap;">{{{{ display_height }}}}</td>
@@ -244,17 +255,96 @@ def build_crystal_print_format_html(ref_label, terms):
         {{% endif %}}
     </tbody>
 </table>
+{{% endif %}}
+
+{{% if has_ceiling_parent.value %}}
+{{% set ceiling_columns = ceiling_component_labels if has_ceiling_bundle.value else ceiling_single_labels.items %}}
+<div style="margin: 10px 0 8px 0; font-size: 13px; font-weight: bold; color: #2c3e50; text-transform: uppercase;">Ceiling Items</div>
+<table class="cq-table">
+    <thead>
+        <tr>
+            <th style="text-align: center; white-space: nowrap;">No</th>
+            <th style="text-align: left; white-space: nowrap;">Item</th>
+            {{% if has_ceiling_bundle.value %}}
+            <th style="text-align: center; white-space: nowrap;">Quantity</th>
+            {{% endif %}}
+            <th style="text-align: center; white-space: nowrap;">UOM</th>
+            {{% for column in ceiling_columns %}}
+            <th style="text-align: center; white-space: nowrap;">{{{{ column }}}}</th>
+            {{% endfor %}}
+            <th style="text-align: right; white-space: nowrap;">Rate</th>
+            <th style="text-align: right; white-space: nowrap;">Amount</th>
+        </tr>
+    </thead>
+    <tbody>
+        {{% for parent in doc.items %}}
+            {{% if not parent.custom_auto_generated and (parent.custom_product_category or '') == 'Ceiling' %}}
+                {{% set is_bundle = frappe.utils.flt(parent.custom_ceiling_sq_m or 0) > 0 %}}
+                {{% set ceiling_quantity = parent.custom_ceiling_sq_m or 0 %}}
+                {{% set item_label = 'Board' if parent.item_code in ceiling_board_item_codes else (parent.item_name or parent.item_code or '') %}}
+                {{% set display_uom = parent.uom or 'Nos' %}}
+                {{% if is_bundle or parent.item_code in ceiling_board_item_codes %}}
+                    {{% set display_uom = parent.uom or 'Square Meter' %}}
+                {{% endif %}}
+                {{% set child_rows = namespace(items=[]) %}}
+                {{% for child in doc.items %}}
+                    {{% if child.custom_auto_generated and child.custom_parent_row_idx == parent.idx %}}
+                        {{% set child_rows.items = child_rows.items + [child] %}}
+                    {{% endif %}}
+                {{% endfor %}}
+                {{% set line = namespace(amount=parent.amount or 0) %}}
+                {{% for child in child_rows.items %}}
+                    {{% set line.amount = line.amount + (child.amount or 0) %}}
+                {{% endfor %}}
+                {{% set display_rate = parent.rate or 0 %}}
+                {{% if is_bundle and frappe.utils.flt(ceiling_quantity or 0) > 0 %}}
+                    {{% set display_rate = (parent.rate or 0) / frappe.utils.flt(ceiling_quantity or 0) %}}
+                {{% endif %}}
+                <tr>
+                    <td style="text-align: center; white-space: nowrap;">{{{{ parent.idx or '-' }}}}</td>
+                    <td>{{{{ parent.item_name or parent.item_code or '' }}}}</td>
+                    {{% if has_ceiling_bundle.value %}}
+                    <td style="text-align: center; white-space: nowrap;">
+                        {{% if is_bundle %}}{{{{ frappe.utils.flt(ceiling_quantity, 3) }}}}{{% else %}}-{{% endif %}}
+                    </td>
+                    {{% endif %}}
+                    <td style="text-align: center; white-space: nowrap;">{{{{ short_uom(display_uom) }}}}</td>
+                    {{% for column in ceiling_columns %}}
+                        {{% set column_qty = namespace(value='-') %}}
+                        {{% if is_bundle %}}
+                            {{% if column == 'Board' %}}
+                                {{% set column_qty.value = frappe.utils.cint((ceiling_quantity or 0) / 0.36) %}}
+                            {{% else %}}
+                                {{% for child in child_rows.items %}}
+                                    {{% if (child.item_code or child.item_name or '') == column %}}
+                                        {{% set column_qty.value = frappe.utils.flt(child.qty or 0, 0) %}}
+                                    {{% endif %}}
+                                {{% endfor %}}
+                            {{% endif %}}
+                        {{% elif item_label == column %}}
+                            {{% set column_qty.value = frappe.utils.flt(parent.qty or 0, 0) %}}
+                        {{% endif %}}
+                    <td style="text-align: center; white-space: nowrap;">{{{{ column_qty.value }}}}</td>
+                    {{% endfor %}}
+                    <td style="text-align: right; white-space: nowrap;">{{{{ frappe.format_value(display_rate, df={{'fieldtype': 'Currency'}}, doc=doc) }}}}</td>
+                    <td style="text-align: right; white-space: nowrap;">{{{{ frappe.format_value(line.amount, df={{'fieldtype': 'Currency'}}, doc=doc) }}}}</td>
+                </tr>
+            {{% endif %}}
+        {{% endfor %}}
+    </tbody>
+</table>
+{{% endif %}}
 
 {{% set subtotal_amount = frappe.utils.flt(doc.grand_total or 0) %}}
 {{% set vat_amount = subtotal_amount * 0.16 %}}
 {{% set total_amount = subtotal_amount + vat_amount %}}
 {{% set outstanding_display_amount = (frappe.utils.flt(doc.outstanding_amount or 0) * 1.16) if doc.doctype == 'Sales Invoice' and frappe.utils.flt(doc.total_taxes_and_charges or 0) == 0 else frappe.utils.flt(doc.outstanding_amount or 0) %}}
 {{% set paid_display_amount = 0 %}}
-{{% if doc.doctype == 'Sales Invoice' and (doc.status == 'Unpaid' or doc.status == 'Overdue') %}}
+{{% if doc.doctype == 'Sales Invoice' and (doc.docstatus != 1 or doc.status == 'Unpaid' or doc.status == 'Overdue') %}}
     {{% set outstanding_display_amount = total_amount %}}
 {{% elif doc.doctype == 'Sales Invoice' %}}
     {{% set paid_display_amount = frappe.utils.flt(total_amount - outstanding_display_amount) %}}
-    {{% if paid_display_amount > -0.5 and paid_display_amount < 0.5 %}}
+    {{% if paid_display_amount < 0 or (paid_display_amount > -0.5 and paid_display_amount < 0.5) %}}
         {{% set paid_display_amount = 0 %}}
         {{% set outstanding_display_amount = total_amount %}}
     {{% endif %}}

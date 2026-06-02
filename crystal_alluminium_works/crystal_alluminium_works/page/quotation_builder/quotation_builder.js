@@ -617,7 +617,7 @@ function render_review_glass_row(item, index) {
 				<td style="text-align:center;white-space:nowrap;">-</td>
 				<td style="text-align:center;white-space:nowrap;">-</td>
 				<td style="text-align:center;white-space:nowrap;">-</td>
-				<td style="text-align:center;">${index + 1}</td>
+				<td style="text-align:center;">${item.numbering || '-'}</td>
 				<td style="text-align:center;">${frappe.utils.escape_html(item.sheet_size || '')}</td>
 				<td style="text-align:center;">${format_review_number(item.sheet_sft || 0)}</td>
 				<td style="text-align:center;">Sheet</td>
@@ -650,7 +650,7 @@ function render_review_glass_row(item, index) {
 			<td style="text-align:center;white-space:nowrap;">${get_glass_count_with_price(item.holes || 0, holes_entry)}</td>
 			<td style="text-align:center;white-space:nowrap;">${get_glass_count_with_price(item.notches || 0, notches_entry)}</td>
 			<td style="text-align:center;white-space:nowrap;">${get_glass_sandblast_review_label(item)}</td>
-			<td style="text-align:center;">${index + 1}</td>
+			<td style="text-align:center;">${item.numbering || '-'}</td>
 			<td style="text-align:center;">${format_review_number(get_glass_dimension_review_value(item, 'width_mm'), item.dimension_uom === 'inches' ? 2 : 0)}</td>
 			<td style="text-align:center;">${format_review_number(get_glass_dimension_review_value(item, 'height_mm'), item.dimension_uom === 'inches' ? 2 : 0)}</td>
 			<td style="text-align:center;">${get_glass_dimension_label(item.dimension_uom)}</td>
@@ -700,12 +700,12 @@ function render_review_other_row(item, index, ceiling_review = null) {
 	let ceiling_components = is_ceiling_bundle ? get_ceiling_component_breakdown(ceiling_quantity) : [];
 	let ceiling_cells = '';
 	if (item.category === 'Ceiling' && ceiling_review) {
+		let item_label = get_ceiling_single_review_label(item);
 		ceiling_cells = ceiling_review.columns.map((column, column_index) => {
-			if (ceiling_review.has_bundle) {
-				return `<td style="text-align:center;white-space:nowrap;">${is_ceiling_bundle ? format_review_number((ceiling_components[column_index] || {}).qty, 0) : '-'}</td>`;
+			if (is_ceiling_bundle) {
+				return `<td style="text-align:center;white-space:nowrap;">${format_review_number((ceiling_components[column_index] || {}).qty, 0)}</td>`;
 			}
 
-			let item_label = get_ceiling_single_review_label(item);
 			return `<td style="text-align:center;white-space:nowrap;">${item_label === column.key ? format_review_number(item.qty || 0, 0) : '-'}</td>`;
 		}).join('');
 	}
@@ -714,7 +714,7 @@ function render_review_other_row(item, index, ceiling_review = null) {
 			<td style="text-align:center;">${index + 1}</td>
 			<td style="font-weight:500;">${frappe.utils.escape_html(item.item_name || item.item_code || '')}</td>
 			${item.category !== 'Ceiling' ? `<td style="white-space:pre-wrap;">${item.description ? frappe.utils.escape_html(item.description) : '-'}</td>` : ''}
-			<td style="text-align:center;">${item.qty || '-'}</td>
+			${item.category !== 'Ceiling' ? `<td style="text-align:center;">${item.qty || '-'}</td>` : ''}
 			${item.category === 'Ceiling' && ceiling_review && ceiling_review.show_quantity ? `<td style="text-align:center;">${is_ceiling_bundle ? format_review_number(ceiling_quantity) : '-'}</td>` : ''}
 			${item.category === 'Ceiling' && ceiling_review && ceiling_review.show_uom ? `<td style="text-align:center;white-space:nowrap;">${get_item_uom_label(item)}</td>` : ''}
 			${item.category === 'Ceiling' ? ceiling_cells : ''}
@@ -750,7 +750,7 @@ function render_review_category_section(items, category) {
 							<th style="text-align:center;white-space:nowrap;">No</th>
 							<th style="white-space:nowrap;">Item</th>
 							${!is_ceiling ? '<th style="white-space:nowrap;">Description</th>' : ''}
-							<th style="text-align:center;white-space:nowrap;">Qty</th>
+							${!is_ceiling ? '<th style="text-align:center;white-space:nowrap;">Qty</th>' : ''}
 							${is_ceiling && ceiling_review.show_quantity ? '<th style="text-align:center;white-space:nowrap;">Quantity</th>' : ''}
 							${is_ceiling && ceiling_review.show_uom ? '<th style="text-align:center;white-space:nowrap;">UOM</th>' : ''}
 							${is_ceiling ? ceiling_review.columns.map(column => `<th style="text-align:center;white-space:nowrap;">${frappe.utils.escape_html(column.label)}</th>`).join('') : ''}
@@ -1306,7 +1306,8 @@ function open_item_editor(page, item, is_new = false) {
 						['Item', 'item_name', 'not like', '%Polishing%'],
 						['Item', 'item_name', 'not like', '%Drilling%'],
 						['Item', 'item_name', 'not like', '%Sandblasting%'],
-						['Item', 'item_name', 'not like', '%Hole%']
+						['Item', 'item_name', 'not like', '%Hole%'],
+						['Item', 'item_name', 'not like', '%Notch%']
 					];
 
 					if (item.glass_type_filter) {
@@ -2018,7 +2019,8 @@ function open_glass_import_dialog(page, dimension_uom = QB_DEFAULT_GLASS_DIMENSI
 				['Item', 'item_name', 'not like', '%Polishing%'],
 				['Item', 'item_name', 'not like', '%Drilling%'],
 				['Item', 'item_name', 'not like', '%Sandblasting%'],
-				['Item', 'item_name', 'not like', '%Hole%']
+				['Item', 'item_name', 'not like', '%Hole%'],
+				['Item', 'item_name', 'not like', '%Notch%']
 			]
 		};
 	};

@@ -1092,6 +1092,8 @@ def make_sales_invoice_from_quotation(source_name):
     invoice.set_posting_time = 1
     invoice.set_missing_values()
     invoice.set_missing_item_details(for_validate=True)
+    from crystal_alluminium_works.sales_invoice_handler import _reset_auto_generated_ceiling_component_pricing
+    _reset_auto_generated_ceiling_component_pricing(invoice)
     invoice.flags.ignore_permissions = True
     invoice.flags.ignore_mandatory = True
     invoice.insert()
@@ -1123,6 +1125,8 @@ def make_sales_invoice_from_sales_order(source_name):
     invoice.set_posting_time = 1
     invoice.set_missing_values()
     invoice.set_missing_item_details(for_validate=True)
+    from crystal_alluminium_works.sales_invoice_handler import _reset_auto_generated_ceiling_component_pricing
+    _reset_auto_generated_ceiling_component_pricing(invoice)
     invoice.flags.ignore_permissions = True
     invoice.flags.ignore_mandatory = True
     invoice.insert()
@@ -2354,6 +2358,88 @@ def delete_items(item_codes):
 			frappe.delete_doc("Item", item_code)
 			deleted += 1
 	return deleted
+
+@frappe.whitelist()
+def delete_aluminium_items_and_related_docs(item_codes=None):
+	import json
+
+	default_codes = ["A08.1", "A08", "A07.3", "A07.1"]
+	if not item_codes:
+		item_codes = default_codes
+	elif isinstance(item_codes, str):
+		item_codes = json.loads(item_codes) if item_codes.strip().startswith("[") else [code.strip() for code in item_codes.split(",") if code.strip()]
+
+	item_codes = list(dict.fromkeys(item_codes))
+	summary = {
+		"item_codes": item_codes,
+		"deleted": {
+			"Delivery Note": [],
+			"Sales Invoice": [],
+			"Sales Order": [],
+			"Quotation": [],
+			"Item Price": [],
+			"Item": [],
+		},
+		"errors": [],
+	}
+
+	def delete_docnames(doctype, docnames):
+		for name in docnames:
+			try:
+				doc = frappe.get_doc(doctype, name)
+				if doc.docstatus == 1:
+					doc.cancel()
+				frappe.delete_doc(doctype, name, ignore_permissions=True, force=1)
+				summary["deleted"][doctype].append(name)
+			except Exception:
+				summary["errors"].append({
+					"doctype": doctype,
+					"name": name,
+					"error": frappe.get_traceback(),
+				})
+
+	for doctype in ["Delivery Note", "Sales Invoice", "Sales Order", "Quotation"]:
+		child_doctype = f"{doctype} Item"
+		docnames = frappe.get_all(
+			child_doctype,
+			filters={"item_code": ["in", item_codes]},
+			distinct=True,
+			pluck="parent",
+		)
+		delete_docnames(doctype, docnames)
+
+	item_price_names = frappe.get_all(
+		"Item Price",
+		filters={"item_code": ["in", item_codes]},
+		pluck="name",
+	)
+	for name in item_price_names:
+		try:
+			frappe.delete_doc("Item Price", name, ignore_permissions=True, force=1)
+			summary["deleted"]["Item Price"].append(name)
+		except Exception:
+			summary["errors"].append({
+				"doctype": "Item Price",
+				"name": name,
+				"error": frappe.get_traceback(),
+			})
+
+	frappe.db.delete("Bin", {"item_code": ["in", item_codes]})
+
+	for item_code in item_codes:
+		if not frappe.db.exists("Item", item_code):
+			continue
+		try:
+			frappe.delete_doc("Item", item_code, ignore_permissions=True, force=1)
+			summary["deleted"]["Item"].append(item_code)
+		except Exception:
+			summary["errors"].append({
+				"doctype": "Item",
+				"name": item_code,
+				"error": frappe.get_traceback(),
+			})
+
+	return summary
 
 @frappe.whitelist()
 def get_all_glass_items():
