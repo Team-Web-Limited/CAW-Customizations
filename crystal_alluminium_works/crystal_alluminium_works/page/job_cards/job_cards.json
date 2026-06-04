@@ -1,0 +1,17 @@
+{
+ "creation": "2026-06-03 00:00:00.000000",
+ "docstatus": 0,
+ "doctype": "Page",
+ "modified": "2026-06-03 00:00:00.000000",
+ "module": "Crystal Alluminium Works",
+ "name": "job-cards",
+ "owner": "Administrator",
+ "page_name": "job-cards",
+ "roles": [
+  {
+   "role": "System Manager"
+  }
+ ],
+ "standard": "Yes",
+ "title": "Job Cards"
+}

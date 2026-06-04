@@ -125,6 +125,18 @@
   {
    "child": 1,
    "collapsible": 1,
+   "icon": "clipboard",
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "Job Cards",
+   "link_to": "job-cards",
+   "link_type": "Page",
+   "show_arrow": 0,
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "collapsible": 1,
    "icon": "receipt",
    "indent": 0,
    "keep_closed": 0,
@@ -147,7 +159,7 @@
    "type": "Link"
   }
  ],
- "modified": "2026-06-02 23:21:44.700402",
+ "modified": "2026-06-04 13:36:12.291980",
  "modified_by": "Administrator",
  "module": "Crystal Alluminium Works",
  "name": "Crystal Alluminium Works",

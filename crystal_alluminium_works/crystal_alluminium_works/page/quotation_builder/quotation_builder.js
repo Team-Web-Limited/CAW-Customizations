@@ -10,9 +10,12 @@ frappe.pages['quotation-builder'].on_page_load = function (wrapper) {
 	if (!window.qb_state) {
 		window.qb_state = {
 			customer: '',
+			payment_mode: 'invoice',
 			items: [],
 			step: 1
 		};
+	} else if (!window.qb_state.payment_mode) {
+		window.qb_state.payment_mode = QB_DEFAULT_CUSTOMER_PAYMENT_MODE;
 	}
 
 	page.set_primary_action('Generate Quotation', function () {
@@ -47,6 +50,14 @@ const QB_ALUMINIUM_PRICE_LIST_TO_LABEL = {
 };
 const QB_SHEET_GLASS_TYPES = new Set(['Ordinary', 'Ready Laminated']);
 const QB_SHARED_GLASS_SHEET_CONFIG_KEY = 'Shared';
+const QB_CUSTOMER_PAYMENT_MODE_OPTIONS = 'Cash Customer\nInvoice Customer';
+const QB_DEFAULT_CUSTOMER_PAYMENT_MODE = 'invoice';
+const QB_POLISH_TYPE_OPTIONS = '4-6\n8-10\n14-35';
+const QB_DEFAULT_POLISH_TYPE = '4-6';
+const QB_HOLE_TYPE_OPTIONS = '5mm\n6mm\n8mm\n10mm\n15mm\n20mm';
+const QB_DEFAULT_HOLE_TYPE = '5mm';
+const QB_NOTCH_TYPE_OPTIONS = 'Standard\nSmall\nMirror Screws\nTimber Box';
+const QB_DEFAULT_NOTCH_TYPE = 'Standard';
 const QB_CEILING_COMPONENTS = [
 	{ label: 'Board', ratio: 0.36, mode: 'divide' },
 	{ label: 'MainT', ratio: 0.25, mode: 'multiply' },
@@ -169,6 +180,16 @@ function get_aluminium_color_options() {
 		}
 	});
 	return options.join('\n');
+}
+
+function normalize_customer_payment_mode(value) {
+	return String(value || '').trim().toLowerCase() === 'cash customer' || String(value || '').trim().toLowerCase() === 'cash'
+		? 'cash'
+		: 'invoice';
+}
+
+function get_customer_payment_mode_label(value) {
+	return normalize_customer_payment_mode(value) === 'cash' ? 'Cash Customer' : 'Invoice Customer';
 }
 
 function normalize_aluminium_color_selection(value) {
@@ -782,11 +803,33 @@ function render_step(page, step) {
 	$(page.body).find('.qb-step-content').hide();
 	$(page.body).find(`.qb-step-content[data-step="${step}"]`).show();
 
+	if (step === 1) {
+		set_customer_step_focus(page);
+	}
+
 	// Toggle primary action visibility
 	page.clear_primary_action();
 	if (step === 3) {
 		render_review_step(page);
 	}
+}
+
+function set_customer_step_focus(page) {
+	const apply_focus = () => {
+		$(page.body).find('.qb-customer-field .has-error').removeClass('has-error');
+		$(page.body).find('.qb-payment-mode-field .frappe-control').addClass('has-error');
+
+		if (page.qb_customer_field && page.qb_customer_field.$input) {
+			page.qb_customer_field.$input.blur();
+		}
+		if (page.qb_payment_mode_field && page.qb_payment_mode_field.$input) {
+			page.qb_payment_mode_field.$input.focus();
+		}
+	};
+
+	apply_focus();
+	setTimeout(apply_focus, 0);
+	setTimeout(apply_focus, 150);
 }
 
 function render_review_step(page) {
@@ -930,10 +973,16 @@ function render_review_step(page) {
 	let html = `
 		<div style="background:var(--control-bg); padding:16px; border-radius:8px; border:1px solid var(--border-color);">
 			<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
-				<h4 style="margin:0;font-size:16px;">
-					<span style="color:var(--text-muted);">Customer:</span> 
-					${window.qb_state.customer || '<em style="color:var(--text-muted);">Not Selected</em>'}
-				</h4>
+				<div>
+					<h4 style="margin:0;font-size:16px;">
+						<span style="color:var(--text-muted);">Customer:</span> 
+						${window.qb_state.customer || '<em style="color:var(--text-muted);">Not Selected</em>'}
+					</h4>
+					<div style="font-size:13px;color:var(--text-muted);margin-top:4px;">
+						<span style="color:var(--text-muted);">Payment Mode:</span>
+						${frappe.utils.escape_html(get_customer_payment_mode_label(window.qb_state.payment_mode || QB_DEFAULT_CUSTOMER_PAYMENT_MODE))}
+					</div>
+				</div>
 				<div style="display:flex; gap:8px; align-items:center;">
 					<button class="btn btn-default" id="btn-export-review">Export</button>
 					<button class="btn btn-primary" id="btn-generate-quo">Generate Quotation</button>
@@ -971,8 +1020,24 @@ function render_review_step(page) {
 // Step 1: Customer selection
 // ────────────────────────────────────────────
 function setup_customer_step(page) {
+	let $payment_container = $(page.body).find('.qb-payment-mode-field');
 	let $container = $(page.body).find('.qb-customer-field');
+	$payment_container.empty();
 	$container.empty();
+
+	let payment_mode_field = frappe.ui.form.make_control({
+		df: {
+			fieldtype: 'Select',
+			label: 'Payment Mode',
+			fieldname: 'payment_mode',
+			options: QB_CUSTOMER_PAYMENT_MODE_OPTIONS,
+			default: get_customer_payment_mode_label(window.qb_state.payment_mode || QB_DEFAULT_CUSTOMER_PAYMENT_MODE),
+		},
+		parent: $payment_container,
+		render_input: true
+	});
+	payment_mode_field.$input.css({ 'font-size': '15px', 'padding': '10px' });
+	page.qb_payment_mode_field = payment_mode_field;
 
 	let customer_field = frappe.ui.form.make_control({
 		df: {
@@ -980,25 +1045,46 @@ function setup_customer_step(page) {
 			options: 'Customer',
 			label: 'Select Customer',
 			fieldname: 'customer',
-			reqd: 1,
-			placeholder: 'Type to search for a customer...'
+			placeholder: 'Type to search for a customer...',
+			get_query: function () {
+				return {
+					query: 'crystal_alluminium_works.api.search_builder_customers',
+					filters: {
+						payment_mode: normalize_customer_payment_mode(payment_mode_field.get_value())
+					}
+				};
+			}
 		},
 		parent: $container,
 		render_input: true
 	});
 	customer_field.$input.css({ 'font-size': '15px', 'padding': '10px' });
+	page.qb_customer_field = customer_field;
 
 	// Restore previously selected customer
 	if (window.qb_state.customer) {
 		customer_field.set_value(window.qb_state.customer);
 	}
 
+	set_customer_step_focus(page);
+
+	payment_mode_field.$input.on('change', function () {
+		let next_mode = normalize_customer_payment_mode(payment_mode_field.get_value());
+		if (window.qb_state.payment_mode && window.qb_state.payment_mode !== next_mode) {
+			window.qb_state.customer = '';
+			customer_field.set_value('');
+		}
+		window.qb_state.payment_mode = next_mode;
+	});
+
 	$(page.body).find('.qb-next-1').off('click').on('click', function () {
+		let payment_mode = normalize_customer_payment_mode(payment_mode_field.get_value());
 		let val = customer_field.get_value();
 		if (!val) {
 			frappe.msgprint('Please select a Customer.');
 			return;
 		}
+		window.qb_state.payment_mode = payment_mode;
 		window.qb_state.customer = val;
 		render_step(page, 2);
 	});
@@ -1087,8 +1173,11 @@ function add_item_row(page, category, glass_type = 'Ordinary', dimension_uom = Q
 		polishing: 0,
 		polish_width_sides: 0,
 		polish_height_sides: 0,
+		polish_type: QB_DEFAULT_POLISH_TYPE,
 		holes: 0,
+		hole_type: QB_DEFAULT_HOLE_TYPE,
 		notches: 0,
+		notch_type: QB_DEFAULT_NOTCH_TYPE,
 		numbering: '',
 		sandblast_type: 'None',
 		sale_mode: is_sheet_mode ? 'Sheet' : 'Resized',
@@ -1337,7 +1426,10 @@ function open_item_editor(page, item, is_new = false) {
 				}
 				return { filters: filters };
 			},
-			default: item.item_code
+			default: item.item_code,
+			change: function () {
+				queue_fetch_rate(true);
+			}
 		},
 		{ fieldtype: 'Column Break' },
 		{
@@ -1349,7 +1441,10 @@ function open_item_editor(page, item, is_new = false) {
 			read_only: is_sheet_glass || is_ceiling ? 1 : 0,
 			default: item.category === 'Aluminium'
 				? get_aluminium_price_label(item.price_list)
-				: (is_ceiling ? get_ceiling_mode_price_list(item.ceiling_mode) : (is_sheet_glass ? 'Wholesale' : (item.price_list || 'Retail')))
+				: (is_ceiling ? get_ceiling_mode_price_list(item.ceiling_mode) : (is_sheet_glass ? 'Wholesale' : (item.price_list || 'Retail'))),
+			change: function () {
+				queue_fetch_rate(false);
+			}
 		},
 		{ fieldtype: 'Section Break' },
 		{
@@ -1464,16 +1559,23 @@ function open_item_editor(page, item, is_new = false) {
 			{ fieldtype: 'Int', fieldname: 'polish_width_sides', label: 'Polish Width Sides', default: item.polish_width_sides || 0, description: 'Allowed values: 0, 1, 2' },
 			{ fieldtype: 'Column Break' },
 			{ fieldtype: 'Int', fieldname: 'polish_height_sides', label: 'Polish Height Sides', default: item.polish_height_sides || 0, description: 'Allowed values: 0, 1, 2' },
+			{ fieldtype: 'Column Break' },
+			{ fieldtype: 'Select', fieldname: 'polish_type', label: 'Polish Type', options: QB_POLISH_TYPE_OPTIONS, default: item.polish_type || QB_DEFAULT_POLISH_TYPE },
 			{ fieldtype: 'Section Break' },
 			{ fieldtype: 'Int', fieldname: 'holes', label: 'Number of Holes', default: item.holes || 0 },
 			{ fieldtype: 'Column Break' },
-			{ fieldtype: 'Int', fieldname: 'notches', label: 'Number of Notches', default: item.notches || 0 },
+			{ fieldtype: 'Select', fieldname: 'hole_type', label: 'Hole Type', options: QB_HOLE_TYPE_OPTIONS, default: item.hole_type || QB_DEFAULT_HOLE_TYPE },
 			{ fieldtype: 'Section Break' },
+			{ fieldtype: 'Int', fieldname: 'notches', label: 'Number of Notches', default: item.notches || 0 },
+			{ fieldtype: 'Column Break' },
+			{ fieldtype: 'Select', fieldname: 'notch_type', label: 'Notch Type', options: QB_NOTCH_TYPE_OPTIONS, default: item.notch_type || QB_DEFAULT_NOTCH_TYPE },
+			{ fieldtype: 'Section Break' },
+			{ fieldtype: 'Select', fieldname: 'sandblast_type', label: 'Sandblast Type', options: 'None\nHalf\nFull', default: item.sandblast_type || 'None' },
+			{ fieldtype: 'Column Break' },
 			{ fieldtype: 'Data', fieldname: 'numbering', label: 'Numbering', default: item.numbering || '' },
-				{ fieldtype: 'Select', fieldname: 'sandblast_type', label: 'Sandblast Type', options: 'None\nHalf\nFull', default: item.sandblast_type || 'None' },
-				{ fieldtype: 'Data', fieldname: 'glass_type', label: 'Glass Type', read_only: 1, hidden: 1, default: item.glass_type || '' },
-				{ fieldtype: 'Section Break', label: 'Item Details' },
-				{ fieldtype: 'Small Text', fieldname: 'description', label: 'Description', default: item.description || '' }
+			{ fieldtype: 'Data', fieldname: 'glass_type', label: 'Glass Type', read_only: 1, hidden: 1, default: item.glass_type || '' },
+			{ fieldtype: 'Section Break', label: 'Item Details' },
+			{ fieldtype: 'Small Text', fieldname: 'description', label: 'Description', default: item.description || '' }
 		);
 	}
 
@@ -1572,8 +1674,11 @@ function open_item_editor(page, item, is_new = false) {
 					item.polishing = 0;
 					item.polish_width_sides = 0;
 					item.polish_height_sides = 0;
+					item.polish_type = QB_DEFAULT_POLISH_TYPE;
 					item.holes = 0;
+					item.hole_type = QB_DEFAULT_HOLE_TYPE;
 					item.notches = 0;
+					item.notch_type = QB_DEFAULT_NOTCH_TYPE;
 					item.numbering = '';
 					item.sandblast_type = 'None';
 					item.glass_type = values.glass_type || item.glass_type_filter || 'Ordinary';
@@ -1594,7 +1699,10 @@ function open_item_editor(page, item, is_new = false) {
 							polish_height_sides: 0,
 							holes: 0,
 							notches: 0,
-							sandblast_type: 'None'
+							sandblast_type: 'None',
+							polish_type: QB_DEFAULT_POLISH_TYPE,
+							hole_type: QB_DEFAULT_HOLE_TYPE,
+							notch_type: QB_DEFAULT_NOTCH_TYPE
 						},
 						freeze: true,
 						freeze_message: 'Calculating...',
@@ -1638,10 +1746,13 @@ function open_item_editor(page, item, is_new = false) {
 				item.area_sqft = values.area_sqft || 0;
 				item.polish_width_sides = polish_width_sides;
 				item.polish_height_sides = polish_height_sides;
+				item.polish_type = values.polish_type || QB_DEFAULT_POLISH_TYPE;
 				item.polishing = polish_width_sides > 0 || polish_height_sides > 0 ? 1 : 0;
 				item.perimeter_rft = get_glass_polishing_rft(item);
 				item.holes = values.holes || 0;
+				item.hole_type = values.hole_type || QB_DEFAULT_HOLE_TYPE;
 				item.notches = values.notches || 0;
+				item.notch_type = values.notch_type || QB_DEFAULT_NOTCH_TYPE;
 				item.numbering = values.numbering || '';
 				item.description = item.description || '';
 				item.sandblast_type = values.sandblast_type || 'None';
@@ -1665,7 +1776,10 @@ function open_item_editor(page, item, is_new = false) {
 						polish_height_sides: item.polish_height_sides,
 						holes: item.holes,
 						notches: item.notches,
-						sandblast_type: item.sandblast_type
+						sandblast_type: item.sandblast_type,
+						polish_type: item.polish_type,
+						hole_type: item.hole_type,
+						notch_type: item.notch_type
 					},
 					freeze: true,
 					freeze_message: 'Calculating...',
@@ -1823,7 +1937,12 @@ function open_item_editor(page, item, is_new = false) {
 		}
 	}
 
-	let fetch_item_price_rate = function (ic, price_list) {
+	function queue_fetch_rate(fetch_item_details = true) {
+		frappe.msgprint("queue_fetch_rate running synchronously");
+		fetch_rate(fetch_item_details);
+	}
+
+	function fetch_item_price_rate(ic, price_list) {
 		frappe.call({
 			method: 'frappe.client.get_value',
 			args: {
@@ -1834,19 +1953,23 @@ function open_item_editor(page, item, is_new = false) {
 			callback: function (r) {
 				if (r.message && r.message.price_list_rate) {
 					d.set_value('rate', r.message.price_list_rate);
+					frappe.show_alert({message: `Fetched Item Price for ${ic}: ${r.message.price_list_rate}`, indicator: 'green'});
 				} else {
 					// Hidden standard_rate mirrors retail, so it remains the base fallback.
 					frappe.db.get_value('Item', ic, 'standard_rate', function (r2) {
 						if (r2 && r2.standard_rate) {
 							d.set_value('rate', r2.standard_rate);
+							frappe.show_alert({message: `Fetched standard_rate for ${ic}: ${r2.standard_rate}`, indicator: 'green'});
+						} else {
+							frappe.show_alert({message: `No rate found in DB for ${ic}`, indicator: 'red'});
 						}
 					});
 				}
 			}
 		});
-	};
+	}
 
-	let update_aluminium_rate_from_inputs = function () {
+	function update_aluminium_rate_from_inputs() {
 		let normal_price = get_aluminium_normal_price(
 			d.get_value('aluminium_rate_per_kg') || 0,
 			d.get_value('aluminium_weight_per_length') || 0
@@ -1858,66 +1981,86 @@ function open_item_editor(page, item, is_new = false) {
 		}
 
 		return false;
-	};
+	}
 
 	// Auto-fetch rate from Item Price when item_code or price_list changes
-	let fetch_rate = function (fetch_item_details = true) {
-		let ic = d.get_value('item_code');
-		let pl = d.get_value('price_list');
-		if (ic && pl) {
-			let lookup_price_list = item.category === 'Aluminium' ? get_aluminium_backend_price_list(pl) : pl;
+	function fetch_rate(fetch_item_details = true) {
+		try {
+			let ic = d.get_value('item_code');
+			if (!ic && d.fields_dict.item_code && d.fields_dict.item_code.$input) {
+				ic = d.fields_dict.item_code.$input.val();
+			}
+			if (!ic) {
+				ic = item.item_code;
+			}
+			let pl = d.get_value('price_list');
+			if (!pl && d.fields_dict.price_list && d.fields_dict.price_list.$input) {
+				pl = d.fields_dict.price_list.$input.val();
+			}
+			if (!pl) {
+				pl = item.category === 'Aluminium'
+					? get_aluminium_price_label(item.price_list)
+					: (is_sheet_glass ? 'Wholesale' : (item.price_list || 'Retail'));
+			}
+			frappe.msgprint(`fetch_rate executing. ic: ${ic}, pl: ${pl}`);
+			if (ic && pl) {
+				let lookup_price_list = item.category === 'Aluminium' ? get_aluminium_backend_price_list(pl) : pl;
 
-			if (item.category === 'Aluminium') {
-				if (fetch_item_details) {
-					frappe.call({
-						method: 'frappe.client.get_value',
-						args: {
-							doctype: 'Item',
-							filters: { name: ic },
-							fieldname: ['item_name', 'stock_uom', 'custom_aluminium_rate_per_kg', 'custom_aluminium_weight_per_length']
-						},
-						callback: function (r) {
-							if (r.message) {
-								item.item_name = r.message.item_name || item.item_name || ic;
-								item.uom = r.message.stock_uom || item.uom;
-								d.set_value('aluminium_rate_per_kg', flt(r.message.custom_aluminium_rate_per_kg || 0));
-								d.set_value('aluminium_weight_per_length', flt(r.message.custom_aluminium_weight_per_length || 0));
+				if (item.category === 'Aluminium') {
+					if (fetch_item_details) {
+						frappe.call({
+							method: 'frappe.client.get_value',
+							args: {
+								doctype: 'Item',
+								filters: { name: ic },
+								fieldname: ['item_name', 'stock_uom', 'custom_aluminium_rate_per_kg', 'custom_aluminium_weight_per_length']
+							},
+							callback: function (r) {
+								if (r.message) {
+									item.item_name = r.message.item_name || item.item_name || ic;
+									item.uom = r.message.stock_uom || item.uom;
+									d.set_value('aluminium_rate_per_kg', flt(r.message.custom_aluminium_rate_per_kg || 0));
+									d.set_value('aluminium_weight_per_length', flt(r.message.custom_aluminium_weight_per_length || 0));
+								}
+								if (!update_aluminium_rate_from_inputs()) {
+									fetch_item_price_rate(ic, lookup_price_list);
+								}
 							}
-							if (!update_aluminium_rate_from_inputs()) {
-								fetch_item_price_rate(ic, lookup_price_list);
-							}
-						}
+						});
+					} else if (!update_aluminium_rate_from_inputs()) {
+						fetch_item_price_rate(ic, lookup_price_list);
+					}
+				} else {
+					frappe.db.get_value('Item', ic, ['item_name', 'stock_uom'], function (item_result) {
+						item.item_name = (item_result && item_result.item_name) || item.item_name || ic;
+						item.uom = (item_result && item_result.stock_uom) || item.uom;
 					});
-				} else if (!update_aluminium_rate_from_inputs()) {
 					fetch_item_price_rate(ic, lookup_price_list);
 				}
-			} else {
-				frappe.db.get_value('Item', ic, ['item_name', 'stock_uom'], function (item_result) {
-					item.item_name = (item_result && item_result.item_name) || item.item_name || ic;
-					item.uom = (item_result && item_result.stock_uom) || item.uom;
-				});
-				fetch_item_price_rate(ic, lookup_price_list);
-			}
 
-			// Fetch glass type if category is Glass
-			if (is_glass) {
-				frappe.db.get_value('Item', ic, 'custom_glass_type', function (r) {
-					if (r && r.custom_glass_type) {
-						d.set_value('glass_type', r.custom_glass_type);
-					} else {
-						d.set_value('glass_type', 'Ordinary');
-					}
-				});
+				if (is_glass) {
+					frappe.db.get_value('Item', ic, 'custom_glass_type', function (r) {
+						if (r && r.custom_glass_type) {
+							d.set_value('glass_type', r.custom_glass_type);
+						} else {
+							d.set_value('glass_type', 'Ordinary');
+						}
+					});
+				}
 			}
+		} catch (e) {
+			frappe.msgprint(`fetch_rate error: ${e.message}`);
 		}
-	};
+	}
 
-	// Link fields do not always emit a plain "change" when picked from the suggestion list,
-	// so listen to the selection event as well to populate Retail/Wholesale automatically.
-	d.fields_dict.item_code.df.change = function () { fetch_rate(true); };
-	d.fields_dict.price_list.df.change = function () { fetch_rate(false); };
-	d.fields_dict.item_code.$input.on('change awesomplete-selectcomplete', function () { fetch_rate(true); });
-	d.fields_dict.price_list.$input.on('change', function () { fetch_rate(false); });
+	d.fields_dict.item_code.df.change = function () { queue_fetch_rate(true); };
+	d.fields_dict.price_list.df.change = function () { queue_fetch_rate(false); };
+	d.fields_dict.item_code.$input.on('change awesomplete-selectcomplete', function () {
+		queue_fetch_rate(true);
+	});
+	d.fields_dict.price_list.$input.on('change', function () {
+		queue_fetch_rate(false);
+	});
 
 	if (item.category === 'Aluminium') {
 		let recalc_aluminium_from_inputs = function () {
@@ -1930,9 +2073,13 @@ function open_item_editor(page, item, is_new = false) {
 		d.fields_dict.aluminium_weight_per_length.$input.on('input change', recalc_aluminium_from_inputs);
 	}
 
-	if (d.get_value('item_code') && d.get_value('price_list') && (item.category === 'Aluminium' || !d.get_value('rate'))) {
-		fetch_rate(true);
-	}
+	setTimeout(function () {
+		let current_item_code = d.get_value('item_code') || item.item_code;
+		let current_price_list = d.get_value('price_list') || (item.category === 'Aluminium' ? get_aluminium_price_label(item.price_list) : (item.price_list || 'Retail'));
+		if (current_item_code && current_price_list && (item.category === 'Aluminium' || !parseFloat(d.get_value('rate') || 0))) {
+			fetch_rate(true);
+		}
+	}, 300);
 
 
 }
@@ -2375,6 +2522,7 @@ function get_builder_html() {
 		<div class="qb-step-content" data-step="1">
 			<div class="qb-card">
 				<h3>👤 Select Customer</h3>
+				<div class="qb-payment-mode-field" style="margin-bottom: 16px;"></div>
 				<div class="qb-customer-field" style="margin-bottom: 16px;"></div>
 				<div style="text-align: right;">
 					<button class="qb-nav-btn primary qb-next-1">Next →</button>

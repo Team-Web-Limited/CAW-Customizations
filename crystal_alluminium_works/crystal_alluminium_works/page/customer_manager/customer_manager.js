@@ -21,6 +21,35 @@ frappe.pages['customer-manager'].on_page_show = function(wrapper) {
 
 const CUSTOMER_MANAGER_VAT_RATE = 0.16;
 
+function get_customer_manager_list_columns(customer_type) {
+	let type = (customer_type || 'invoice').trim().toLowerCase();
+	let columns = [
+		{ key: 'customer_name', label: 'Customer Name' }
+	];
+
+	if (type !== 'cash') {
+		columns.push({ key: 'tax_id', label: 'PIN (Tax ID)' });
+	}
+
+	columns.push({ key: 'phone_number', label: 'Phone Number' });
+	columns.push({ key: 'customer_type', label: 'Customer Type' });
+
+	return columns;
+}
+
+function render_customer_manager_list_loading($wrapper, customer_type, message) {
+	let columns = get_customer_manager_list_columns(customer_type);
+	let header_html = columns.map(column => `<th>${frappe.utils.escape_html(column.label)}</th>`).join('');
+	$wrapper.find('.cm-list-table thead tr').html(header_html);
+	$wrapper.find('.cm-list-body').html(`
+		<tr>
+			<td colspan="${columns.length}" style="padding:24px; text-align:center; color:var(--text-muted);">
+				${frappe.utils.escape_html(message || 'Loading customers...')}
+			</td>
+		</tr>
+	`);
+}
+
 function render_customer_manager_route(page) {
 	let route = frappe.get_route();
 	let customer_name = route[1] ? decode_customer_route_name(route[1]) : null;
@@ -68,6 +97,7 @@ function set_customer_detail_actions(page, customer_name) {
 function render_customer_list(page) {
 	set_customer_list_actions(page);
 	$(page.body).html(get_customer_manager_html());
+	render_customer_manager_list_loading($(page.body), 'invoice', 'Loading customers...');
 	load_customers(page, 1);
 }
 
@@ -130,6 +160,13 @@ function get_customer_manager_html() {
 					<label class="form-label">Search</label>
 					<input type="text" class="form-control" data-filter="search" placeholder="Customer name or ID">
 				</div>
+				<div>
+					<label class="form-label">Customer Type</label>
+					<select class="form-control" data-filter="customer_type">
+						<option value="invoice">Invoice Customers</option>
+						<option value="cash">Cash Customers</option>
+					</select>
+				</div>
 			</div>
 			<div class="cm-list-filter-actions">
 				<button class="btn btn-default cm-list-clear">Clear</button>
@@ -141,17 +178,10 @@ function get_customer_manager_html() {
 			<div class="cm-list-table-scroller">
 				<table class="cm-list-table">
 					<thead>
-						<tr>
-							<th>Customer Name</th>
-							<th>PIN (Tax ID)</th>
-						</tr>
+						<tr></tr>
 					</thead>
 					<tbody class="cm-list-body">
-						<tr>
-							<td colspan="2" style="padding:24px; text-align:center; color:var(--text-muted);">
-								Loading...
-							</td>
-						</tr>
+						<tr></tr>
 					</tbody>
 				</table>
 			</div>
@@ -175,8 +205,13 @@ function bind_customer_manager_events(page) {
 		}
 	});
 
+	$(wrapper).on('change', '[data-filter="customer_type"]', function() {
+		load_customers(page, 1);
+	});
+
 	$(wrapper).on('click', '.cm-list-clear', function() {
 		$(wrapper).find('[data-filter="search"]').val('');
+		$(wrapper).find('[data-filter="customer_type"]').val('invoice');
 		load_customers(page, 1);
 	});
 
@@ -553,48 +588,45 @@ function cm_attr(value) {
 function load_customers(page, page_no) {
 	let wrapper = page.body;
 	let tbody = $(wrapper).find('.cm-list-body');
-	tbody.html('<tr><td colspan="2" style="padding:24px; text-align:center; color:var(--text-muted);">Loading customers...</td></tr>');
-
-	let filters = {};
-	let or_filters = [];
 	let search = ($(wrapper).find('[data-filter="search"]').val() || '').trim();
-
-	if (search) {
-		let like_value = '%' + search + '%';
-		or_filters = [
-			['Customer', 'name', 'like', like_value],
-			['Customer', 'customer_name', 'like', like_value],
-			['Customer', 'tax_id', 'like', like_value]
-		];
-	}
+	let customer_type = ($(wrapper).find('[data-filter="customer_type"]').val() || 'invoice').trim().toLowerCase();
+	let columns = get_customer_manager_list_columns(customer_type);
+	render_customer_manager_list_loading($(wrapper), customer_type, 'Loading customers...');
 
 	let limit = 50;
 
 	frappe.call({
-		method: 'frappe.client.get_list',
+		method: 'crystal_alluminium_works.api.get_customer_manager_customers',
 		args: {
-			doctype: 'Customer',
-			filters: filters,
-			or_filters: or_filters,
-			fields: ['name', 'customer_name', 'tax_id'],
-			order_by: 'creation desc',
-			limit_start: (page_no - 1) * limit,
-			limit_page_length: limit
+			search: search,
+			customer_type: customer_type,
+			page: page_no,
+			page_length: limit
 		},
 		callback: function(r) {
-			let data = r.message || [];
+			let message = r.message || {};
+			let data = message.rows || [];
 			if (data.length === 0) {
-				tbody.html('<tr><td colspan="2" style="padding:24px; text-align:center; color:var(--text-muted);">No customers found.</td></tr>');
+				tbody.html(`<tr><td colspan="${columns.length}" style="padding:24px; text-align:center; color:var(--text-muted);">No customers found.</td></tr>`);
 				$(wrapper).find('.cm-list-pagination').html('');
 				return;
 			}
 
 			let html = '';
 			data.forEach(d => {
+				let row_cells = [
+					`<td style="font-weight: 600;">${frappe.utils.escape_html(d.customer_name || d.name || '')}</td>`
+				];
+
+				if (customer_type !== 'cash') {
+					row_cells.push(`<td>${frappe.utils.escape_html(d.tax_id || '-')}</td>`);
+				}
+
+				row_cells.push(`<td>${frappe.utils.escape_html(d.phone_number || '-')}</td>`);
+				row_cells.push(`<td>${frappe.utils.escape_html(d.customer_type || '-')}</td>`);
 				html += `
 					<tr data-name="${frappe.utils.escape_html(d.name || '')}">
-						<td style="font-weight: 600;">${frappe.utils.escape_html(d.customer_name || d.name || '')}</td>
-						<td>${frappe.utils.escape_html(d.tax_id || '-')}</td>
+						${row_cells.join('')}
 					</tr>
 				`;
 			});
@@ -606,7 +638,7 @@ function load_customers(page, page_no) {
 			if (page_no > 1) {
 				pagination_html += `<button class="btn btn-default btn-sm btn-paging" data-page="${page_no - 1}">Previous</button> `;
 			}
-			if (data.length === limit) {
+			if (message.has_more) {
 				pagination_html += `<button class="btn btn-default btn-sm btn-paging" data-page="${page_no + 1}">Next</button>`;
 			}
 			$(wrapper).find('.cm-list-pagination').html(pagination_html);

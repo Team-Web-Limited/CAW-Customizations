@@ -230,6 +230,11 @@ function get_dashboard_html() {
 				<div class="caw-card-title">Sales Invoices</div>
 			</div>
 
+			<div class="caw-action-card" data-route="job-cards">
+				<span class="caw-icon">🗂️</span>
+				<div class="caw-card-title">Job Cards</div>
+			</div>
+
 			<div class="caw-action-card" data-route="cash-sales">
 				<span class="caw-icon">💵</span>
 				<div class="caw-card-title">Cash Sales</div>

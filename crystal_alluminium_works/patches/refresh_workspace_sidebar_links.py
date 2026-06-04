@@ -13,8 +13,9 @@ def _build_sidebar_items():
         {"label": "Quotations", "type": "Link", "link_type": "Page", "link_to": "quotations", "icon": "panel-top", "child": 1, "idx": 8},
         {"label": "Sales Invoices", "type": "Link", "link_type": "Page", "link_to": "sales-invoices", "icon": "receipt", "child": 1, "idx": 9},
         {"label": "Cash Sales", "type": "Link", "link_type": "Page", "link_to": "cash-sales", "icon": "receipt", "child": 1, "idx": 10},
-        {"label": "Sales Invoice Manager", "type": "Link", "link_type": "Page", "link_to": "sales-invoice-manager", "icon": "receipt", "child": 1, "idx": 11},
-        {"label": "Customer Manager", "type": "Link", "link_type": "Page", "link_to": "customer-manager", "icon": "users", "child": 1, "idx": 12},
+        {"label": "Job Cards", "type": "Link", "link_type": "Page", "link_to": "job-cards", "icon": "clipboard", "child": 1, "idx": 11},
+        {"label": "Sales Invoice Manager", "type": "Link", "link_type": "Page", "link_to": "sales-invoice-manager", "icon": "receipt", "child": 1, "idx": 12},
+        {"label": "Customer Manager", "type": "Link", "link_type": "Page", "link_to": "customer-manager", "icon": "users", "child": 1, "idx": 13},
     ]
 
 

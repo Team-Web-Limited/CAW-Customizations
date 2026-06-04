@@ -997,6 +997,19 @@ function get_notch_rate_fields() {
 	return fields;
 }
 
+function get_sandblast_rate_fields() {
+	return [
+		{ fieldtype: 'Section Break', label: 'Sandblast Rates' },
+		{ fieldtype: 'Currency', fieldname: 'sandblast_rate', label: 'Sandblast Rate (per sqft)', reqd: 1 },
+		{ fieldtype: 'Column Break' },
+		{ fieldtype: 'Currency', fieldname: 'sandblast_exclusive', label: 'Sandblast Exclusive', read_only: 1, default: 0 },
+		{ fieldtype: 'Section Break' },
+		{ fieldtype: 'Currency', fieldname: 'half_sandblast_rate', label: 'Half Sandblast Rate', read_only: 1, default: 0 },
+		{ fieldtype: 'Column Break' },
+		{ fieldtype: 'Currency', fieldname: 'half_sandblast_exclusive', label: 'Half Sandblast Exclusive', read_only: 1, default: 0 }
+	];
+}
+
 function open_service_rates_modal(page) {
 	let d = new frappe.ui.Dialog({
 		title: 'Global Glass Service Rates',
@@ -1004,11 +1017,7 @@ function open_service_rates_modal(page) {
 			...get_polish_rate_fields(),
 			...get_hole_rate_fields(),
 			...get_notch_rate_fields(),
-			{ fieldtype: 'Section Break' },
-			{ fieldtype: 'Currency', fieldname: 'sandblast_rate', label: 'Sandblast Rate (per sqft)', reqd: 1 },
-			{ fieldtype: 'Currency', fieldname: 'sandblast_exclusive', label: 'Sandblast Exclusive', read_only: 1, default: 0 },
-			{ fieldtype: 'Currency', fieldname: 'half_sandblast_rate', label: 'Half Sandblast Rate', read_only: 1, default: 0 },
-			{ fieldtype: 'Currency', fieldname: 'half_sandblast_exclusive', label: 'Half Sandblast Exclusive', read_only: 1, default: 0 }
+			...get_sandblast_rate_fields()
 		],
 		primary_action_label: 'Save Rates',
 		primary_action: function(values) {

@@ -739,6 +739,9 @@ function get_action_buttons(doc, sales_orders, sales_invoices) {
 			<button class="btn btn-primary" id="btn-create-invoice">
 				<i class="fa fa-file-text" style="margin-right:6px;"></i>Create Sales Invoice
 			</button>
+			<button class="btn btn-default" id="btn-create-sales-order">
+				<i class="fa fa-briefcase" style="margin-right:6px;"></i>Create Sales Order
+			</button>
 			<button class="btn btn-default" id="btn-print">
 				<i class="fa fa-print" style="margin-right:6px;"></i>Print PDF
 			</button>
@@ -782,12 +785,169 @@ function get_action_buttons(doc, sales_orders, sales_invoices) {
 	return buttons || '<span style="color:var(--text-muted);">No actions available.</span>';
 }
 
+function normalize_job_card_payment_mode(value) {
+	return String(value || '').trim().toLowerCase() === 'cash customer' || String(value || '').trim().toLowerCase() === 'cash'
+		? 'cash'
+		: 'invoice';
+}
+
+function get_job_card_payment_mode_label(value) {
+	return normalize_job_card_payment_mode(value) === 'cash' ? 'Cash Customer' : 'Invoice Customer';
+}
+
+async function get_job_card_customer_defaults(customer_name) {
+	if (!customer_name) {
+		return {};
+	}
+
+	try {
+		let customer = await frappe.db.get_doc('Customer', customer_name);
+		return {
+			customer: customer.name,
+			customer_name: customer.customer_name || customer.name,
+			customer_pin: customer.tax_id || '',
+			phone_number: customer.mobile_no || customer.phone || '',
+			payment_mode: customer.tax_id ? 'invoice' : 'cash'
+		};
+	} catch (e) {
+		return {};
+	}
+}
+
+function update_job_card_balance(dialog) {
+	let quotation_amount = flt(dialog.get_value('quotation_amount') || 0);
+	let payment_amount = flt(dialog.get_value('payment_amount') || 0);
+	dialog.set_value('balance_amount', quotation_amount - payment_amount);
+}
+
+async function apply_job_card_customer_defaults(dialog) {
+	let customer = dialog.get_value('customer');
+	// Fallback: read the raw input value if get_value returns empty
+	// (Frappe Link controls may not have committed the value yet)
+	if (!customer && dialog.fields_dict.customer && dialog.fields_dict.customer.$input) {
+		customer = dialog.fields_dict.customer.$input.val();
+	}
+	if (!customer) return;
+	let customer_defaults = await get_job_card_customer_defaults(customer);
+	await dialog.set_value('customer_name', customer_defaults.customer_name || '');
+	await dialog.set_value('customer_pin', customer_defaults.customer_pin || '');
+	await dialog.set_value('phone_number', customer_defaults.phone_number || '');
+}
+
+function queue_job_card_customer_defaults(dialog) {
+	clearTimeout(dialog._job_card_customer_defaults_timer);
+	dialog._job_card_customer_defaults_timer = setTimeout(function() {
+		apply_job_card_customer_defaults(dialog);
+	}, 300);
+}
+
+async function open_job_card_modal(page, doc) {
+	let defaults = await get_job_card_customer_defaults(doc.party_name);
+	let d = new frappe.ui.Dialog({
+		title: 'Create Sales Order',
+		fields: [
+			{ fieldtype: 'Section Break', label: 'Customer Details' },
+			{
+				fieldtype: 'Select',
+				fieldname: 'payment_mode',
+				label: 'Payment Mode',
+				options: 'Cash Customer\nInvoice Customer',
+				default: get_job_card_payment_mode_label(defaults.payment_mode),
+				reqd: 1
+			},
+			{
+				fieldtype: 'Link',
+				fieldname: 'customer',
+				label: 'Customer',
+				options: 'Customer',
+				default: defaults.customer || doc.party_name || '',
+				reqd: 1,
+				change: function() {
+					queue_job_card_customer_defaults(d);
+				},
+				get_query: function() {
+					return {
+						query: 'crystal_alluminium_works.api.search_builder_customers',
+						filters: {
+							payment_mode: normalize_job_card_payment_mode(d.get_value('payment_mode'))
+						}
+					};
+				}
+			},
+			{ fieldtype: 'Column Break' },
+			{ fieldtype: 'Data', fieldname: 'customer_name', label: 'Customer Name', default: defaults.customer_name || doc.customer_name || '' },
+			{ fieldtype: 'Data', fieldname: 'customer_pin', label: 'Customer PIN', default: defaults.customer_pin || '' },
+			{ fieldtype: 'Data', fieldname: 'phone_number', label: 'Phone Number', default: defaults.phone_number || '' },
+			{ fieldtype: 'Section Break', label: 'Payment' },
+			{ fieldtype: 'Currency', fieldname: 'quotation_amount', label: 'Quotation Amount', read_only: 1, default: flt(doc.grand_total || 0) },
+			{ fieldtype: 'Column Break' },
+			{ fieldtype: 'Currency', fieldname: 'payment_amount', label: 'Payment Amount', default: 0, reqd: 1 },
+			{ fieldtype: 'Currency', fieldname: 'balance_amount', label: 'Balance', read_only: 1, default: flt(doc.grand_total || 0) }
+		],
+		primary_action_label: 'Save',
+		primary_action: function(values) {
+			frappe.call({
+				method: 'crystal_alluminium_works.api.create_job_card_from_quotation',
+				args: {
+					quotation: doc.name,
+					customer: values.customer,
+					customer_name: values.customer_name,
+					payment_mode: normalize_job_card_payment_mode(values.payment_mode),
+					customer_pin: values.customer_pin,
+					phone_number: values.phone_number,
+					quotation_amount: values.quotation_amount,
+					payment_amount: values.payment_amount,
+					balance_amount: values.balance_amount
+				},
+				freeze: true,
+				freeze_message: 'Creating Job Card...',
+				callback: function(r) {
+					if (r.message) {
+						d.hide();
+						frappe.show_alert({ message: `Job Card ${r.message} created`, indicator: 'green' });
+						frappe.set_route('job-cards');
+					}
+				}
+			});
+		}
+	});
+
+	d.show();
+	update_job_card_balance(d);
+
+	d.fields_dict.payment_amount.$input.on('input', function() {
+		update_job_card_balance(d);
+	});
+
+	d.fields_dict.payment_mode.$input.on('change', function() {
+		d.set_value('customer', '');
+		d.set_value('customer_name', '');
+		d.set_value('customer_pin', '');
+		d.set_value('phone_number', '');
+	});
+
+	d.fields_dict.customer.$input.on('awesomplete-selectcomplete', function() {
+		// Use a longer delay for awesomplete selection to ensure the Link
+		// control has committed the selected value before we read it
+		clearTimeout(d._job_card_customer_defaults_timer);
+		d._job_card_customer_defaults_timer = setTimeout(function() {
+			apply_job_card_customer_defaults(d);
+		}, 500);
+	});
+}
+
 function bind_action_events(page, doc, sales_orders, sales_invoices) {
 	// ── Edit in Builder (Draft only) ──
 	$('#btn-edit-builder').on('click', async () => {
+		let customer_meta = doc.party_name
+			? await frappe.db.get_value('Customer', doc.party_name, 'tax_id')
+			: null;
+		let payment_mode = customer_meta && customer_meta.message && customer_meta.message.tax_id ? 'invoice' : 'cash';
+
 		// Pre-populate the builder state from the existing quotation, then navigate
 		window.qb_state = {
 			customer: doc.party_name || doc.customer_name,
+			payment_mode: payment_mode,
 			items: [],
 			step: 2, // Go straight to items step
 			editing_quotation: doc.name // Track that we are editing an existing quotation
@@ -873,8 +1033,11 @@ function bind_action_events(page, doc, sales_orders, sales_invoices) {
 					polishing: item.custom_polishing || 0,
 					polish_width_sides: item.custom_polish_width_sides || (item.custom_polishing ? 2 : 0),
 					polish_height_sides: item.custom_polish_height_sides || (item.custom_polishing ? 2 : 0),
+					polish_type: item.custom_polish_type || '4-6',
 					holes: item.custom_holes || 0,
+					hole_type: item.custom_hole_type || '5mm',
 					notches: item.custom_notches || 0,
+					notch_type: item.custom_notch_type || 'Standard',
 					numbering: item.custom_numbering || '',
 					sandblast_type: item.custom_sandblast_type || 'None',
 					glass_type: glass_type,
@@ -921,6 +1084,10 @@ function bind_action_events(page, doc, sales_orders, sales_invoices) {
 				});
 			}
 		);
+	});
+
+	$('#btn-create-sales-order').on('click', () => {
+		open_job_card_modal(page, doc);
 	});
 
 	// ── Create Sales Invoice (Open → Invoice) ──

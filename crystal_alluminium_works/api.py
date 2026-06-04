@@ -6,9 +6,16 @@ from frappe.utils.file_manager import save_file
 from frappe.utils import flt
 from crystal_alluminium_works.pricing_engine import (
     CEILING_COMPONENTS,
+    DEFAULT_GLASS_HOLE_TYPE,
+    DEFAULT_GLASS_NOTCH_TYPE,
+    DEFAULT_GLASS_POLISH_TYPE,
+    GLASS_HOLE_RATE_TYPES,
+    GLASS_NOTCH_RATE_TYPES,
+    GLASS_POLISH_RATE_TYPES,
     GLASS_SERVICE_ITEM_DEFS,
     ensure_glass_service_items,
     ensure_ceiling_component_items,
+    get_glass_service_rate,
     get_ceiling_whole_piece_qty,
     get_item_rate,
 )
@@ -906,6 +913,236 @@ def get_sales_invoices_page(search=None, status=None, customer=None, from_date=N
         "has_next": start + len(rows) < total_count,
     }
 
+
+@frappe.whitelist()
+def get_customer_manager_customers(search=None, customer_type="all", page=1, page_length=50):
+    search = (search or "").strip()
+    customer_type = (customer_type or "all").strip().lower()
+    page = max(frappe.utils.cint(page or 1), 1)
+    page_length = max(frappe.utils.cint(page_length or 50), 1)
+    offset = (page - 1) * page_length
+
+    conditions = []
+    params = {
+        "limit": page_length + 1,
+        "offset": offset,
+    }
+
+    if search:
+        params["search"] = f"%{search}%"
+        conditions.append("(name LIKE %(search)s OR customer_name LIKE %(search)s OR IFNULL(tax_id, '') LIKE %(search)s)")
+
+    if customer_type == "invoice":
+        conditions.append("IFNULL(TRIM(tax_id), '') != ''")
+    elif customer_type == "cash":
+        conditions.append("IFNULL(TRIM(tax_id), '') = ''")
+
+    where_sql = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    rows = frappe.db.sql(
+        f"""
+        SELECT
+            name,
+            customer_name,
+            tax_id,
+            COALESCE(NULLIF(TRIM(mobile_no), ''), NULLIF(TRIM(phone), ''), '') AS phone_number,
+            CASE
+                WHEN IFNULL(TRIM(tax_id), '') != '' THEN 'Invoice Customer'
+                ELSE 'Cash Customer'
+            END AS customer_type
+        FROM `tabCustomer`
+        {where_sql}
+        ORDER BY creation DESC
+        LIMIT %(limit)s OFFSET %(offset)s
+        """,
+        params,
+        as_dict=True,
+    )
+
+    return {
+        "rows": rows[:page_length],
+        "has_more": len(rows) > page_length,
+    }
+
+
+@frappe.whitelist()
+def search_builder_customers(doctype, txt, searchfield, start, page_len, filters):
+    txt = (txt or "").strip()
+    filters = frappe.parse_json(filters) if isinstance(filters, str) else (filters or {})
+    payment_mode = (filters.get("payment_mode") or "invoice").strip().lower()
+    page_len = max(frappe.utils.cint(page_len or 20), 1)
+    start = max(frappe.utils.cint(start or 0), 0)
+
+    conditions = []
+    params = {
+        "start": start,
+        "page_len": page_len,
+    }
+
+    if txt:
+        params["txt"] = f"%{txt}%"
+        conditions.append("(name LIKE %(txt)s OR customer_name LIKE %(txt)s OR IFNULL(tax_id, '') LIKE %(txt)s)")
+
+    if payment_mode == "cash":
+        conditions.append("IFNULL(TRIM(tax_id), '') = ''")
+    else:
+        conditions.append("IFNULL(TRIM(tax_id), '') != ''")
+
+    where_sql = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    return frappe.db.sql(
+        f"""
+        SELECT
+            name,
+            customer_name,
+            tax_id
+        FROM `tabCustomer`
+        {where_sql}
+        ORDER BY
+            CASE
+                WHEN name = %(txt_exact)s THEN 0
+                WHEN customer_name = %(txt_exact)s THEN 1
+                ELSE 2
+            END,
+            creation DESC
+        LIMIT %(start)s, %(page_len)s
+        """,
+        {
+            **params,
+            "txt_exact": txt,
+        },
+    )
+
+
+@frappe.whitelist()
+def create_job_card_from_quotation(quotation, customer, customer_name=None, payment_mode=None,
+                                   customer_pin=None, phone_number=None, quotation_amount=0,
+                                   payment_amount=0, balance_amount=None):
+    if not quotation or not frappe.db.exists("Quotation", quotation):
+        frappe.throw("Please select a valid Quotation.")
+    if not customer or not frappe.db.exists("Customer", customer):
+        frappe.throw("Please select a valid Customer.")
+
+    quotation_doc = frappe.get_doc("Quotation", quotation)
+    customer_doc = frappe.get_doc("Customer", customer)
+    payment_mode = "Cash Customer" if (payment_mode or "").strip().lower() in ("cash", "cash customer") else "Invoice Customer"
+    quotation_amount = frappe.utils.flt(quotation_amount or quotation_doc.grand_total or 0)
+    payment_amount = frappe.utils.flt(payment_amount or 0)
+    balance_amount = frappe.utils.flt(balance_amount if balance_amount is not None else quotation_amount - payment_amount)
+
+    job_card = frappe.get_doc({
+        "doctype": "CAW Job Card",
+        "quotation": quotation_doc.name,
+        "customer": customer_doc.name,
+        "customer_name": customer_name or customer_doc.customer_name or customer_doc.name,
+        "payment_mode": payment_mode,
+        "customer_pin": customer_pin if customer_pin is not None else (customer_doc.tax_id or ""),
+        "phone_number": phone_number if phone_number is not None else (customer_doc.mobile_no or customer_doc.phone or ""),
+        "quotation_amount": quotation_amount,
+        "payment_amount": payment_amount,
+        "balance_amount": balance_amount,
+        "status": "Draft",
+    })
+    job_card.insert(ignore_permissions=True)
+
+    return job_card.name
+
+
+@frappe.whitelist()
+def get_job_cards_page(search=None, status=None, page=1, page_length=50):
+    page = max(frappe.utils.cint(page or 1), 1)
+    page_length = min(max(frappe.utils.cint(page_length or 50), 1), 100)
+    start = (page - 1) * page_length
+
+    filters = {}
+    if status and status != "All":
+        filters["status"] = status
+
+    or_filters = None
+    search = (search or "").strip()
+    if search:
+        like = f"%{search}%"
+        or_filters = [
+            ["CAW Job Card", "name", "like", like],
+            ["CAW Job Card", "quotation", "like", like],
+            ["CAW Job Card", "customer", "like", like],
+            ["CAW Job Card", "customer_name", "like", like],
+        ]
+
+    rows = frappe.get_list(
+        "CAW Job Card",
+        filters=filters,
+        or_filters=or_filters,
+        fields=[
+            "name",
+            "quotation",
+            "customer",
+            "customer_name",
+            "payment_mode",
+            "quotation_amount",
+            "payment_amount",
+            "balance_amount",
+            "status",
+            "creation",
+        ],
+        order_by="creation desc",
+        start=start,
+        page_length=page_length,
+    )
+
+    count_result = frappe.get_all(
+        "CAW Job Card",
+        filters=filters,
+        or_filters=or_filters,
+        fields=[{"COUNT": "name", "as": "total_count"}],
+    )
+    total_count = (count_result[0].total_count if count_result else 0) or 0
+
+    return {
+        "rows": rows,
+        "page": page,
+        "page_length": page_length,
+        "total_count": total_count,
+        "has_next": start + len(rows) < total_count,
+    }
+
+
+@frappe.whitelist()
+def get_job_card_detail(name):
+    if not name or not frappe.db.exists("CAW Job Card", name):
+        frappe.throw("Please select a valid Job Card.")
+
+    job_card = frappe.get_doc("CAW Job Card", name)
+    quotation = None
+    if job_card.quotation and frappe.db.exists("Quotation", job_card.quotation):
+        quotation = frappe.get_doc("Quotation", job_card.quotation)
+
+    return {
+        "job_card": {
+            "name": job_card.name,
+            "quotation": job_card.quotation,
+            "customer": job_card.customer,
+            "customer_name": job_card.customer_name,
+            "payment_mode": job_card.payment_mode,
+            "customer_pin": job_card.customer_pin,
+            "phone_number": job_card.phone_number,
+            "quotation_amount": job_card.quotation_amount,
+            "payment_amount": job_card.payment_amount,
+            "balance_amount": job_card.balance_amount,
+            "status": job_card.status,
+            "creation": job_card.creation,
+            "modified": job_card.modified,
+        },
+        "quotation": {
+            "name": quotation.name,
+            "transaction_date": quotation.transaction_date,
+            "valid_till": quotation.valid_till,
+            "status": quotation.status,
+            "currency": quotation.currency,
+            "grand_total": quotation.grand_total,
+            "rounded_total": quotation.rounded_total,
+        } if quotation else None,
+    }
+
+
 @frappe.whitelist()
 def create_quotation_from_builder(customer, items, quotation_name=None):
     """
@@ -999,8 +1236,11 @@ def create_quotation_from_builder(customer, items, quotation_name=None):
                 ) else 0,
                 "custom_polish_width_sides": polish_width_sides,
                 "custom_polish_height_sides": polish_height_sides,
+                "custom_polish_type": item.get("polish_type") or DEFAULT_GLASS_POLISH_TYPE,
                 "custom_holes": frappe.utils.cint(item.get("holes", 0)),
+                "custom_hole_type": item.get("hole_type") or DEFAULT_GLASS_HOLE_TYPE,
                 "custom_notches": frappe.utils.cint(item.get("notches", 0)),
+                "custom_notch_type": item.get("notch_type") or DEFAULT_GLASS_NOTCH_TYPE,
                 "custom_sandblast_type": "" if sandblast == "None" else sandblast,
                 "custom_numbering": item.get("numbering", ""),
                 "custom_sheet_size": item.get("sheet_size", "") if sale_mode == "Sheet" else "",
@@ -1339,7 +1579,8 @@ def delete_all_quotations():
 def calculate_glass_total(item_code, price_list, qty, sale_mode, width_mm, height_mm,
                           polishing=None, holes=0, sandblast_type=None,
                           polish_width_sides=0, polish_height_sides=0, notches=0,
-                          width_allowance=0, height_allowance=0):
+                          width_allowance=0, height_allowance=0,
+                          polish_type=None, hole_type=None, notch_type=None):
     """
     Calculates the full composite total for a Glass item in the Quotation Builder,
     including glass base cost and all applicable service costs (polishing, drilling, sandblasting).
@@ -1410,7 +1651,13 @@ def calculate_glass_total(item_code, price_list, qty, sale_mode, width_mm, heigh
         polish_height_sides = 2
 
     if polish_width_sides or polish_height_sides:
-        pol_rate = float(settings.polishing_rate or 0) / 1.16
+        polish_type, pol_rate = get_glass_service_rate(
+            settings,
+            GLASS_POLISH_RATE_TYPES,
+            polish_type,
+            DEFAULT_GLASS_POLISH_TYPE,
+            "polishing_rate",
+        )
         pol_qty = get_polishing_rft(
             mm_to_piece_rft(width_mm),
             mm_to_piece_rft(height_mm),
@@ -1420,23 +1667,35 @@ def calculate_glass_total(item_code, price_list, qty, sale_mode, width_mm, heigh
             polishing,
         )
         pol_amount = pol_qty * pol_rate
-        breakdown.append({"label": "Polishing", "qty": round(pol_qty, 4), "rate": pol_rate, "amount": pol_amount})
+        breakdown.append({"label": f"Polishing ({polish_type})", "qty": round(pol_qty, 4), "rate": pol_rate, "amount": pol_amount})
         total += pol_amount
 
     # Holes
     if holes > 0:
-        hole_rate = float(settings.hole_rate or 0) / 1.16
+        hole_type, hole_rate = get_glass_service_rate(
+            settings,
+            GLASS_HOLE_RATE_TYPES,
+            hole_type,
+            DEFAULT_GLASS_HOLE_TYPE,
+            "hole_rate",
+        )
         hole_qty = qty * holes
         hole_amount = hole_qty * hole_rate
-        breakdown.append({"label": "Hole Drilling", "qty": hole_qty, "rate": hole_rate, "amount": hole_amount})
+        breakdown.append({"label": f"Hole Drilling ({hole_type})", "qty": hole_qty, "rate": hole_rate, "amount": hole_amount})
         total += hole_amount
 
     # Notches
     if notches > 0:
-        notch_rate = float(getattr(settings, "notch_rate", 0) or 0) / 1.16
+        notch_type, notch_rate = get_glass_service_rate(
+            settings,
+            GLASS_NOTCH_RATE_TYPES,
+            notch_type,
+            DEFAULT_GLASS_NOTCH_TYPE,
+            "notch_rate",
+        )
         notch_qty = qty * notches
         notch_amount = notch_qty * notch_rate
-        breakdown.append({"label": "Notching", "qty": notch_qty, "rate": notch_rate, "amount": notch_amount})
+        breakdown.append({"label": f"Notching ({notch_type})", "qty": notch_qty, "rate": notch_rate, "amount": notch_amount})
         total += notch_amount
 
     # Sandblasting
@@ -2203,6 +2462,9 @@ def import_glass_items_to_builder(file_url, glass_type=None, item_code=None, pri
             sandblast_type=sandblast_type,
             width_allowance=width_allowance,
             height_allowance=height_allowance,
+            polish_type=DEFAULT_GLASS_POLISH_TYPE,
+            hole_type=DEFAULT_GLASS_HOLE_TYPE,
+            notch_type=DEFAULT_GLASS_NOTCH_TYPE,
         )
 
         imported_items.append({
@@ -2233,8 +2495,11 @@ def import_glass_items_to_builder(file_url, glass_type=None, item_code=None, pri
             "polishing": 1 if polish_width_sides or polish_height_sides else 0,
             "polish_width_sides": polish_width_sides,
             "polish_height_sides": polish_height_sides,
+            "polish_type": DEFAULT_GLASS_POLISH_TYPE,
             "holes": holes,
+            "hole_type": DEFAULT_GLASS_HOLE_TYPE,
             "notches": notches,
+            "notch_type": DEFAULT_GLASS_NOTCH_TYPE,
             "sandblast_type": sandblast_type,
             "glass_type": item_glass_type,
             "glass_breakdown": total.get("breakdown", []),

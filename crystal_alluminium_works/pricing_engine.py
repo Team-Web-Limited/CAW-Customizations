@@ -10,6 +10,28 @@ GLASS_SERVICE_ITEM_DEFS = {
     "Glass Notching": {"item_name": "Glass Notching", "uom": "Nos"},
     "Glass Sandblasting": {"item_name": "Glass Sandblasting", "uom": "Square Foot"},
 }
+GLASS_POLISH_RATE_TYPES = {
+    "4-6": "polishing_rate_4_6",
+    "8-10": "polishing_rate_8_10",
+    "14-35": "polishing_rate_14_35",
+}
+GLASS_HOLE_RATE_TYPES = {
+    "5mm": "hole_rate_5mm",
+    "6mm": "hole_rate_6mm",
+    "8mm": "hole_rate_8mm",
+    "10mm": "hole_rate_10mm",
+    "15mm": "hole_rate_15mm",
+    "20mm": "hole_rate_20mm",
+}
+GLASS_NOTCH_RATE_TYPES = {
+    "Standard": "notch_rate_standard",
+    "Small": "notch_rate_small",
+    "Mirror Screws": "notch_rate_mirror_screws",
+    "Timber Box": "notch_rate_timber_box",
+}
+DEFAULT_GLASS_POLISH_TYPE = "4-6"
+DEFAULT_GLASS_HOLE_TYPE = "5mm"
+DEFAULT_GLASS_NOTCH_TYPE = "Standard"
 
 CEILING_COMPONENTS = [
     {"item_code": "Board", "ratio": 0.36, "mode": "divide", "uses_parent_item": True},
@@ -68,6 +90,22 @@ def get_polishing_rft(width_rft, height_rft, qty=1, polish_width_sides=0, polish
         (height_sides * frappe.utils.flt(height_rft or 0))
     )
     return trunc(value * 1000) / 1000
+
+
+def normalize_glass_service_type(value, rate_types, default_type):
+    value = (value or "").strip()
+    return value if value in rate_types else default_type
+
+
+def get_glass_service_rate(settings, rate_types, selected_type, default_type, fallback_fieldname):
+    service_type = normalize_glass_service_type(selected_type, rate_types, default_type)
+    fieldname = rate_types[service_type]
+    rate = getattr(settings, fieldname, None)
+
+    if rate is None or rate == "":
+        rate = getattr(settings, fallback_fieldname, 0)
+
+    return service_type, frappe.utils.flt(rate or 0) / 1.16
 
 
 def mm_to_piece_rft(mm_value):
@@ -365,7 +403,13 @@ def process_glass_item(row, parent_idx):
     polish_width_sides, polish_height_sides = get_polish_side_counts(row)
     if polish_width_sides or polish_height_sides:
         ensure_glass_service_item("Glass Polishing")
-        rate = float(settings.polishing_rate or 0) / 1.16
+        polish_type, rate = get_glass_service_rate(
+            settings,
+            GLASS_POLISH_RATE_TYPES,
+            getattr(row, "custom_polish_type", None),
+            DEFAULT_GLASS_POLISH_TYPE,
+            "polishing_rate",
+        )
         polishing_qty = get_polishing_rft(
             mm_to_piece_rft(row.custom_width_mm),
             mm_to_piece_rft(row.custom_height_mm),
@@ -376,7 +420,7 @@ def process_glass_item(row, parent_idx):
         )
         auto_rows.append({
             "item_code": "Glass Polishing",
-            "item_name": "Glass Polishing",
+            "item_name": f"Glass Polishing ({polish_type})",
             "uom": "Rft",
             "conversion_factor": 1.0,
             "qty": polishing_qty,
@@ -390,11 +434,17 @@ def process_glass_item(row, parent_idx):
     # Holes
     if row.custom_holes:
         ensure_glass_service_item("Glass Hole Drilling")
-        rate = float(settings.hole_rate or 0) / 1.16
+        hole_type, rate = get_glass_service_rate(
+            settings,
+            GLASS_HOLE_RATE_TYPES,
+            getattr(row, "custom_hole_type", None),
+            DEFAULT_GLASS_HOLE_TYPE,
+            "hole_rate",
+        )
         hole_qty = glass_qty * frappe.utils.flt(row.custom_holes or 0)
         auto_rows.append({
             "item_code": "Glass Hole Drilling",
-            "item_name": "Glass Hole Drilling",
+            "item_name": f"Glass Hole Drilling ({hole_type})",
             "uom": "Nos",
             "conversion_factor": 1.0,
             "qty": hole_qty,
@@ -408,11 +458,17 @@ def process_glass_item(row, parent_idx):
     # Notches
     if getattr(row, "custom_notches", 0):
         ensure_glass_service_item("Glass Notching")
-        rate = float(getattr(settings, "notch_rate", 0) or 0) / 1.16
+        notch_type, rate = get_glass_service_rate(
+            settings,
+            GLASS_NOTCH_RATE_TYPES,
+            getattr(row, "custom_notch_type", None),
+            DEFAULT_GLASS_NOTCH_TYPE,
+            "notch_rate",
+        )
         notch_qty = glass_qty * frappe.utils.flt(getattr(row, "custom_notches", 0) or 0)
         auto_rows.append({
             "item_code": "Glass Notching",
-            "item_name": "Glass Notching",
+            "item_name": f"Glass Notching ({notch_type})",
             "uom": "Nos",
             "conversion_factor": 1.0,
             "qty": notch_qty,

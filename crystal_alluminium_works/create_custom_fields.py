@@ -4,6 +4,9 @@ from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 PRODUCT_CATEGORY_OPTIONS = "\nAluminium\nGlass\nFittings\nCeiling\nRubber\nSilicone"
 GLASS_SALE_MODE_OPTIONS = "Resized\nFull Sheet\nSheet"
 ITEM_GLASS_TYPE_OPTIONS = "Ordinary\nLaminated\nReady Laminated\nToughened"
+GLASS_POLISH_TYPE_OPTIONS = "\n4-6\n8-10\n14-35"
+GLASS_HOLE_TYPE_OPTIONS = "\n5mm\n6mm\n8mm\n10mm\n15mm\n20mm"
+GLASS_NOTCH_TYPE_OPTIONS = "\nStandard\nSmall\nMirror Screws\nTimber Box"
 
 
 def _get_crystal_item_fields(read_only=False):
@@ -185,10 +188,30 @@ def _get_crystal_item_fields(read_only=False):
             "read_only": ro,
         },
         {
+            "fieldname": "custom_hole_type",
+            "label": "Hole Type",
+            "fieldtype": "Select",
+            "options": GLASS_HOLE_TYPE_OPTIONS,
+            "default": "5mm",
+            "insert_after": "custom_holes",
+            "depends_on": "eval:doc.custom_product_category=='Glass' && doc.custom_glass_sale_mode=='Resized'",
+            "read_only": ro,
+        },
+        {
             "fieldname": "custom_notches",
             "label": "Number of Notches",
             "fieldtype": "Int",
-            "insert_after": "custom_holes",
+            "insert_after": "custom_hole_type",
+            "depends_on": "eval:doc.custom_product_category=='Glass' && doc.custom_glass_sale_mode=='Resized'",
+            "read_only": ro,
+        },
+        {
+            "fieldname": "custom_notch_type",
+            "label": "Notch Type",
+            "fieldtype": "Select",
+            "options": GLASS_NOTCH_TYPE_OPTIONS,
+            "default": "Standard",
+            "insert_after": "custom_notches",
             "depends_on": "eval:doc.custom_product_category=='Glass' && doc.custom_glass_sale_mode=='Resized'",
             "read_only": ro,
         },
@@ -196,7 +219,7 @@ def _get_crystal_item_fields(read_only=False):
             "fieldname": "custom_polish_width_sides",
             "label": "Polish Width Sides",
             "fieldtype": "Int",
-            "insert_after": "custom_notches",
+            "insert_after": "custom_notch_type",
             "depends_on": "eval:doc.custom_product_category=='Glass' && doc.custom_glass_sale_mode=='Resized'",
             "read_only": ro,
         },
@@ -209,9 +232,19 @@ def _get_crystal_item_fields(read_only=False):
             "read_only": ro,
         },
         {
+            "fieldname": "custom_polish_type",
+            "label": "Polish Type",
+            "fieldtype": "Select",
+            "options": GLASS_POLISH_TYPE_OPTIONS,
+            "default": "4-6",
+            "insert_after": "custom_polish_height_sides",
+            "depends_on": "eval:doc.custom_product_category=='Glass' && doc.custom_glass_sale_mode=='Resized'",
+            "read_only": ro,
+        },
+        {
             "fieldname": "custom_col_break_2",
             "fieldtype": "Column Break",
-            "insert_after": "custom_polish_height_sides",
+            "insert_after": "custom_polish_type",
             "depends_on": "eval:doc.custom_product_category=='Glass' && doc.custom_glass_sale_mode=='Resized'",
         },
         {

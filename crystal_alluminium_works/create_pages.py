@@ -40,6 +40,20 @@ def create_pages():
             "roles": [{"role": "System Manager"}]
         },
         {
+            "page_name": "job-cards",
+            "title": "Job Cards",
+            "module": "Crystal Alluminium Works",
+            "standard": "Yes",
+            "roles": [{"role": "System Manager"}]
+        },
+        {
+            "page_name": "job-card-detail",
+            "title": "Job Card Detail",
+            "module": "Crystal Alluminium Works",
+            "standard": "Yes",
+            "roles": [{"role": "System Manager"}]
+        },
+        {
             "page_name": "sales-invoice-manager",
             "title": "Sales Invoice Manager",
             "module": "Crystal Alluminium Works",
