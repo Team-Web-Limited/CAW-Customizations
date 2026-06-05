@@ -141,6 +141,7 @@ function render_single_job_card(job_card, quotation) {
 					<div class="jc-detail-fields">
 						${render_job_card_field('Customer', job_card.customer_name || job_card.customer)}
 						${render_job_card_field('Payment Mode', job_card.payment_mode)}
+						${render_job_card_field('Payment Option', job_card.payment_option)}
 						${render_job_card_field('PIN', job_card.customer_pin)}
 						${render_job_card_field('Phone Number', job_card.phone_number)}
 						${render_job_card_field('Quotation', job_card.quotation)}

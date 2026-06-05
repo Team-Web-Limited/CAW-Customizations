@@ -323,6 +323,16 @@ def add_custom_fields():
                 "read_only": 1,
                 "no_copy": 1,
                 "hidden": 1,
+            },
+            {
+                "fieldname": "custom_source_job_card",
+                "label": "Source Job Card",
+                "fieldtype": "Link",
+                "options": "CAW Job Card",
+                "insert_after": "custom_source_quotation",
+                "read_only": 1,
+                "no_copy": 1,
+                "hidden": 1,
             }
         ],
     }

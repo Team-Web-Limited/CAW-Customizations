@@ -1,6 +1,10 @@
 import frappe
+from crystal_alluminium_works.print_format_config import (
+    get_print_format_context,
+    ensure_default_print_format_configurations,
+)
 
-def build_crystal_print_format_html(ref_label, terms):
+def build_crystal_print_format_html(ref_label, terms, payment_details=""):
     html = f"""
 {{% macro short_uom(value) %}}
     {{% set normalized = (value or '')|trim|lower %}}
@@ -358,6 +362,7 @@ def build_crystal_print_format_html(ref_label, terms):
             <div style="font-size: 11px; color: #495057;">
                 {terms}
             </div>
+            {payment_details}
         </div>
     </div>
     <div class="col-xs-5 text-right">
@@ -390,8 +395,12 @@ def build_crystal_print_format_html(ref_label, terms):
     return html
 
 
-def create_crystal_print_format(doctype, print_format_name, ref_label, terms):
-    html = build_crystal_print_format_html(ref_label, terms)
+def create_crystal_print_format(doctype, print_format_name, ref_label=None, terms=None, payment_details=""):
+    context = get_print_format_context(print_format_name)
+    ref_label = ref_label or context.get("ref_label")
+    terms = terms or context.get("terms")
+    payment_details = payment_details or context.get("payment_details") or ""
+    html = build_crystal_print_format_html(ref_label, terms, payment_details)
 
     if not frappe.db.exists("Print Format", print_format_name):
         doc = frappe.get_doc({
@@ -417,25 +426,21 @@ def create_crystal_print_format(doctype, print_format_name, ref_label, terms):
     print(f"Print Format '{print_format_name}' updated successfully.")
 
 def setup_formats():
+    ensure_default_print_format_configurations()
+
     create_crystal_print_format(
         doctype="Quotation",
         print_format_name="Crystal Quotation",
-        ref_label="Quotation Reference",
-        terms="1. Quotation valid for 14 days from date of issue.<br>2. 60% advance payment required to commence production.<br>3. Delivery times to be confirmed upon receipt of advance."
     )
     
     create_crystal_print_format(
         doctype="Sales Order",
         print_format_name="Crystal Sales Order",
-        ref_label="Order Reference",
-        terms="1. Order confirmed and locked.<br>2. Production begins upon receipt of 60% advance payment.<br>3. Final 40% due upon delivery."
     )
 
     create_crystal_print_format(
         doctype="Sales Invoice",
         print_format_name="Crystal Sales Invoice",
-        ref_label="Invoice Number",
-        terms="1. Payment is due within the stipulated time frame.<br>2. Goods remain the property of Crystal Aluminium Works until fully paid for.<br>3. Any discrepancies must be reported within 3 days of delivery."
     )
 
 if __name__ == "__main__":

@@ -104,7 +104,7 @@ function render_customer_list(page) {
 function get_customer_manager_html() {
 	return `
 	<style>
-		.cm-list-page { max-width: 1000px; margin: 0 auto; padding: 24px 16px; }
+		.cm-list-page { max-width: 100%; margin: 0 auto; padding: 24px 16px; }
 		.cm-list-hero { margin-bottom: 24px; }
 		.cm-list-hero h2 { margin-top: 0; font-size: 24px; font-weight: 700; color: var(--text-color); }
 		.cm-list-hero p { margin-bottom: 0; font-size: 14px; color: var(--text-muted); }
@@ -361,7 +361,7 @@ function get_customer_detail_html(customer, cash_sales, sales_invoices) {
 function get_customer_manager_style_block() {
 	return `
 	<style>
-		.cm-list-page { max-width: 1000px; margin: 0 auto; padding: 24px 16px; }
+		.cm-list-page { max-width: 100%; margin: 0 auto; padding: 24px 16px; }
 		.cm-list-hero { margin-bottom: 24px; }
 		.cm-list-hero h2 { margin-top: 0; font-size: 24px; font-weight: 700; color: var(--text-color); }
 		.cm-list-hero p { margin-bottom: 0; font-size: 14px; color: var(--text-muted); }

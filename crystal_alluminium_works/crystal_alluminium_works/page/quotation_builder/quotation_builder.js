@@ -1938,7 +1938,6 @@ function open_item_editor(page, item, is_new = false) {
 	}
 
 	function queue_fetch_rate(fetch_item_details = true) {
-		frappe.msgprint("queue_fetch_rate running synchronously");
 		fetch_rate(fetch_item_details);
 	}
 
@@ -1953,15 +1952,11 @@ function open_item_editor(page, item, is_new = false) {
 			callback: function (r) {
 				if (r.message && r.message.price_list_rate) {
 					d.set_value('rate', r.message.price_list_rate);
-					frappe.show_alert({message: `Fetched Item Price for ${ic}: ${r.message.price_list_rate}`, indicator: 'green'});
 				} else {
 					// Hidden standard_rate mirrors retail, so it remains the base fallback.
 					frappe.db.get_value('Item', ic, 'standard_rate', function (r2) {
 						if (r2 && r2.standard_rate) {
 							d.set_value('rate', r2.standard_rate);
-							frappe.show_alert({message: `Fetched standard_rate for ${ic}: ${r2.standard_rate}`, indicator: 'green'});
-						} else {
-							frappe.show_alert({message: `No rate found in DB for ${ic}`, indicator: 'red'});
 						}
 					});
 				}
@@ -2002,7 +1997,6 @@ function open_item_editor(page, item, is_new = false) {
 					? get_aluminium_price_label(item.price_list)
 					: (is_sheet_glass ? 'Wholesale' : (item.price_list || 'Retail'));
 			}
-			frappe.msgprint(`fetch_rate executing. ic: ${ic}, pl: ${pl}`);
 			if (ic && pl) {
 				let lookup_price_list = item.category === 'Aluminium' ? get_aluminium_backend_price_list(pl) : pl;
 
@@ -2049,7 +2043,7 @@ function open_item_editor(page, item, is_new = false) {
 				}
 			}
 		} catch (e) {
-			frappe.msgprint(`fetch_rate error: ${e.message}`);
+			console.error('Quotation Builder rate fetch failed', e);
 		}
 	}
 

@@ -77,6 +77,18 @@
   {
    "child": 1,
    "collapsible": 1,
+   "icon": "settings",
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "Print Format Configurations",
+   "link_to": "print-format-configurations",
+   "link_type": "Page",
+   "show_arrow": 0,
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "collapsible": 1,
    "icon": "panel-top",
    "indent": 0,
    "keep_closed": 0,
@@ -157,9 +169,21 @@
    "link_type": "Page",
    "show_arrow": 0,
    "type": "Link"
+  },
+  {
+   "child": 1,
+   "collapsible": 1,
+   "icon": "credit-card",
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "Payments Page",
+   "link_to": "payments-page",
+   "link_type": "Page",
+   "show_arrow": 0,
+   "type": "Link"
   }
  ],
- "modified": "2026-06-04 13:36:12.291980",
+ "modified": "2026-06-05 15:47:06.526400",
  "modified_by": "Administrator",
  "module": "Crystal Alluminium Works",
  "name": "Crystal Alluminium Works",

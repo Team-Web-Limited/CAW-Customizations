@@ -59,6 +59,20 @@ def create_pages():
             "module": "Crystal Alluminium Works",
             "standard": "Yes",
             "roles": [{"role": "System Manager"}]
+        },
+        {
+            "page_name": "print-format-configurations",
+            "title": "Print Format Configurations",
+            "module": "Crystal Alluminium Works",
+            "standard": "Yes",
+            "roles": [{"role": "System Manager"}]
+        },
+        {
+            "page_name": "payments-page",
+            "title": "Payments Page",
+            "module": "Crystal Alluminium Works",
+            "standard": "Yes",
+            "roles": [{"role": "System Manager"}]
         }
     ]
     

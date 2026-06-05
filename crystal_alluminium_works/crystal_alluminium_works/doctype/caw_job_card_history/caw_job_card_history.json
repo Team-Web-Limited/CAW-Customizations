@@ -1,12 +1,13 @@
 {
  "actions": [],
- "allow_rename": 1,
- "autoname": "format:JOB-CARD-{quotation}",
- "creation": "2026-06-03 00:00:00.000000",
+ "allow_rename": 0,
+ "autoname": "hash",
+ "creation": "2026-06-05 00:00:00.000000",
  "doctype": "DocType",
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
+  "job_card",
   "quotation",
   "customer",
   "customer_name",
@@ -16,26 +17,37 @@
   "phone_number",
   "payment_section",
   "quotation_amount",
+  "amount_paid",
   "payment_amount",
   "balance_amount",
-  "status"
+  "status",
+  "audit_section",
+  "change_type",
+  "changed_by",
+  "snapshot_json"
  ],
  "fields": [
+  {
+   "fieldname": "job_card",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Job Card",
+   "options": "CAW Job Card",
+   "reqd": 1
+  },
   {
    "fieldname": "quotation",
    "fieldtype": "Link",
    "in_list_view": 1,
    "label": "Quotation",
-   "options": "Quotation",
-   "reqd": 1
+   "options": "Quotation"
   },
   {
    "fieldname": "customer",
    "fieldtype": "Link",
    "in_list_view": 1,
    "label": "Customer",
-   "options": "Customer",
-   "reqd": 1
+   "options": "Customer"
   },
   {
    "fieldname": "customer_name",
@@ -46,18 +58,14 @@
   {
    "fieldname": "payment_mode",
    "fieldtype": "Select",
-   "in_list_view": 1,
    "label": "Payment Mode",
-   "options": "Cash Customer\nInvoice Customer",
-   "reqd": 1
+   "options": "Cash Customer\nInvoice Customer"
   },
   {
    "fieldname": "payment_option",
    "fieldtype": "Select",
-   "in_list_view": 1,
    "label": "Payment Option",
-   "options": "Cash\nPaybill\nBank",
-   "reqd": 1
+   "options": "Cash\nPaybill\nBank"
   },
   {
    "fieldname": "customer_pin",
@@ -82,10 +90,18 @@
    "read_only": 1
   },
   {
+   "fieldname": "amount_paid",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Amount Paid",
+   "read_only": 1
+  },
+  {
    "fieldname": "payment_amount",
    "fieldtype": "Currency",
    "in_list_view": 1,
-   "label": "Payment Amount"
+   "label": "Payment Amount",
+   "read_only": 1
   },
   {
    "fieldname": "balance_amount",
@@ -95,40 +111,63 @@
    "read_only": 1
   },
   {
-   "default": "Draft",
    "fieldname": "status",
    "fieldtype": "Select",
-   "in_list_view": 1,
    "label": "Status",
    "options": "Draft\nIn Progress\nCompleted\nCancelled"
+  },
+  {
+   "fieldname": "audit_section",
+   "fieldtype": "Section Break",
+   "label": "Audit"
+  },
+  {
+   "fieldname": "change_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Change Type",
+   "options": "Created\nUpdated",
+   "read_only": 1
+  },
+  {
+   "fieldname": "changed_by",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Changed By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "snapshot_json",
+   "fieldtype": "Code",
+   "label": "Snapshot JSON",
+   "options": "JSON",
+   "read_only": 1
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-06-03 00:00:00.000000",
+ "modified": "2026-06-05 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Crystal Alluminium Works",
- "name": "CAW Job Card",
- "naming_rule": "Expression",
+ "name": "CAW Job Card History",
  "owner": "Administrator",
  "permissions": [
   {
-   "create": 1,
-   "delete": 1,
    "email": 1,
    "export": 1,
    "print": 1,
    "read": 1,
    "report": 1,
    "role": "System Manager",
-   "share": 1,
-   "write": 1
+   "share": 1
   }
  ],
+ "read_only": 1,
  "row_format": "Dynamic",
  "sort_field": "creation",
  "sort_order": "DESC",
  "states": [],
- "title_field": "customer_name"
+ "title_field": "job_card"
 }

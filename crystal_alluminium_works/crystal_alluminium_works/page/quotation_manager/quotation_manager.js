@@ -20,6 +20,21 @@ const QM_CEILING_COMPONENTS = [
 	{ label: 'Wall angle', ratio: 0.25, mode: 'multiply' }
 ];
 const QM_CEILING_BOARD_ITEM_CODES = new Set(['AMC', 'AGC']);
+const QM_VAT_RATE = 0.16;
+
+function get_manager_quotation_subtotal(doc) {
+	return flt(doc.grand_total || 0);
+}
+
+function get_manager_quotation_tax(doc) {
+	let subtotal = get_manager_quotation_subtotal(doc);
+	let explicit_tax = flt(doc.total_taxes_and_charges || 0);
+	return explicit_tax || (subtotal * QM_VAT_RATE);
+}
+
+function get_manager_quotation_total(doc) {
+	return get_manager_quotation_subtotal(doc) + get_manager_quotation_tax(doc);
+}
 
 function is_manager_ceiling_board_item(item) {
 	return QM_CEILING_BOARD_ITEM_CODES.has((item.item_code || '').trim());
@@ -393,6 +408,10 @@ function render_quotation_dashboard(page, quotation_name, wrapper) {
 			sales_invoices = Object.values(invoice_map);
 		}
 
+		let existing_job_card = await get_existing_job_card_for_quotation(quotation_name);
+		let subtotal_amount = get_manager_quotation_subtotal(doc);
+		let tax_amount = get_manager_quotation_tax(doc);
+		let total_amount = get_manager_quotation_total(doc);
 		let manual_items = doc.items.filter(item => !item.custom_auto_generated);
 		let glass_items = manual_items.filter(i => i.custom_product_category === 'Glass');
 		let aluminium_items = manual_items.filter(i => i.custom_product_category === 'Aluminium');
@@ -637,22 +656,17 @@ function render_quotation_dashboard(page, quotation_name, wrapper) {
 					<div class="qm-workflow-label">Quotation</div>
 					<a href="#" onclick="frappe.set_route('Form', 'Quotation', '${doc.name}')" class="qm-workflow-link">${doc.name}</a>
 				</div>
+				<div class="qm-workflow-step ${sales_orders.length > 0 ? 'active' : ''}">
+					<div class="qm-workflow-icon">${sales_orders.length > 0 ? '✓' : '2'}</div>
+					<div class="qm-workflow-label">Sales Order</div>
+					${sales_orders.map(so => `<a href="#" onclick="frappe.set_route('sales-order-manager', '${so.name}')" class="qm-workflow-link">${so.name}</a>`).join('')}
+					${sales_orders.length === 0 ? '<span style="font-size: 11px; color: var(--text-muted);">Pending</span>' : ''}
+				</div>
 				<div class="qm-workflow-step ${sales_invoices.length > 0 ? 'active' : ''}">
-					<div class="qm-workflow-icon">${sales_invoices.length > 0 ? '✓' : '2'}</div>
+					<div class="qm-workflow-icon">${sales_invoices.length > 0 ? '✓' : '3'}</div>
 					<div class="qm-workflow-label">Invoice</div>
 					${sales_invoices.map(si => `<a href="#" onclick="frappe.set_route('sales-invoice-manager', '${si.name}')" class="qm-workflow-link">${si.name}</a>`).join('')}
 					${sales_invoices.length === 0 ? '<span style="font-size: 11px; color: var(--text-muted);">Pending</span>' : ''}
-				</div>
-				<div class="qm-workflow-step ${sales_orders.length > 0 ? 'active' : ''}">
-					<div class="qm-workflow-icon">${sales_orders.length > 0 ? '✓' : '3'}</div>
-					<div class="qm-workflow-label">Sales Order</div>
-					${sales_orders.map(so => `<a href="#" onclick="frappe.set_route('sales-order-manager', '${so.name}')" class="qm-workflow-link">${so.name}</a>`).join('')}
-					${sales_orders.length === 0 ? '<span style="font-size: 11px; color: var(--text-muted);">Skipped for now</span>' : ''}
-				</div>
-				<div class="qm-workflow-step">
-					<div class="qm-workflow-icon">4</div>
-					<div class="qm-workflow-label">Delivery</div>
-					<span style="font-size: 11px; color: var(--text-muted);">Deferred</span>
 				</div>
 			</div>
 
@@ -676,23 +690,33 @@ function render_quotation_dashboard(page, quotation_name, wrapper) {
 					${other_html}
 					${(!glass_html && !aluminium_html && !fittings_html && !ceiling_html && !other_html) ? '<p style="text-align:center;color:var(--text-muted);padding:20px;">No items in this quotation.</p>' : ''}
 				</div>
-				<div class="qm-total-row">
-					<span style="font-size: 16px; font-weight: 600;">Grand Total</span>
-					<span class="qm-total-val">${format_currency(doc.grand_total, doc.currency)}</span>
+				<div class="qm-total-row" style="display:block;">
+					<div style="display:flex; justify-content:space-between; align-items:center; font-size:13px; color:var(--text-muted); text-transform:uppercase; margin-bottom:8px;">
+						<span>Subtotal</span>
+						<span>${format_currency(subtotal_amount, doc.currency)}</span>
+					</div>
+					<div style="display:flex; justify-content:space-between; align-items:center; font-size:13px; color:var(--text-muted); text-transform:uppercase; padding-bottom:10px; border-bottom:1px solid var(--border-color);">
+						<span>V.A.T (16%)</span>
+						<span>${format_currency(tax_amount, doc.currency)}</span>
+					</div>
+					<div style="display:flex; justify-content:space-between; align-items:end; gap:16px; margin-top:12px;">
+						<span style="font-size: 16px; font-weight: 600;">Grand Total</span>
+						<span class="qm-total-val">${format_currency(total_amount, doc.currency)}</span>
+					</div>
 				</div>
 			</div>
 
 			<div class="qm-card">
 				<div class="qm-card-header">Actions</div>
 				<div class="qm-card-body qm-actions">
-					${get_action_buttons(doc, sales_orders, sales_invoices)}
+					${get_action_buttons(doc, sales_orders, sales_invoices, existing_job_card)}
 				</div>
 			</div>
 		</div>
 		`;
 
 		$(page.body).html(html);
-		bind_action_events(page, doc, sales_orders, sales_invoices);
+		bind_action_events(page, doc, sales_orders, sales_invoices, existing_job_card);
 	}).catch(err => {
 		$(page.body).html(`
 			<div class="msg-box" style="padding: 40px; text-align: center; color: var(--text-muted);">
@@ -704,10 +728,11 @@ function render_quotation_dashboard(page, quotation_name, wrapper) {
 	});
 }
 
-function get_action_buttons(doc, sales_orders, sales_invoices) {
+function get_action_buttons(doc, sales_orders, sales_invoices, existing_job_card) {
 	let buttons = '';
 	let has_sales_orders = sales_orders && sales_orders.length > 0;
 	let has_sales_invoices = sales_invoices && sales_invoices.length > 0;
+	let has_job_card = !!(existing_job_card && existing_job_card.name);
 
 	if (doc.docstatus === 0) { // Draft
 		buttons += `
@@ -736,11 +761,8 @@ function get_action_buttons(doc, sales_orders, sales_invoices) {
 	} else if (doc.docstatus === 1 && doc.status === 'Open') {
 		// Submitted + Open, NO linked Sales Invoice yet
 		buttons += `
-			<button class="btn btn-primary" id="btn-create-invoice">
-				<i class="fa fa-file-text" style="margin-right:6px;"></i>Create Sales Invoice
-			</button>
-			<button class="btn btn-default" id="btn-create-sales-order">
-				<i class="fa fa-briefcase" style="margin-right:6px;"></i>Create Sales Order
+			<button class="btn btn-primary" id="${has_job_card ? 'btn-view-job-card' : 'btn-create-sales-order'}">
+				<i class="fa fa-briefcase" style="margin-right:6px;"></i>${has_job_card ? 'View Job Card' : 'Create Sales Order'}
 			</button>
 			<button class="btn btn-default" id="btn-print">
 				<i class="fa fa-print" style="margin-right:6px;"></i>Print PDF
@@ -749,7 +771,7 @@ function get_action_buttons(doc, sales_orders, sales_invoices) {
 				<i class="fa fa-times" style="margin-right:6px;"></i>Mark as Lost
 			</button>
 			<p style="color:var(--text-muted); width:100%; margin-top:10px; font-size: 13px;">
-				Quotation is <strong>Open</strong> — waiting for customer acceptance. Click <strong>Create Sales Invoice</strong> when the customer accepts.
+				Quotation is <strong>Open</strong> — waiting for customer acceptance. Click <strong>Create Sales Order</strong> when the customer accepts.
 			</p>
 		`;
 		if (has_sales_orders) {
@@ -795,6 +817,25 @@ function get_job_card_payment_mode_label(value) {
 	return normalize_job_card_payment_mode(value) === 'cash' ? 'Cash Customer' : 'Invoice Customer';
 }
 
+function get_job_card_payment_option_choices(payment_mode) {
+	return normalize_job_card_payment_mode(payment_mode) === 'cash'
+		? ['Cash', 'Paybill', 'Cheque']
+		: ['Cheque'];
+}
+
+function refresh_job_card_payment_options(dialog) {
+	let payment_mode = dialog.get_value('payment_mode');
+	let options = get_job_card_payment_option_choices(payment_mode);
+	let option_value = options[0] || '';
+	dialog.set_df_property('payment_option', 'options', options.join('\n'));
+	dialog.set_value('payment_option', option_value);
+
+	let is_invoice = normalize_job_card_payment_mode(payment_mode) === 'invoice';
+	dialog.set_df_property('payment_amount', 'hidden', is_invoice ? 1 : 0);
+	dialog.set_df_property('balance_amount', 'hidden', is_invoice ? 1 : 0);
+	dialog.set_df_property('payment_amount', 'reqd', is_invoice ? 0 : 1);
+}
+
 async function get_job_card_customer_defaults(customer_name) {
 	if (!customer_name) {
 		return {};
@@ -810,14 +851,90 @@ async function get_job_card_customer_defaults(customer_name) {
 			payment_mode: customer.tax_id ? 'invoice' : 'cash'
 		};
 	} catch (e) {
-		return {};
+		try {
+			let customers = await frappe.db.get_list('Customer', {
+				filters: { customer_name: customer_name },
+				fields: ['name', 'customer_name', 'tax_id', 'mobile_no', 'phone'],
+				limit: 1
+			});
+			let customer = customers && customers[0];
+			return customer ? {
+				customer: customer.name,
+				customer_name: customer.customer_name || customer.name,
+				customer_pin: customer.tax_id || '',
+				phone_number: customer.mobile_no || customer.phone || '',
+				payment_mode: customer.tax_id ? 'invoice' : 'cash'
+			} : {};
+		} catch (search_error) {
+			return {};
+		}
 	}
 }
 
+function get_quotation_customer_reference(doc) {
+	return doc.party_name || doc.customer || doc.customer_name || '';
+}
+
 function update_job_card_balance(dialog) {
-	let quotation_amount = flt(dialog.get_value('quotation_amount') || 0);
-	let payment_amount = flt(dialog.get_value('payment_amount') || 0);
-	dialog.set_value('balance_amount', quotation_amount - payment_amount);
+	let payment_limit = flt(dialog._payment_limit !== undefined && dialog._payment_limit !== null
+		? dialog._payment_limit
+		: dialog.get_value('quotation_amount') || 0);
+	dialog.set_value('balance_amount', payment_limit);
+}
+
+function get_job_card_outstanding_balance(job_card, quotation_amount) {
+	let total = flt(quotation_amount || 0);
+	if (!job_card) {
+		return total;
+	}
+
+	let balance = flt(job_card.balance_amount || 0);
+	let paid = flt(job_card.payment_amount || 0);
+	if (balance <= 0 && paid < total) {
+		return total - paid;
+	}
+
+	return balance;
+}
+
+function validate_job_card_payment_amount(dialog) {
+	if (normalize_job_card_payment_mode(dialog.get_value('payment_mode')) === 'invoice') {
+		return true;
+	}
+
+	let payment_limit = flt(dialog._payment_limit !== undefined && dialog._payment_limit !== null
+		? dialog._payment_limit
+		: dialog.get_value('quotation_amount') || 0, 2);
+	let payment_amount = flt(dialog.get_value('payment_amount') || 0, 2);
+
+	if (payment_amount < 0) {
+		frappe.msgprint(__('Payment amount cannot be less than zero.'));
+		return false;
+	}
+
+	if (payment_amount > payment_limit) {
+		frappe.msgprint(__('Payment amount cannot exceed the current balance amount of {0}.', [
+			format_currency(payment_limit)
+		]));
+		return false;
+	}
+
+	return true;
+}
+
+async function get_existing_job_card_for_quotation(quotation) {
+	if (!quotation) {
+		return null;
+	}
+
+	let job_cards = await frappe.db.get_list('CAW Job Card', {
+		filters: { quotation: quotation },
+		fields: ['name', 'payment_amount', 'balance_amount'],
+		order_by: 'creation desc',
+		limit: 1
+	});
+
+	return job_cards && job_cards.length ? job_cards[0] : null;
 }
 
 async function apply_job_card_customer_defaults(dialog) {
@@ -842,7 +959,11 @@ function queue_job_card_customer_defaults(dialog) {
 }
 
 async function open_job_card_modal(page, doc) {
-	let defaults = await get_job_card_customer_defaults(doc.party_name);
+	let quotation_customer = get_quotation_customer_reference(doc);
+	let defaults = await get_job_card_customer_defaults(quotation_customer);
+	let existing_job_card = await get_existing_job_card_for_quotation(doc.name);
+	let quotation_total = get_manager_quotation_total(doc);
+	let payment_limit = get_job_card_outstanding_balance(existing_job_card, quotation_total);
 	let d = new frappe.ui.Dialog({
 		title: 'Create Sales Order',
 		fields: [
@@ -853,6 +974,17 @@ async function open_job_card_modal(page, doc) {
 				label: 'Payment Mode',
 				options: 'Cash Customer\nInvoice Customer',
 				default: get_job_card_payment_mode_label(defaults.payment_mode),
+				reqd: 1,
+				change: function() {
+					refresh_job_card_payment_options(d);
+				}
+			},
+			{
+				fieldtype: 'Select',
+				fieldname: 'payment_option',
+				label: 'Payment Options',
+				options: get_job_card_payment_option_choices(get_job_card_payment_mode_label(defaults.payment_mode)).join('\n'),
+				default: get_job_card_payment_option_choices(get_job_card_payment_mode_label(defaults.payment_mode))[0],
 				reqd: 1
 			},
 			{
@@ -860,7 +992,7 @@ async function open_job_card_modal(page, doc) {
 				fieldname: 'customer',
 				label: 'Customer',
 				options: 'Customer',
-				default: defaults.customer || doc.party_name || '',
+				default: defaults.customer || quotation_customer,
 				reqd: 1,
 				change: function() {
 					queue_job_card_customer_defaults(d);
@@ -875,17 +1007,23 @@ async function open_job_card_modal(page, doc) {
 				}
 			},
 			{ fieldtype: 'Column Break' },
-			{ fieldtype: 'Data', fieldname: 'customer_name', label: 'Customer Name', default: defaults.customer_name || doc.customer_name || '' },
+			{ fieldtype: 'Data', fieldname: 'customer_name', label: 'Customer Name', default: defaults.customer_name || doc.customer_name || quotation_customer },
 			{ fieldtype: 'Data', fieldname: 'customer_pin', label: 'Customer PIN', default: defaults.customer_pin || '' },
 			{ fieldtype: 'Data', fieldname: 'phone_number', label: 'Phone Number', default: defaults.phone_number || '' },
 			{ fieldtype: 'Section Break', label: 'Payment' },
-			{ fieldtype: 'Currency', fieldname: 'quotation_amount', label: 'Quotation Amount', read_only: 1, default: flt(doc.grand_total || 0) },
+			{ fieldtype: 'Currency', fieldname: 'quotation_amount', label: 'Quotation Amount', read_only: 1, default: quotation_total },
 			{ fieldtype: 'Column Break' },
-			{ fieldtype: 'Currency', fieldname: 'payment_amount', label: 'Payment Amount', default: 0, reqd: 1 },
-			{ fieldtype: 'Currency', fieldname: 'balance_amount', label: 'Balance', read_only: 1, default: flt(doc.grand_total || 0) }
+			{ fieldtype: 'Currency', fieldname: 'payment_amount', label: 'Payment Amount', default: payment_limit, reqd: 1 },
+			{ fieldtype: 'Currency', fieldname: 'balance_amount', label: 'Balance', read_only: 1, default: payment_limit }
 		],
 		primary_action_label: 'Save',
 		primary_action: function(values) {
+			if (!validate_job_card_payment_amount(d)) {
+				return;
+			}
+
+			let is_invoice = normalize_job_card_payment_mode(values.payment_mode) === 'invoice';
+
 			frappe.call({
 				method: 'crystal_alluminium_works.api.create_job_card_from_quotation',
 				args: {
@@ -893,11 +1031,12 @@ async function open_job_card_modal(page, doc) {
 					customer: values.customer,
 					customer_name: values.customer_name,
 					payment_mode: normalize_job_card_payment_mode(values.payment_mode),
+					payment_option: values.payment_option,
 					customer_pin: values.customer_pin,
 					phone_number: values.phone_number,
 					quotation_amount: values.quotation_amount,
-					payment_amount: values.payment_amount,
-					balance_amount: values.balance_amount
+					payment_amount: is_invoice ? 0 : values.payment_amount,
+					balance_amount: is_invoice ? values.quotation_amount : values.balance_amount
 				},
 				freeze: true,
 				freeze_message: 'Creating Job Card...',
@@ -912,7 +1051,12 @@ async function open_job_card_modal(page, doc) {
 		}
 	});
 
+	d._payment_limit = payment_limit;
 	d.show();
+	refresh_job_card_payment_options(d);
+	if (defaults.customer || quotation_customer) {
+		await d.set_value('customer', defaults.customer || quotation_customer);
+	}
 	update_job_card_balance(d);
 
 	d.fields_dict.payment_amount.$input.on('input', function() {
@@ -920,6 +1064,7 @@ async function open_job_card_modal(page, doc) {
 	});
 
 	d.fields_dict.payment_mode.$input.on('change', function() {
+		refresh_job_card_payment_options(d);
 		d.set_value('customer', '');
 		d.set_value('customer_name', '');
 		d.set_value('customer_pin', '');
@@ -936,7 +1081,7 @@ async function open_job_card_modal(page, doc) {
 	});
 }
 
-function bind_action_events(page, doc, sales_orders, sales_invoices) {
+function bind_action_events(page, doc, sales_orders, sales_invoices, existing_job_card) {
 	// ── Edit in Builder (Draft only) ──
 	$('#btn-edit-builder').on('click', async () => {
 		let customer_meta = doc.party_name
@@ -1090,26 +1235,13 @@ function bind_action_events(page, doc, sales_orders, sales_invoices) {
 		open_job_card_modal(page, doc);
 	});
 
-	// ── Create Sales Invoice (Open → Invoice) ──
-	$('#btn-create-invoice').on('click', () => {
-		frappe.confirm(
-			'<b>Customer accepted?</b><br><br>This will create a Sales Invoice directly from this quotation. Sales Order and Delivery are being skipped for now.',
-			() => {
-				frappe.call({
-					method: 'crystal_alluminium_works.api.make_sales_invoice_from_quotation',
-					args: { source_name: doc.name },
-					freeze: true,
-					freeze_message: 'Creating Sales Invoice...',
-					callback: function(r) {
-						if (!r.exc && r.message) {
-							frappe.show_alert({message: 'Sales Invoice Created!', indicator: 'green'});
-							frappe.set_route('sales-invoice-manager', r.message);
-						}
-					}
-				});
-			}
-		);
+	$('#btn-view-job-card').on('click', () => {
+		if (existing_job_card && existing_job_card.name) {
+			frappe.set_route('job-card-detail', existing_job_card.name);
+		}
 	});
+
+
 
 	// ── Mark as Lost ──
 	$('#btn-mark-lost').on('click', () => {

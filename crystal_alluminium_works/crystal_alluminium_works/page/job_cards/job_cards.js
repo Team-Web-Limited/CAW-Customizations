@@ -92,6 +92,7 @@ function render_job_card_row(row) {
 			<td>${frappe.utils.escape_html(row.quotation || '-')}</td>
 			<td>${frappe.utils.escape_html(row.customer_name || row.customer || '-')}</td>
 			<td>${frappe.utils.escape_html(row.payment_mode || '-')}</td>
+			<td>${frappe.utils.escape_html(row.payment_option || '-')}</td>
 			<td style="text-align:right;">${format_currency(row.quotation_amount || 0, 'KES')}</td>
 			<td style="text-align:right;">${format_currency(row.payment_amount || 0, 'KES')}</td>
 			<td style="text-align:right;font-weight:600;">${format_currency(row.balance_amount || 0, 'KES')}</td>
@@ -115,7 +116,7 @@ function render_job_card_pagination($body, message) {
 function get_job_cards_html() {
 	return `
 	<style>
-		.jc-list-page { max-width: 1180px; margin: 0 auto; padding: 24px 16px; }
+		.jc-list-page { max-width: 100%; margin: 0 auto; padding: 24px 16px; }
 		.jc-list-hero { margin-bottom: 24px; }
 		.jc-list-hero h2 { margin: 0 0 6px; font-size: 24px; font-weight: 700; color: var(--heading-color); }
 		.jc-list-hero p { margin: 0; font-size: 14px; color: var(--text-muted); }
@@ -136,7 +137,6 @@ function get_job_cards_html() {
 	<div class="jc-list-page">
 		<div class="jc-list-hero">
 			<h2>Job Cards</h2>
-			<p>Track job cards created from accepted quotations.</p>
 		</div>
 
 		<div class="jc-list-filters">
@@ -171,6 +171,7 @@ function get_job_cards_html() {
 							<th>Quotation</th>
 							<th>Customer</th>
 							<th>Payment Mode</th>
+							<th>Payment Option</th>
 							<th style="text-align:right;">Quotation Amount</th>
 							<th style="text-align:right;">Payment</th>
 							<th style="text-align:right;">Balance</th>
@@ -178,7 +179,7 @@ function get_job_cards_html() {
 						</tr>
 					</thead>
 					<tbody class="jc-list-body">
-						<tr><td colspan="8" style="padding:24px;text-align:center;color:var(--text-muted);">Loading job cards...</td></tr>
+						<tr><td colspan="9" style="padding:24px;text-align:center;color:var(--text-muted);">Loading job cards...</td></tr>
 					</tbody>
 				</table>
 			</div>

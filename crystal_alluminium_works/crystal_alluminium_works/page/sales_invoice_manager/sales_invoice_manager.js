@@ -358,124 +358,24 @@ function get_sales_invoice_paid_amount(doc) {
 	return Math.max(0, flt(total - outstanding));
 }
 
-function get_sales_invoice_display_paid_amount(doc) {
-	if (doc.docstatus !== 1) {
-		return 0;
+function get_sales_invoice_display_paid_amount(doc, source_job_card) {
+	if (source_job_card) {
+		return flt(source_job_card.payment_amount || 0);
 	}
 
-	return get_sales_invoice_paid_amount(doc);
+	return doc.docstatus === 1 ? get_sales_invoice_paid_amount(doc) : 0;
 }
 
-function get_sales_invoice_outstanding_for_ui(doc) {
-	if (doc.docstatus !== 1) {
-		return get_sales_invoice_display_total(doc);
+function get_sales_invoice_outstanding_for_ui(doc, source_job_card) {
+	if (source_job_card) {
+		return flt(source_job_card.balance_amount || 0);
 	}
 
-	if (sales_invoice_is_unpaid_state(doc)) {
+	if (doc.docstatus !== 1 || sales_invoice_is_unpaid_state(doc)) {
 		return get_sales_invoice_display_total(doc);
 	}
 
 	return get_sales_invoice_display_outstanding(doc);
-}
-
-function render_sales_invoice_tax_summary(doc) {
-	let taxes = doc.taxes || [];
-
-	if (!taxes.length) {
-		return `
-			<div style="padding: 8px 0; color: var(--text-muted); font-size: 14px;">
-				No tax rows were added to this invoice.
-			</div>
-		`;
-	}
-
-	return `
-		<div class="sim-table-wrap">
-			<table class="sim-table" style="min-width:760px;">
-				<thead>
-					<tr>
-						<th>Tax / Charge</th>
-						<th style="text-align:center;">Type</th>
-						<th style="text-align:center;">Rate</th>
-						<th style="text-align:right;">Tax Amount</th>
-						<th style="text-align:right;">Running Total</th>
-					</tr>
-				</thead>
-				<tbody>
-					${taxes.map(tax => `
-						<tr>
-							<td>
-								<div style="font-weight:500;">${frappe.utils.escape_html(tax.account_head || tax.description || 'Tax')}</div>
-								${tax.description ? `<div style="font-size:12px; color:var(--text-muted);">${frappe.utils.escape_html(tax.description)}</div>` : ''}
-							</td>
-							<td style="text-align:center;">${frappe.utils.escape_html(tax.charge_type || '-')}</td>
-							<td style="text-align:center;">${flt(tax.rate || 0)}%</td>
-							<td style="text-align:right;">${format_currency(tax.tax_amount || 0, doc.currency || 'KES')}</td>
-							<td style="text-align:right; font-weight:600;">${format_currency(tax.total || 0, doc.currency || 'KES')}</td>
-						</tr>
-					`).join('')}
-				</tbody>
-			</table>
-		</div>
-	`;
-}
-
-function render_sales_invoice_payment_controls(doc, mode_of_payments, default_payment_mode) {
-	let outstanding = get_sales_invoice_outstanding_for_ui(doc);
-	let default_mode = default_payment_mode || (mode_of_payments.length ? mode_of_payments[0].mode_of_payment : '');
-
-	if (default_payment_mode && !mode_of_payments.find(m => m.mode_of_payment === default_payment_mode)) {
-		default_mode = mode_of_payments.length ? mode_of_payments[0].mode_of_payment : '';
-	}
-
-	if (doc.docstatus !== 1) {
-		return `<p style="color:var(--text-muted); margin:0;">Submit the invoice first before recording payment.</p>`;
-	}
-
-	if (doc.status === 'Cancelled') {
-		return `<p style="color:var(--text-muted); margin:0;">Cancelled invoices cannot accept payments.</p>`;
-	}
-
-	if (outstanding <= 0) {
-		return `<p style="color:var(--text-muted); margin:0;">This invoice is already fully paid.</p>`;
-	}
-
-	if (!mode_of_payments.length) {
-		return `<p style="color:#e67e22; margin:0;">No Mode of Payment accounts are configured for ${doc.company}. Add one before recording payment.</p>`;
-	}
-
-	return `
-		<div class="sim-payment-panel">
-			<div class="sim-payment-grid">
-				<div>
-					<label class="form-label">Amount Received</label>
-					<input type="number" min="0.01" step="0.01" max="${outstanding}" class="form-control sim-amount-received" value="${outstanding}">
-					<div style="margin-top:6px; font-size:12px; color:var(--text-muted);">
-						Outstanding: ${format_currency(outstanding, doc.currency || 'KES')}
-					</div>
-				</div>
-				<div>
-					<label class="form-label">Mode of Payment</label>
-					<select class="form-control sim-mode-of-payment">
-						${mode_of_payments.map(row => `
-							<option value="${frappe.utils.escape_html(row.mode_of_payment)}" ${row.mode_of_payment === default_mode ? 'selected' : ''}>
-								${frappe.utils.escape_html(row.mode_of_payment)}${row.type ? ` (${frappe.utils.escape_html(row.type)})` : ''}
-							</option>
-						`).join('')}
-					</select>
-				</div>
-				<div>
-					<label class="form-label">Posting Date</label>
-					<input type="date" class="form-control sim-payment-date" value="${frappe.datetime.str_to_user(frappe.datetime.get_today()) ? frappe.datetime.get_today() : ''}">
-				</div>
-			</div>
-			<div class="sim-payment-action">
-				<button class="btn btn-primary sim-record-payment">
-					<i class="fa fa-money" style="margin-right:6px;"></i>Record
-				</button>
-			</div>
-		</div>
-	`;
 }
 
 frappe.pages['sales-invoice-manager'].on_page_show = function(wrapper) {
@@ -514,18 +414,17 @@ async function render_sales_invoice_dashboard(page, invoice_name, wrapper, defau
 
 	try {
 		const doc = await frappe.db.get_doc('Sales Invoice', invoice_name);
-		const mode_of_payment_response = await frappe.call({
-			method: 'crystal_alluminium_works.api.get_company_mode_of_payments',
-			args: { company: doc.company },
+		const source_job_card_response = await frappe.call({
+			method: 'crystal_alluminium_works.api.get_sales_invoice_source_job_card',
+			args: { invoice_name: doc.name },
 		});
-		const mode_of_payments = mode_of_payment_response.message || [];
+		const source_job_card = source_job_card_response.message || null;
 		if (page) {
 			page.set_title(`Sales Invoice: ${doc.name}`);
 		}
 
 		const sales_orders = [...new Set((doc.items || []).map(row => row.sales_order).filter(Boolean))];
 		const quotation_name = doc.custom_source_quotation || null;
-		const status_color = get_manager_status_color(doc.status);
 		const manual_items = (doc.items || []).filter(item => !item.custom_auto_generated);
 		const glass_items = manual_items.filter(i => i.custom_product_category === 'Glass');
 		const aluminium_items = manual_items.filter(i => i.custom_product_category === 'Aluminium');
@@ -738,16 +637,6 @@ async function render_sales_invoice_dashboard(page, invoice_name, wrapper, defau
 			.sim-info-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 18px; }
 			.sim-info-label { font-size: 12px; color: var(--text-muted); margin-bottom: 4px; }
 			.sim-info-val { font-size: 14px; font-weight: 500; }
-			.sim-payment-panel { display: flex; align-items: flex-end; gap: 12px; }
-			.sim-payment-grid { flex: 1; display: grid; grid-template-columns: minmax(180px, 260px) minmax(180px, 260px) minmax(150px, 180px); gap: 16px; align-items: flex-start; }
-			.sim-payment-action { flex: 0 0 auto; display: flex; align-items: flex-end; padding-bottom: 20px; }
-			.sim-record-payment { width: auto; min-width: 108px; height: 32px; padding: 6px 14px; white-space: nowrap; }
-			@media (max-width: 900px) {
-				.sim-payment-panel { flex-direction: column; align-items: stretch; }
-				.sim-payment-grid { grid-template-columns: 1fr; }
-				.sim-payment-action { padding-bottom: 0; }
-				.sim-record-payment { width: 100%; }
-			}
 			.sim-table-wrap { overflow-x: auto; }
 			.sim-review-table { min-width: 1180px; }
 			.sim-table { width: 100%; border-collapse: collapse; }
@@ -795,10 +684,6 @@ async function render_sales_invoice_dashboard(page, invoice_name, wrapper, defau
 					<h2>${doc.customer_name || doc.customer}</h2>
 					<div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">Created ${frappe.datetime.prettyDate(doc.creation)}</div>
 				</div>
-				<div style="text-align: right;">
-					<div style="font-size: 13px; color: var(--text-muted); margin-bottom: 8px;">Posting Date: <strong style="color: var(--text-color);">${doc.posting_date ? frappe.datetime.global_date_format(doc.posting_date) : '—'}</strong></div>
-					<span class="sim-badge ${status_color}">${doc.status || 'Draft'}</span>
-				</div>
 			</div>
 
 			<div class="sim-card">
@@ -823,28 +708,21 @@ async function render_sales_invoice_dashboard(page, invoice_name, wrapper, defau
 						</div>
 						<div>
 							<div class="sim-info-label">Amount Paid</div>
-							<div class="sim-info-val">${format_currency(get_sales_invoice_display_paid_amount(doc), doc.currency || 'KES')}</div>
+							<div class="sim-info-val">${format_currency(get_sales_invoice_display_paid_amount(doc, source_job_card), doc.currency || 'KES')}</div>
 						</div>
 						<div>
 							<div class="sim-info-label">Outstanding</div>
-							<div class="sim-info-val">${format_currency(get_sales_invoice_outstanding_for_ui(doc), doc.currency || 'KES')}</div>
-						</div>
-						<div>
-							<div class="sim-info-label">Update Stock</div>
-							<div class="sim-info-val">Disabled</div>
+							<div class="sim-info-val">${format_currency(get_sales_invoice_outstanding_for_ui(doc, source_job_card), doc.currency || 'KES')}</div>
 						</div>
 						<div>
 							<div class="sim-info-label">Quotation Source</div>
 							<div class="sim-info-val">${quotation_name || '—'}</div>
 						</div>
+						<div>
+							<div class="sim-info-label">Job Card Source</div>
+							<div class="sim-info-val">${source_job_card ? source_job_card.name : '—'}</div>
+						</div>
 					</div>
-				</div>
-			</div>
-
-			<div class="sim-card">
-				<div class="sim-card-header">Tax Summary</div>
-				<div class="sim-card-body">
-					${render_sales_invoice_tax_summary(doc)}
 				</div>
 			</div>
 
@@ -854,18 +732,17 @@ async function render_sales_invoice_dashboard(page, invoice_name, wrapper, defau
 					<div class="sim-info-grid" style="margin-bottom:18px;">
 						<div>
 							<div class="sim-info-label">Amount Paid So Far</div>
-							<div class="sim-info-val">${format_currency(get_sales_invoice_display_paid_amount(doc), doc.currency || 'KES')}</div>
+							<div class="sim-info-val">${format_currency(get_sales_invoice_display_paid_amount(doc, source_job_card), doc.currency || 'KES')}</div>
 						</div>
 						<div>
 							<div class="sim-info-label">Outstanding Balance</div>
-							<div class="sim-info-val">${format_currency(get_sales_invoice_outstanding_for_ui(doc), doc.currency || 'KES')}</div>
+							<div class="sim-info-val">${format_currency(get_sales_invoice_outstanding_for_ui(doc, source_job_card), doc.currency || 'KES')}</div>
 						</div>
 						<div>
 							<div class="sim-info-label">Invoice Status</div>
 							<div class="sim-info-val">${doc.status || 'Draft'}</div>
 						</div>
 					</div>
-					${render_sales_invoice_payment_controls(doc, mode_of_payments, default_payment_mode)}
 				</div>
 			</div>
 
@@ -986,49 +863,6 @@ function bind_sales_invoice_action_events(page, doc) {
 		}
 	});
 
-	$body.find('.sim-record-payment').on('click', () => {
-		let amount = flt($body.find('.sim-amount-received').val() || 0);
-		let mode_of_payment = $body.find('.sim-mode-of-payment').val();
-		let posting_date = $body.find('.sim-payment-date').val();
-
-		if (!amount || amount <= 0) {
-			frappe.msgprint('Enter a valid Amount Received.');
-			return;
-		}
-
-		if (!mode_of_payment) {
-			frappe.msgprint('Select a Mode of Payment.');
-			return;
-		}
-
-		frappe.confirm(
-			`Create and submit a Payment Entry for ${format_currency(amount, doc.currency || 'KES')} against ${doc.name}?`,
-			() => {
-				frappe.call({
-					method: 'crystal_alluminium_works.api.record_sales_invoice_payment',
-					args: {
-						invoice_name: doc.name,
-						amount: amount,
-						mode_of_payment: mode_of_payment,
-						posting_date: posting_date,
-						reference_date: posting_date,
-					},
-					freeze: true,
-					freeze_message: 'Recording payment...',
-					callback: function(r) {
-						if (!r.exc && r.message) {
-							frappe.show_alert({
-								message: `Payment Entry ${r.message.payment_entry} created`,
-								indicator: 'green',
-							});
-							render_sales_invoice_dashboard(page, doc.name);
-						}
-					},
-				});
-			}
-		);
-	});
-
 	$body.find('#btn-submit-invoice').on('click', () => {
 		frappe.confirm('Submit this Sales Invoice? It will remain non-stock and become financially active.', () => {
 			frappe.call({
@@ -1070,18 +904,4 @@ function bind_sales_invoice_action_events(page, doc) {
 			message: __('Cancel linked payments before cancelling this invoice.'),
 		});
 	});
-}
-
-function get_manager_status_color(status) {
-	return {
-		'Draft': 'orange',
-		'Submitted': 'blue',
-		'Paid': 'green',
-		'Partly Paid': 'blue',
-		'Unpaid': 'orange',
-		'Overdue': 'red',
-		'Return': 'purple',
-		'Credit Note Issued': 'purple',
-		'Cancelled': 'grey',
-	}[status] || 'grey';
 }

@@ -1,0 +1,23 @@
+{
+ "content": null,
+ "creation": "2026-06-05 12:41:19.126004",
+ "docstatus": 0,
+ "doctype": "Page",
+ "idx": 0,
+ "modified": "2026-06-05 12:41:19.126004",
+ "modified_by": "Administrator",
+ "module": "Crystal Alluminium Works",
+ "name": "payments-page",
+ "owner": "Administrator",
+ "page_name": "payments-page",
+ "roles": [
+  {
+   "role": "System Manager"
+  }
+ ],
+ "script": null,
+ "standard": "Yes",
+ "style": null,
+ "system_page": 0,
+ "title": "Payments Page"
+}
