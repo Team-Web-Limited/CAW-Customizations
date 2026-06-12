@@ -762,7 +762,7 @@ function get_action_buttons(doc, sales_orders, sales_invoices, existing_job_card
 		// Submitted + Open, NO linked Sales Invoice yet
 		buttons += `
 			<button class="btn btn-primary" id="${has_job_card ? 'btn-view-job-card' : 'btn-create-sales-order'}">
-				<i class="fa fa-briefcase" style="margin-right:6px;"></i>${has_job_card ? 'View Job Card' : 'Create Sales Order'}
+				<i class="fa fa-briefcase" style="margin-right:6px;"></i>${has_job_card ? 'View Job Card' : 'Create Job Card'}
 			</button>
 			<button class="btn btn-default" id="btn-print">
 				<i class="fa fa-print" style="margin-right:6px;"></i>Print PDF
@@ -771,7 +771,7 @@ function get_action_buttons(doc, sales_orders, sales_invoices, existing_job_card
 				<i class="fa fa-times" style="margin-right:6px;"></i>Mark as Lost
 			</button>
 			<p style="color:var(--text-muted); width:100%; margin-top:10px; font-size: 13px;">
-				Quotation is <strong>Open</strong> — waiting for customer acceptance. Click <strong>Create Sales Order</strong> when the customer accepts.
+				Quotation is <strong>Open</strong> — waiting for customer acceptance. Click <strong>Create Job Card</strong> when the customer accepts.
 			</p>
 		`;
 		if (has_sales_orders) {
@@ -965,7 +965,7 @@ async function open_job_card_modal(page, doc) {
 	let quotation_total = get_manager_quotation_total(doc);
 	let payment_limit = get_job_card_outstanding_balance(existing_job_card, quotation_total);
 	let d = new frappe.ui.Dialog({
-		title: 'Create Sales Order',
+		title: 'Create Job Card',
 		fields: [
 			{ fieldtype: 'Section Break', label: 'Customer Details' },
 			{
@@ -1044,7 +1044,7 @@ async function open_job_card_modal(page, doc) {
 					if (r.message) {
 						d.hide();
 						frappe.show_alert({ message: `Job Card ${r.message} created`, indicator: 'green' });
-						frappe.set_route('job-cards');
+						frappe.set_route('job-card-detail', r.message);
 					}
 				}
 			});

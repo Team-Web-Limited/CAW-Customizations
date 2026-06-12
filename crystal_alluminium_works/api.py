@@ -1637,9 +1637,10 @@ def make_sales_invoice_from_job_card(job_card_name):
     if not job_card.quotation or not frappe.db.exists("Quotation", job_card.quotation):
         frappe.throw("The selected Job Card is not linked to a valid Quotation.")
 
+    is_invoice_customer = (job_card.payment_mode or "").strip().lower() == "invoice customer"
     quotation_amount = _round_job_card_amount(job_card.quotation_amount)
     payment_amount = _round_job_card_amount(job_card.payment_amount)
-    if quotation_amount <= 0 or payment_amount < quotation_amount:
+    if not is_invoice_customer and (quotation_amount <= 0 or payment_amount < quotation_amount):
         frappe.throw("The Job Card must be fully paid before creating a Sales Invoice.")
 
     invoice_name = make_sales_invoice_from_quotation(job_card.quotation)
@@ -1648,8 +1649,11 @@ def make_sales_invoice_from_job_card(job_card_name):
         invoice.custom_source_job_card = job_card.name
         invoice.save(ignore_permissions=True)
 
-    invoice = _submit_and_settle_job_card_sales_invoice(invoice, job_card)
-    return invoice.name
+    if is_invoice_customer:
+        return invoice.name
+
+    paid_invoice = _submit_and_settle_job_card_sales_invoice(invoice, job_card)
+    return paid_invoice.name
 
 
 @frappe.whitelist()

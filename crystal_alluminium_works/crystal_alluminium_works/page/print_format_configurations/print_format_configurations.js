@@ -98,7 +98,9 @@ function load_print_format_configuration_schema(page) {
 
 			const first_print_format = page.state.schema[0] && page.state.schema[0].print_format;
 			if (first_print_format) {
+				page.state.current_print_format = first_print_format;
 				page.state.print_format_control.set_value(first_print_format);
+				load_print_format_configuration_values(page, first_print_format);
 			} else {
 				$(page.body).find('[data-area="form"]').html('<div class="pfc-loading">No configurable print formats found.</div>');
 			}

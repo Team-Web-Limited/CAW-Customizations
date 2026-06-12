@@ -330,11 +330,12 @@ async function open_edit_job_card_modal(page, job_card, quotation) {
 
 function can_create_invoice_from_job_card(job_card, quotation, history, sales_invoices) {
 	let has_sales_invoice = !!((sales_invoices || []).length);
+	let is_invoice_customer = normalize_job_card_payment_mode(job_card.payment_mode) === 'invoice';
 	let quotation_amount = flt(job_card.quotation_amount || (quotation && quotation.grand_total) || 0);
 	let payment_amount = flt(job_card.payment_amount || 0);
 	return !has_sales_invoice
 		&& quotation_amount > 0
-		&& Math.abs(payment_amount - quotation_amount) < 0.0001;
+		&& (is_invoice_customer || Math.abs(payment_amount - quotation_amount) < 0.0001);
 }
 
 function bind_single_job_card_detail_events(page, $body, job_card, quotation, history, sales_invoices) {
@@ -357,17 +358,25 @@ function bind_single_job_card_detail_events(page, $body, job_card, quotation, hi
 	});
 
 	$body.on('click.job-card-detail', '[data-action="create-sales-invoice"]', function() {
+		let is_invoice_customer = normalize_job_card_payment_mode(job_card.payment_mode) === 'invoice';
+		let confirm_message = is_invoice_customer
+			? '<b>Create Sales Invoice?</b><br><br>This will create a Sales Invoice from the Invoice Customer Job Card.'
+			: '<b>Create Sales Invoice?</b><br><br>This will create, submit, and mark the Sales Invoice as paid from the fully paid Job Card.';
+		let freeze_message = is_invoice_customer ? 'Creating Sales Invoice...' : 'Creating paid Sales Invoice...';
 		frappe.confirm(
-			'<b>Create Sales Invoice?</b><br><br>This will create, submit, and mark the Sales Invoice as paid from the fully paid Job Card.',
+			confirm_message,
 			() => {
 				frappe.call({
 					method: 'crystal_alluminium_works.api.make_sales_invoice_from_job_card',
 					args: { job_card_name: job_card.name },
 					freeze: true,
-					freeze_message: 'Creating paid Sales Invoice...',
+					freeze_message: freeze_message,
 					callback: function(r) {
 						if (!r.exc && r.message) {
-							frappe.show_alert({message: 'Paid Sales Invoice Created!', indicator: 'green'});
+							frappe.show_alert({
+								message: is_invoice_customer ? 'Sales Invoice Created!' : 'Paid Sales Invoice Created!',
+								indicator: 'green'
+							});
 							frappe.set_route('sales-invoice-manager', r.message);
 						}
 					}

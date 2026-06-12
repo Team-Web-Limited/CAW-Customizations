@@ -104,7 +104,7 @@ function render_customer_list(page) {
 function get_customer_manager_html() {
 	return `
 	<style>
-		.cm-list-page { max-width: 100%; margin: 0 auto; padding: 24px 16px; }
+		.cm-list-page { max-width: 1120px; margin: 0 auto; padding: 24px 16px; }
 		.cm-list-hero { margin-bottom: 24px; }
 		.cm-list-hero h2 { margin-top: 0; font-size: 24px; font-weight: 700; color: var(--text-color); }
 		.cm-list-hero p { margin-bottom: 0; font-size: 14px; color: var(--text-muted); }
@@ -120,7 +120,7 @@ function get_customer_manager_html() {
 		.cm-list-table tbody tr:hover { background: var(--subtle-fg); }
 		.cm-list-table td { padding: 12px 16px; font-size: 14px; vertical-align: middle; color: var(--text-color); }
 		.cm-list-pagination { padding: 16px 18px; border-top: 1px solid var(--border-color); text-align: center; }
-		.cm-detail-page { max-width: 1180px; margin: 0 auto; padding: 20px 16px; font-family: var(--font-stack); }
+		.cm-detail-page { max-width: 100%; margin: 0 auto; padding: 20px 16px; font-family: var(--font-stack); }
 		.cm-detail-header { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; margin-bottom: 20px; flex-wrap: wrap; }
 		.cm-detail-title h2 { margin: 0 0 8px; font-size: 26px; font-weight: 700; color: var(--heading-color); }
 		.cm-detail-title p { margin: 0; color: var(--text-muted); font-size: 14px; }
@@ -239,8 +239,29 @@ function bind_customer_manager_events(page) {
 		}
 	});
 
+	$(wrapper).on('click', '.cm-quotation-row', function() {
+		let name = $(this).attr('data-name');
+		if (name) {
+			frappe.set_route('quotation-manager', name);
+		}
+	});
+
+	$(wrapper).on('click', '.cm-payment-row', function() {
+		let name = $(this).attr('data-name');
+		if (name) {
+			frappe.set_route('Form', 'Payments', name);
+		}
+	});
+
+	$(wrapper).on('click', '.cm-job-card-row', function() {
+		let name = $(this).attr('data-name');
+		if (name) {
+			frappe.set_route('job-card-detail', name);
+		}
+	});
+
 	$(wrapper).on('change', '[data-filter="transaction_type"]', function() {
-		filter_customer_transactions(page);
+		render_customer_selected_transaction_table(page);
 	});
 
 	$(wrapper).on('click', '.btn-paging', function() {
@@ -254,7 +275,7 @@ async function render_customer_detail(page, customer_name) {
 	set_customer_detail_actions(page, customer_name);
 	$(page.body).html(`
 		<style>
-			.cm-detail-page { max-width: 1180px; margin: 0 auto; padding: 20px 16px; font-family: var(--font-stack); }
+			.cm-detail-page { max-width: 100%; margin: 0 auto; padding: 20px 16px; font-family: var(--font-stack); }
 		</style>
 		<div class="cm-detail-page">
 			<div style="padding:40px; text-align:center; color:var(--text-muted);">
@@ -270,17 +291,30 @@ async function render_customer_detail(page, customer_name) {
 			get_customer_manager_invoices(customer_name, 'Cheque'),
 		]);
 
+		const [quotations, payments, job_cards] = await Promise.all([
+			get_customer_manager_quotations(customer.name),
+			get_customer_manager_payments(customer.name),
+			get_customer_manager_job_cards(customer.name),
+		]);
+
 		if (page.customer_manager_route_key !== frappe.get_route().join('|')) {
 			return;
 		}
 
+		page.customer_manager_transactions = {
+			invoices: get_customer_combined_transactions(cash_sales, sales_invoices),
+			quotations: quotations,
+			payments: payments,
+			job_cards: job_cards,
+		};
 		page.set_title(customer.customer_name || customer.name);
-		$(page.body).html(get_customer_detail_html(customer, cash_sales, sales_invoices));
+		$(page.body).html(get_customer_detail_html(customer, page.customer_manager_transactions));
+		render_customer_selected_transaction_table(page);
 	} catch (error) {
 		console.error(error);
 		$(page.body).html(`
 			<style>
-				.cm-detail-page { max-width: 1180px; margin: 0 auto; padding: 20px 16px; font-family: var(--font-stack); }
+				.cm-detail-page { max-width: 100%; margin: 0 auto; padding: 20px 16px; font-family: var(--font-stack); }
 			</style>
 			<div class="cm-detail-page">
 				<div class="msg-box" style="padding:40px; text-align:center; color:var(--text-muted);">
@@ -320,8 +354,57 @@ async function get_customer_manager_invoices(customer_name, payment_mode) {
 	return rows;
 }
 
-function get_customer_detail_html(customer, cash_sales, sales_invoices) {
-	let all_invoices = get_customer_combined_transactions(cash_sales, sales_invoices);
+async function get_customer_manager_quotations(customer_name) {
+	return get_customer_manager_records({
+		doctype: 'Quotation',
+		filters: { party_name: customer_name },
+		fields: ['name', 'transaction_date', 'valid_till', 'status', 'currency', 'grand_total', 'rounded_total', 'total_taxes_and_charges', 'docstatus', 'creation'],
+		order_by: 'transaction_date desc, creation desc',
+	});
+}
+
+async function get_customer_manager_payments(customer_name) {
+	return get_customer_manager_records({
+		doctype: 'Payments',
+		filters: { customer: customer_name },
+		fields: ['name', 'amount', 'date', 'payment_method', 'deposit_to', 'reference', 'creation'],
+		order_by: 'date desc, creation desc',
+	});
+}
+
+async function get_customer_manager_job_cards(customer_name) {
+	return get_customer_manager_records({
+		doctype: 'CAW Job Card',
+		filters: { customer: customer_name },
+		fields: ['name', 'quotation', 'payment_mode', 'payment_option', 'quotation_amount', 'payment_amount', 'balance_amount', 'status', 'creation', 'modified'],
+		order_by: 'creation desc',
+	});
+}
+
+async function get_customer_manager_records({ doctype, filters, fields, order_by }) {
+	try {
+		let response = await frappe.call({
+			method: 'frappe.client.get_list',
+			args: {
+				doctype: doctype,
+				filters: filters,
+				fields: fields,
+				order_by: order_by,
+				limit_page_length: 0,
+			},
+		});
+		return response.message || [];
+	} catch (e) {
+		console.error(e);
+		return [];
+	}
+}
+
+function get_customer_detail_html(customer, transactions) {
+	let all_invoices = transactions.invoices || [];
+	let quotations = transactions.quotations || [];
+	let payments = transactions.payments || [];
+	let job_cards = transactions.job_cards || [];
 	let total_sales = all_invoices.reduce((sum, invoice) => sum + get_customer_manager_invoice_total(invoice), 0);
 	let outstanding = all_invoices.reduce((sum, invoice) => sum + get_customer_manager_invoice_outstanding(invoice), 0);
 	let currency = (all_invoices[0] && all_invoices[0].currency) || 'KES';
@@ -336,8 +419,10 @@ function get_customer_detail_html(customer, cash_sales, sales_invoices) {
 			</div>
 
 			<div class="cm-detail-summary">
-				${get_customer_stat_html('Cash Sales', cash_sales.length)}
-				${get_customer_stat_html('Sales Invoices', sales_invoices.length)}
+				${get_customer_stat_html('Invoices', all_invoices.length)}
+				${get_customer_stat_html('Quotations', quotations.length)}
+				${get_customer_stat_html('Payments', payments.length)}
+				${get_customer_stat_html('Job Cards', job_cards.length)}
 				${get_customer_stat_html('Total Sales', format_currency(total_sales, currency))}
 				${get_customer_stat_html('Outstanding', format_currency(outstanding, currency))}
 			</div>
@@ -353,7 +438,7 @@ function get_customer_detail_html(customer, cash_sales, sales_invoices) {
 				</div>
 			</div>
 
-			${get_customer_transactions_section_html(all_invoices)}
+			${get_customer_transactions_section_html()}
 		</div>
 	`;
 }
@@ -361,7 +446,7 @@ function get_customer_detail_html(customer, cash_sales, sales_invoices) {
 function get_customer_manager_style_block() {
 	return `
 	<style>
-		.cm-list-page { max-width: 100%; margin: 0 auto; padding: 24px 16px; }
+		.cm-list-page { max-width: 1120px; margin: 0 auto; padding: 24px 16px; }
 		.cm-list-hero { margin-bottom: 24px; }
 		.cm-list-hero h2 { margin-top: 0; font-size: 24px; font-weight: 700; color: var(--text-color); }
 		.cm-list-hero p { margin-bottom: 0; font-size: 14px; color: var(--text-muted); }
@@ -377,7 +462,7 @@ function get_customer_manager_style_block() {
 		.cm-list-table tbody tr:hover { background: var(--subtle-fg); }
 		.cm-list-table td { padding: 12px 16px; font-size: 14px; vertical-align: middle; color: var(--text-color); }
 		.cm-list-pagination { padding: 16px 18px; border-top: 1px solid var(--border-color); text-align: center; }
-		.cm-detail-page { max-width: 1180px; margin: 0 auto; padding: 20px 16px; font-family: var(--font-stack); }
+		.cm-detail-page { max-width: 100%; margin: 0 auto; padding: 20px 16px; font-family: var(--font-stack); }
 		.cm-detail-header { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; margin-bottom: 20px; flex-wrap: wrap; }
 		.cm-detail-title h2 { margin: 0 0 8px; font-size: 26px; font-weight: 700; color: var(--heading-color); }
 		.cm-detail-title p { margin: 0; color: var(--text-muted); font-size: 14px; }
@@ -403,7 +488,8 @@ function get_customer_manager_style_block() {
 		.cm-detail-table tbody tr:not(:last-child) td { border-bottom: 1px solid var(--border-color); }
 		.cm-detail-table tbody tr:hover { background: var(--subtle-fg); }
 		.cm-detail-table td { padding: 12px 16px; font-size: 14px; vertical-align: middle; color: var(--text-color); }
-		.cm-invoice-row { cursor: pointer; }
+		.cm-transaction-row { cursor: pointer; }
+		.cm-transaction-count { color: var(--text-muted); font-size: 13px; white-space: nowrap; }
 		.cm-status-pill { display: inline-block; padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 600; }
 	</style>
 	`;
@@ -445,7 +531,7 @@ function get_customer_combined_transactions(cash_sales, sales_invoices) {
 	});
 }
 
-function get_customer_transactions_section_html(rows) {
+function get_customer_transactions_section_html() {
 	return `
 		<div class="cm-detail-section">
 			<div class="cm-detail-section-title">
@@ -453,28 +539,19 @@ function get_customer_transactions_section_html(rows) {
 				<div class="cm-detail-filter">
 					<label>Filter</label>
 					<select class="form-control" data-filter="transaction_type">
-						<option value="all">All</option>
-						<option value="cash">Cash Sales</option>
-						<option value="invoice">Invoices</option>
+						<option value="invoices">All Invoices</option>
+						<option value="quotations">Quotations</option>
+						<option value="payments">Payments</option>
+						<option value="job_cards">Job Cards</option>
 					</select>
+					<span class="cm-transaction-count"></span>
 				</div>
 			</div>
 			<div class="cm-detail-table-wrap">
 				<div class="cm-detail-table-scroller">
 					<table class="cm-detail-table">
-						<thead>
-							<tr>
-								<th>Type</th>
-								<th>Invoice</th>
-								<th>Date</th>
-								<th style="text-align:right;">Amount</th>
-								<th style="text-align:right;">Outstanding</th>
-								<th style="text-align:center;">Status</th>
-							</tr>
-						</thead>
-						<tbody>
-							${rows.length ? rows.map(invoice => get_customer_invoice_row_html(invoice)).join('') : get_customer_empty_invoice_row()}
-						</tbody>
+						<thead></thead>
+						<tbody></tbody>
 					</table>
 				</div>
 			</div>
@@ -482,11 +559,11 @@ function get_customer_transactions_section_html(rows) {
 	`;
 }
 
-function get_customer_empty_invoice_row() {
+function get_customer_empty_transaction_row(message, colspan) {
 	return `
 		<tr class="cm-empty-row">
-			<td colspan="6" style="padding:24px; text-align:center; color:var(--text-muted);">
-				No transactions found for this customer.
+			<td colspan="${cint(colspan || 1)}" style="padding:24px; text-align:center; color:var(--text-muted);">
+				${cm_text(message || 'No transactions found for this customer.')}
 			</td>
 		</tr>
 	`;
@@ -497,7 +574,7 @@ function get_customer_invoice_row_html(invoice) {
 	let source = invoice.custom_source_quotation || 'Direct / Sales Order';
 
 	return `
-		<tr class="cm-invoice-row" data-name="${cm_attr(invoice.name)}" data-payment-mode="${cm_attr(invoice.payment_mode)}" data-transaction-type="${cm_attr(invoice.transaction_filter)}" data-total="${cm_attr(get_customer_manager_invoice_total(invoice))}" style="display:table-row;">
+		<tr class="cm-transaction-row cm-invoice-row" data-name="${cm_attr(invoice.name)}" data-payment-mode="${cm_attr(invoice.payment_mode)}">
 			<td>
 				<span class="cm-status-pill" style="background:var(--subtle-fg); color:var(--text-color);">
 					${cm_text(invoice.transaction_type)}
@@ -519,34 +596,152 @@ function get_customer_invoice_row_html(invoice) {
 	`;
 }
 
-function filter_customer_transactions(page) {
+function get_customer_quotation_row_html(quotation) {
+	let status_color = get_customer_manager_status_color(quotation.status);
+	let total = get_customer_manager_document_total(quotation);
+	return `
+		<tr class="cm-transaction-row cm-quotation-row" data-name="${cm_attr(quotation.name)}">
+			<td>
+				<div style="font-weight:600; color:var(--primary);">${cm_text(quotation.name)}</div>
+				<div style="font-size:12px; color:var(--text-muted);">${quotation.valid_till ? `Valid till ${cm_text(frappe.datetime.str_to_user(quotation.valid_till))}` : 'No valid till date'}</div>
+			</td>
+			<td>${quotation.transaction_date ? cm_text(frappe.datetime.str_to_user(quotation.transaction_date)) : '-'}</td>
+			<td style="text-align:right; font-weight:600;">${format_currency(total, quotation.currency || 'KES')}</td>
+			<td style="text-align:center;">
+				<span class="cm-status-pill" style="background:${status_color}20; color:${status_color};">
+					${cm_text(quotation.status || '-')}
+				</span>
+			</td>
+		</tr>
+	`;
+}
+
+function get_customer_payment_row_html(payment) {
+	return `
+		<tr class="cm-transaction-row cm-payment-row" data-name="${cm_attr(payment.name)}">
+			<td>
+				<div style="font-weight:600; color:var(--primary);">${cm_text(payment.name)}</div>
+				<div style="font-size:12px; color:var(--text-muted);">${cm_text(payment.reference || 'No reference')}</div>
+			</td>
+			<td>${payment.date ? cm_text(frappe.datetime.str_to_user(payment.date)) : '-'}</td>
+			<td style="text-align:right; font-weight:600;">${format_currency(payment.amount || 0, 'KES')}</td>
+			<td>${cm_text(payment.payment_method || '-')}</td>
+			<td>${cm_text(payment.deposit_to || '-')}</td>
+		</tr>
+	`;
+}
+
+function get_customer_job_card_row_html(job_card) {
+	let status_color = get_customer_manager_status_color(job_card.status);
+	return `
+		<tr class="cm-transaction-row cm-job-card-row" data-name="${cm_attr(job_card.name)}">
+			<td>
+				<div style="font-weight:600; color:var(--primary);">${cm_text(job_card.name)}</div>
+				<div style="font-size:12px; color:var(--text-muted);">${cm_text(job_card.quotation || 'No quotation')}</div>
+			</td>
+			<td>${cm_text(job_card.payment_mode || '-')}</td>
+			<td>${cm_text(job_card.payment_option || '-')}</td>
+			<td style="text-align:right; font-weight:600;">${format_currency(job_card.quotation_amount || 0, 'KES')}</td>
+			<td style="text-align:right;">${format_currency(job_card.payment_amount || 0, 'KES')}</td>
+			<td style="text-align:right;">${format_currency(job_card.balance_amount || 0, 'KES')}</td>
+			<td style="text-align:center;">
+				<span class="cm-status-pill" style="background:${status_color}20; color:${status_color};">
+					${cm_text(job_card.status || '-')}
+				</span>
+			</td>
+		</tr>
+	`;
+}
+
+function render_customer_selected_transaction_table(page) {
 	let $body = $(page.body);
-	let filter = $body.find('[data-filter="transaction_type"]').val() || 'all';
-	let visible_count = 0;
+	let selected = $body.find('[data-filter="transaction_type"]').val() || 'invoices';
+	let transactions = page.customer_manager_transactions || {};
+	let config = get_customer_transaction_table_config(selected, transactions);
+	let rows = config.rows || [];
+	let header_html = config.columns.map(column => {
+		let style = column.align ? ` style="text-align:${cm_attr(column.align)};"` : '';
+		return `<th${style}>${cm_text(column.label)}</th>`;
+	}).join('');
+	let row_html = rows.length
+		? rows.map(config.render_row).join('')
+		: get_customer_empty_transaction_row(config.empty_message, config.columns.length);
 
-	$body.find('.cm-invoice-row').each(function() {
-		let $row = $(this);
-		let is_visible = filter === 'all' || $row.attr('data-transaction-type') === filter;
+	$body.find('.cm-detail-table thead').html(`<tr>${header_html}</tr>`);
+	$body.find('.cm-detail-table tbody').html(row_html);
+	$body.find('.cm-transaction-count').text(`${rows.length} ${config.count_label}`);
 
-		$row.toggle(is_visible);
+}
 
-		if (is_visible) {
-			visible_count += 1;
-		}
-	});
+function get_customer_transaction_table_config(selected, transactions) {
+	let invoices = transactions.invoices || [];
+	let quotations = transactions.quotations || [];
+	let payments = transactions.payments || [];
+	let job_cards = transactions.job_cards || [];
 
-	$body.find('.cm-empty-row').remove();
-
-	if (!visible_count) {
-		$body.find('.cm-detail-table tbody').append(`
-			<tr class="cm-empty-row">
-				<td colspan="6" style="padding:24px; text-align:center; color:var(--text-muted);">
-					No transactions match this filter.
-				</td>
-			</tr>
-		`);
+	if (selected === 'quotations') {
+		return {
+			rows: quotations,
+			count_label: quotations.length === 1 ? 'quotation' : 'quotations',
+			empty_message: 'No quotations found for this customer.',
+			columns: [
+				{ label: 'Quotation' },
+				{ label: 'Date' },
+				{ label: 'Amount', align: 'right' },
+				{ label: 'Status', align: 'center' },
+			],
+			render_row: get_customer_quotation_row_html,
+		};
 	}
 
+	if (selected === 'payments') {
+		return {
+			rows: payments,
+			count_label: payments.length === 1 ? 'payment' : 'payments',
+			empty_message: 'No payments found for this customer.',
+			columns: [
+				{ label: 'Payment' },
+				{ label: 'Date' },
+				{ label: 'Amount', align: 'right' },
+				{ label: 'Method' },
+				{ label: 'Deposit To' },
+			],
+			render_row: get_customer_payment_row_html,
+		};
+	}
+
+	if (selected === 'job_cards') {
+		return {
+			rows: job_cards,
+			count_label: job_cards.length === 1 ? 'job card' : 'job cards',
+			empty_message: 'No job cards found for this customer.',
+			columns: [
+				{ label: 'Job Card' },
+				{ label: 'Payment Mode' },
+				{ label: 'Payment Option' },
+				{ label: 'Quotation Amount', align: 'right' },
+				{ label: 'Payment', align: 'right' },
+				{ label: 'Balance', align: 'right' },
+				{ label: 'Status', align: 'center' },
+			],
+			render_row: get_customer_job_card_row_html,
+		};
+	}
+
+	return {
+		rows: invoices,
+		count_label: invoices.length === 1 ? 'invoice' : 'invoices',
+		empty_message: 'No invoices found for this customer.',
+		columns: [
+			{ label: 'Type' },
+			{ label: 'Invoice' },
+			{ label: 'Date' },
+			{ label: 'Amount', align: 'right' },
+			{ label: 'Outstanding', align: 'right' },
+			{ label: 'Status', align: 'center' },
+		],
+		render_row: get_customer_invoice_row_html,
+	};
 }
 
 function customer_manager_invoice_uses_visual_vat(invoice) {
@@ -563,17 +758,33 @@ function get_customer_manager_invoice_outstanding(invoice) {
 	return customer_manager_invoice_uses_visual_vat(invoice) ? flt(outstanding * (1 + CUSTOMER_MANAGER_VAT_RATE)) : outstanding;
 }
 
+function get_customer_manager_document_total(doc) {
+	let rounded_total = flt(doc.rounded_total || 0);
+	if (rounded_total) {
+		return rounded_total;
+	}
+
+	let total = flt(doc.grand_total || 0);
+	return flt(doc.total_taxes_and_charges || 0) ? total : flt(total * (1 + CUSTOMER_MANAGER_VAT_RATE));
+}
+
 function get_customer_manager_status_color(status) {
 	return {
 		'Draft': '#f39c12',
+		'Open': '#3498db',
 		'Submitted': '#3498db',
 		'Paid': '#2ecc71',
 		'Partly Paid': '#16a085',
 		'Unpaid': '#e67e22',
 		'Overdue': '#e74c3c',
+		'Ordered': '#2ecc71',
+		'In Progress': '#3498db',
+		'Completed': '#2ecc71',
+		'Lost': '#e74c3c',
 		'Return': '#8e44ad',
 		'Credit Note Issued': '#8e44ad',
 		'Cancelled': '#7f8c8d',
+		'Expired': '#7f8c8d',
 	}[status] || '#7f8c8d';
 }
 
