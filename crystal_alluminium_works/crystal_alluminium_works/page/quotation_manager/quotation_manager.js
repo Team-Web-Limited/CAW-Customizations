@@ -10,6 +10,7 @@ frappe.pages['quotation-manager'].on_page_load = function(wrapper) {
 	});
 
 	wrapper.page = page; // Store page for use in on_page_show
+	render_quotation_manager_empty_state(page, wrapper);
 };
 
 const QM_CEILING_COMPONENTS = [
@@ -74,7 +75,8 @@ function get_manager_item_uom_label(item) {
 
 function get_manager_item_uom_qty(item) {
 	if (item.custom_product_category === 'Aluminium') {
-		return flt(item.custom_aluminium_metres || 0);
+		// Sold per piece (1 piece = 1 metre); qty is the piece count.
+		return flt(item.qty || 0);
 	}
 
 	if (item.custom_product_category === 'Ceiling') {
@@ -248,7 +250,7 @@ function render_manager_review_glass_row(item, index) {
 
 function render_manager_review_aluminium_row(item, index, doc) {
 	let price_list = doc ? doc.selling_price_list : 'Retail';
-	let rate_per_m = item.custom_aluminium_metres ? (item.rate / item.custom_aluminium_metres) : item.rate;
+	let rate_per_m = item.rate;  // rate is per piece (1 piece = 1 metre)
 	return `
 		<tr>
 			<td style="text-align:center;">${index + 1}</td>
@@ -350,22 +352,27 @@ frappe.pages['quotation-manager'].on_page_show = function(wrapper) {
 	let quotation_name = route[1] || (frappe.get_route_options() ? frappe.get_route_options().quotation : null);
 
 	if (!quotation_name) {
-		$(wrapper).find('.layout-main-section').html(`
-			<div class="msg-box" style="padding: 40px; text-align: center; color: var(--text-muted);">
-				<div style="font-size: 48px; margin-bottom: 20px;">📄</div>
-				<h3>No Quotation Selected</h3>
-				<p>Please select a quotation from the list or generate a new one from the Builder.</p>
-				<div style="margin-top: 20px;">
-					<button class="btn btn-primary" onclick="frappe.set_route('quotations')">View All Quotations</button>
-					<button class="btn btn-default" onclick="frappe.set_route('quotation-builder')">Open Builder</button>
-				</div>
-			</div>
-		`);
+		render_quotation_manager_empty_state(page, wrapper);
 		return;
 	}
 
 	render_quotation_dashboard(page, quotation_name, wrapper);
 };
+
+function render_quotation_manager_empty_state(page, wrapper) {
+	let $target = page ? $(page.body) : $(wrapper).find('.layout-main-section');
+
+	$target.html(`
+		<div class="msg-box" style="padding: 40px; text-align: center; color: var(--text-muted);">
+			<h3>No Quotation Selected</h3>
+			<p>Please select a quotation from the custom list.</p>
+			<div style="margin-top: 20px;">
+				<button class="btn btn-primary" onclick="frappe.set_route('quotations')">View Quotations</button>
+				<button class="btn btn-default" onclick="frappe.set_route('quotation-builder')">Open Builder</button>
+			</div>
+		</div>
+	`);
+}
 
 function render_quotation_dashboard(page, quotation_name, wrapper) {
 	let $body = page ? $(page.body) : $(wrapper).find('.layout-main-section');
@@ -383,32 +390,13 @@ function render_quotation_dashboard(page, quotation_name, wrapper) {
 			'Cancelled': 'darkgrey'
 		}[doc.status] || 'grey';
 
-		// Fetch linked Sales Orders (kept for legacy quotations created before direct invoicing)
-		let sales_orders = await frappe.db.get_list('Sales Order', {
-			filters: { 'items.prevdoc_docname': quotation_name },
-			fields: ['name', 'status', 'docstatus']
-		});
-
-		let so_names = sales_orders.map(so => so.name);
 		let sales_invoices = await frappe.db.get_list('Sales Invoice', {
 			filters: { custom_source_quotation: quotation_name },
 			fields: ['name', 'status', 'docstatus']
 		});
 
-		if (so_names.length > 0) {
-			// Keep legacy Sales Order-linked invoices visible too.
-			let linked_sales_invoices = await frappe.db.get_list('Sales Invoice', {
-				filters: { 'items.sales_order': ['in', so_names] },
-				fields: ['name', 'status', 'docstatus']
-			});
-			let invoice_map = {};
-			[...(sales_invoices || []), ...(linked_sales_invoices || [])].forEach(invoice => {
-				invoice_map[invoice.name] = invoice;
-			});
-			sales_invoices = Object.values(invoice_map);
-		}
-
 		let existing_job_card = await get_existing_job_card_for_quotation(quotation_name);
+		let workflow_job_card = get_workflow_job_card_state(sales_invoices, existing_job_card);
 		let subtotal_amount = get_manager_quotation_subtotal(doc);
 		let tax_amount = get_manager_quotation_tax(doc);
 		let total_amount = get_manager_quotation_total(doc);
@@ -656,11 +644,11 @@ function render_quotation_dashboard(page, quotation_name, wrapper) {
 					<div class="qm-workflow-label">Quotation</div>
 					<a href="#" onclick="frappe.set_route('Form', 'Quotation', '${doc.name}')" class="qm-workflow-link">${doc.name}</a>
 				</div>
-				<div class="qm-workflow-step ${sales_orders.length > 0 ? 'active' : ''}">
-					<div class="qm-workflow-icon">${sales_orders.length > 0 ? '✓' : '2'}</div>
-					<div class="qm-workflow-label">Sales Order</div>
-					${sales_orders.map(so => `<a href="#" onclick="frappe.set_route('sales-order-manager', '${so.name}')" class="qm-workflow-link">${so.name}</a>`).join('')}
-					${sales_orders.length === 0 ? '<span style="font-size: 11px; color: var(--text-muted);">Pending</span>' : ''}
+				<div class="qm-workflow-step ${workflow_job_card.is_complete ? 'active' : ''}">
+					<div class="qm-workflow-icon">${workflow_job_card.icon}</div>
+					<div class="qm-workflow-label">Job Card</div>
+					${workflow_job_card.links_html}
+					${workflow_job_card.pending_html}
 				</div>
 				<div class="qm-workflow-step ${sales_invoices.length > 0 ? 'active' : ''}">
 					<div class="qm-workflow-icon">${sales_invoices.length > 0 ? '✓' : '3'}</div>
@@ -709,14 +697,14 @@ function render_quotation_dashboard(page, quotation_name, wrapper) {
 			<div class="qm-card">
 				<div class="qm-card-header">Actions</div>
 				<div class="qm-card-body qm-actions">
-					${get_action_buttons(doc, sales_orders, sales_invoices, existing_job_card)}
+					${get_action_buttons(doc, sales_invoices, existing_job_card)}
 				</div>
 			</div>
 		</div>
 		`;
 
 		$(page.body).html(html);
-		bind_action_events(page, doc, sales_orders, sales_invoices, existing_job_card);
+		bind_action_events(page, doc, sales_invoices, existing_job_card);
 	}).catch(err => {
 		$(page.body).html(`
 			<div class="msg-box" style="padding: 40px; text-align: center; color: var(--text-muted);">
@@ -728,9 +716,9 @@ function render_quotation_dashboard(page, quotation_name, wrapper) {
 	});
 }
 
-function get_action_buttons(doc, sales_orders, sales_invoices, existing_job_card) {
+function get_action_buttons(doc, sales_invoices, existing_job_card) {
 	let buttons = '';
-	let has_sales_orders = sales_orders && sales_orders.length > 0;
+	let note = '';
 	let has_sales_invoices = sales_invoices && sales_invoices.length > 0;
 	let has_job_card = !!(existing_job_card && existing_job_card.name);
 
@@ -742,69 +730,78 @@ function get_action_buttons(doc, sales_orders, sales_invoices, existing_job_card
 			<button class="btn btn-default" id="btn-edit-builder">
 				<i class="fa fa-pencil" style="margin-right:6px;"></i>Edit in Builder
 			</button>
-			<button class="btn btn-default" id="btn-print">
-				<i class="fa fa-download" style="margin-right:6px;"></i>Download PDF
-			</button>
 		`;
 	} else if (doc.docstatus === 1 && has_sales_invoices) {
 		buttons += `
-			<button class="btn btn-primary" onclick="frappe.set_route('sales-invoice-manager', '${sales_invoices[0].name}')">
+			<button class="btn btn-primary" id="btn-go-to-sales-invoice">
 				<i class="fa fa-arrow-right" style="margin-right:6px;"></i>Go to Sales Invoice
 			</button>
-			<button class="btn btn-default" id="btn-print">
-				<i class="fa fa-print" style="margin-right:6px;"></i>Download Quotation
-			</button>
-			<p style="color:var(--text-muted); width:100%; margin-top:10px; font-size: 13px;">
+		`;
+		note = `
+			<p style="color:var(--text-muted); width:100%; margin-top:10px; font-size:13px;">
 				This quotation has been <strong>accepted</strong> and invoiced directly.
 			</p>
 		`;
 	} else if (doc.docstatus === 1 && doc.status === 'Open') {
 		// Submitted + Open, NO linked Sales Invoice yet
 		buttons += `
-			<button class="btn btn-primary" id="${has_job_card ? 'btn-view-job-card' : 'btn-create-sales-order'}">
+			<button class="btn btn-primary" id="${has_job_card ? 'btn-view-job-card' : 'btn-create-job-card'}">
 				<i class="fa fa-briefcase" style="margin-right:6px;"></i>${has_job_card ? 'View Job Card' : 'Create Job Card'}
-			</button>
-			<button class="btn btn-default" id="btn-print">
-				<i class="fa fa-print" style="margin-right:6px;"></i>Print PDF
 			</button>
 			<button class="btn btn-danger-light" id="btn-mark-lost" style="border:1px solid #e74c3c; color:#e74c3c; background:transparent; margin-left: auto;">
 				<i class="fa fa-times" style="margin-right:6px;"></i>Mark as Lost
 			</button>
-			<p style="color:var(--text-muted); width:100%; margin-top:10px; font-size: 13px;">
+		`;
+		note = `
+			<p style="color:var(--text-muted); width:100%; margin-top:10px; font-size:13px;">
 				Quotation is <strong>Open</strong> — waiting for customer acceptance. Click <strong>Create Job Card</strong> when the customer accepts.
 			</p>
 		`;
-		if (has_sales_orders) {
-			buttons += `
-				<button class="btn btn-default" onclick="frappe.set_route('sales-order-manager', '${sales_orders[0].name}')">
-					<i class="fa fa-external-link" style="margin-right:6px;"></i>Open Existing Sales Order
-				</button>
-			`;
-		}
 	} else if (doc.docstatus === 1 && doc.status === 'Lost') {
-		buttons += `
-			<button class="btn btn-default" id="btn-print">
-				<i class="fa fa-print" style="margin-right:6px;"></i>Print PDF
-			</button>
+		note = `
 			<p style="color:var(--text-muted); width:100%; margin-top:10px; font-size: 13px;">
 				❌ This quotation was marked as <strong>Lost</strong>.
 			</p>
 		`;
 	} else if (doc.docstatus === 1 && doc.status === 'Expired') {
-		buttons += `
+		note = `
 			<p style="color:var(--text-muted); width:100%; font-size: 13px;">
 				⏰ This quotation has <strong>expired</strong>. You may create a new quotation from the Builder.
 			</p>
 		`;
 	} else if (doc.docstatus === 2) { // Cancelled
-		buttons += `
+		note = `
 			<p style="color:var(--text-muted); width:100%; font-size: 13px;">
 				🚫 This quotation has been <strong>cancelled</strong>.
 			</p>
 		`;
 	}
 
-	return buttons || '<span style="color:var(--text-muted);">No actions available.</span>';
+	if (has_job_card && !buttons.includes('id="btn-view-job-card"')) {
+		buttons += `
+			<button class="btn btn-default" id="btn-go-to-job-card">
+				<i class="fa fa-briefcase" style="margin-right:6px;"></i>Go to Job Card
+			</button>
+		`;
+	}
+
+	if (has_sales_invoices && !buttons.includes('id="btn-go-to-sales-invoice"')) {
+		buttons += `
+			<button class="btn btn-default" id="btn-go-to-sales-invoice">
+				<i class="fa fa-arrow-right" style="margin-right:6px;"></i>Go to Sales Invoice
+			</button>
+		`;
+	}
+
+	if (!buttons.includes('id="btn-download-custom-print"')) {
+		buttons += `
+			<button class="btn btn-default" id="btn-download-custom-print">
+				<i class="fa fa-download" style="margin-right:6px;"></i>Download Quotation PDF
+			</button>
+		`;
+	}
+
+	return (buttons || '<span style="color:var(--text-muted);">No actions available.</span>') + note;
 }
 
 function normalize_job_card_payment_mode(value) {
@@ -823,6 +820,26 @@ function get_job_card_payment_option_choices(payment_mode) {
 		: ['Cheque'];
 }
 
+function get_workflow_job_card_state(sales_invoices, existing_job_card) {
+	let has_job_card = !!(existing_job_card && existing_job_card.name);
+	let has_invoice = !!(sales_invoices && sales_invoices.length);
+	let is_complete = has_job_card || has_invoice;
+
+	let links = [];
+	if (has_job_card) {
+		links.push(`<a href="#" onclick="frappe.set_route('job-card-detail', '${existing_job_card.name}')" class="qm-workflow-link">${existing_job_card.name}</a>`);
+	} else if (has_invoice) {
+		links.push('<span style="font-size: 11px; color: var(--text-muted);">Completed via Invoice</span>');
+	}
+
+	return {
+		is_complete: is_complete,
+		icon: is_complete ? '✓' : '2',
+		links_html: links.join(''),
+		pending_html: is_complete ? '' : '<span style="font-size: 11px; color: var(--text-muted);">Pending</span>'
+	};
+}
+
 function refresh_job_card_payment_options(dialog) {
 	let payment_mode = dialog.get_value('payment_mode');
 	let options = get_job_card_payment_option_choices(payment_mode);
@@ -834,6 +851,64 @@ function refresh_job_card_payment_options(dialog) {
 	dialog.set_df_property('payment_amount', 'hidden', is_invoice ? 1 : 0);
 	dialog.set_df_property('balance_amount', 'hidden', is_invoice ? 1 : 0);
 	dialog.set_df_property('payment_amount', 'reqd', is_invoice ? 0 : 1);
+	dialog.set_df_property('record_payment_section', 'hidden', is_invoice ? 1 : 0);
+
+	refresh_job_card_payment_capture_fields(dialog);
+}
+
+function refresh_job_card_payment_capture_fields(dialog) {
+	let is_cash = normalize_job_card_payment_mode(dialog.get_value('payment_mode')) === 'cash';
+	let has_new_payment = is_cash && flt(dialog.get_value('payment_amount') || 0) > 0;
+
+	['payment_method', 'deposit_to'].forEach(function(fieldname) {
+		dialog.set_df_property(fieldname, 'hidden', has_new_payment ? 0 : 1);
+	});
+	dialog.set_df_property('payment_method', 'reqd', has_new_payment ? 1 : 0);
+	dialog.set_df_property('deposit_to', 'reqd', has_new_payment ? 1 : 0);
+
+	// The visible Reference field is for bank transactions only (cheque/transfer number),
+	// entered manually. M-Pesa/Paybill gets its own simulated transaction code generated
+	// separately at save time (see generate_simulated_mpesa_reference) — the two are not
+	// the same field and are not interchangeable.
+	let mop_is_bank_type = (dialog._mode_of_payment_type || '').toLowerCase() === 'bank';
+	let reference_visible = has_new_payment && mop_is_bank_type;
+	dialog.set_df_property('reference', 'hidden', reference_visible ? 0 : 1);
+	dialog.set_df_property('reference', 'reqd', reference_visible ? 1 : 0);
+}
+
+function generate_simulated_mpesa_reference() {
+	// TODO: replace with the real M-Pesa transaction code once automated Paybill integration lands.
+	const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+	let code = '';
+	for (let i = 0; i < 10; i++) {
+		code += chars.charAt(Math.floor(Math.random() * chars.length));
+	}
+	return code;
+}
+
+async function refresh_job_card_deposit_to_options(dialog) {
+	let payment_method = dialog.get_value('payment_method');
+
+	if (!payment_method) {
+		dialog._mode_of_payment_type = null;
+		dialog._deposit_to_account_type = null;
+		refresh_job_card_payment_capture_fields(dialog);
+		return;
+	}
+
+	let response = await frappe.call({
+		method: 'crystal_alluminium_works.api.get_mode_of_payment_account_info',
+		args: { payment_method: payment_method }
+	});
+	let info = (response && response.message) || {};
+	dialog._mode_of_payment_type = info.mode_of_payment_type || null;
+	dialog._deposit_to_account_type = info.account_type || null;
+
+	if (info.default_account) {
+		await dialog.set_value('deposit_to', info.default_account);
+	}
+
+	refresh_job_card_payment_capture_fields(dialog);
 }
 
 async function get_job_card_customer_defaults(customer_name) {
@@ -912,10 +987,42 @@ function validate_job_card_payment_amount(dialog) {
 		return false;
 	}
 
+	if (payment_amount <= 0) {
+		frappe.msgprint(__('Please enter a payment amount to create a job card for a cash customer.'));
+		return false;
+	}
+
 	if (payment_amount > payment_limit) {
 		frappe.msgprint(__('Payment amount cannot exceed the current balance amount of {0}.', [
 			format_currency(payment_limit)
 		]));
+		return false;
+	}
+
+	return true;
+}
+
+function validate_job_card_payment_capture(dialog) {
+	let is_cash = normalize_job_card_payment_mode(dialog.get_value('payment_mode')) === 'cash';
+	let has_new_payment = is_cash && flt(dialog.get_value('payment_amount') || 0) > 0;
+
+	if (!has_new_payment) {
+		return true;
+	}
+
+	if (!dialog.get_value('payment_method')) {
+		frappe.msgprint(__('Please select a Payment Method to record this payment.'));
+		return false;
+	}
+
+	if (!dialog.get_value('deposit_to')) {
+		frappe.msgprint(__('Please select a Deposit To account to record this payment.'));
+		return false;
+	}
+
+	let mop_is_bank_type = (dialog._mode_of_payment_type || '').toLowerCase() === 'bank';
+	if (mop_is_bank_type && !(dialog.get_value('reference') || '').trim()) {
+		frappe.msgprint(__('Please enter a Reference to record this payment.'));
 		return false;
 	}
 
@@ -964,7 +1071,8 @@ async function open_job_card_modal(page, doc) {
 	let existing_job_card = await get_existing_job_card_for_quotation(doc.name);
 	let quotation_total = get_manager_quotation_total(doc);
 	let payment_limit = get_job_card_outstanding_balance(existing_job_card, quotation_total);
-	let d = new frappe.ui.Dialog({
+	var d;
+	d = new frappe.ui.Dialog({
 		title: 'Create Job Card',
 		fields: [
 			{ fieldtype: 'Section Break', label: 'Customer Details' },
@@ -998,10 +1106,11 @@ async function open_job_card_modal(page, doc) {
 					queue_job_card_customer_defaults(d);
 				},
 				get_query: function() {
+					let current_payment_mode = d ? d.get_value('payment_mode') : get_job_card_payment_mode_label(defaults.payment_mode);
 					return {
 						query: 'crystal_alluminium_works.api.search_builder_customers',
 						filters: {
-							payment_mode: normalize_job_card_payment_mode(d.get_value('payment_mode'))
+							payment_mode: normalize_job_card_payment_mode(current_payment_mode)
 						}
 					};
 				}
@@ -1014,7 +1123,43 @@ async function open_job_card_modal(page, doc) {
 			{ fieldtype: 'Currency', fieldname: 'quotation_amount', label: 'Quotation Amount', read_only: 1, default: quotation_total },
 			{ fieldtype: 'Column Break' },
 			{ fieldtype: 'Currency', fieldname: 'payment_amount', label: 'Payment Amount', default: payment_limit, reqd: 1 },
-			{ fieldtype: 'Currency', fieldname: 'balance_amount', label: 'Balance', read_only: 1, default: payment_limit }
+			{ fieldtype: 'Currency', fieldname: 'balance_amount', label: 'Balance', read_only: 1, default: payment_limit },
+			{ fieldtype: 'Section Break', fieldname: 'record_payment_section', label: 'Record Payment' },
+			{
+				fieldtype: 'Link',
+				fieldname: 'payment_method',
+				label: 'Payment Method',
+				options: 'Mode of Payment',
+				change: function() {
+					refresh_job_card_deposit_to_options(d);
+				},
+				get_query: function() {
+					return {
+						filters: {
+							name: ['not in', ['USD TRANSFER', 'Petty Cash', 'petty-cash', 'petty cash']]
+						}
+					};
+				}
+			},
+			{ fieldtype: 'Column Break' },
+			{
+				fieldtype: 'Link',
+				fieldname: 'deposit_to',
+				label: 'Deposit To',
+				options: 'Account',
+				get_query: function() {
+					let account_type = d && d._deposit_to_account_type;
+					return {
+						filters: {
+							account_type: account_type || ['in', ['Bank', 'Cash']],
+							is_group: 0,
+							name: ['not in', ['DTB Bank USD A/C - CA', 'I & M USD A/C - CA']]
+						}
+					};
+				}
+			},
+			{ fieldtype: 'Column Break' },
+			{ fieldtype: 'Data', fieldname: 'reference', label: 'Reference', hidden: 1 }
 		],
 		primary_action_label: 'Save',
 		primary_action: function(values) {
@@ -1022,7 +1167,12 @@ async function open_job_card_modal(page, doc) {
 				return;
 			}
 
+			if (!validate_job_card_payment_capture(d)) {
+				return;
+			}
+
 			let is_invoice = normalize_job_card_payment_mode(values.payment_mode) === 'invoice';
+			let new_payment_amount = is_invoice ? 0 : flt(values.payment_amount || 0);
 
 			frappe.call({
 				method: 'crystal_alluminium_works.api.create_job_card_from_quotation',
@@ -1035,17 +1185,49 @@ async function open_job_card_modal(page, doc) {
 					customer_pin: values.customer_pin,
 					phone_number: values.phone_number,
 					quotation_amount: values.quotation_amount,
-					payment_amount: is_invoice ? 0 : values.payment_amount,
+					payment_amount: new_payment_amount,
 					balance_amount: is_invoice ? values.quotation_amount : values.balance_amount
 				},
 				freeze: true,
 				freeze_message: 'Creating Job Card...',
 				callback: function(r) {
-					if (r.message) {
-						d.hide();
-						frappe.show_alert({ message: `Job Card ${r.message} created`, indicator: 'green' });
-						frappe.set_route('job-card-detail', r.message);
+					if (!r.message) {
+						return;
 					}
+
+					let job_card_name = r.message;
+
+					if (!is_invoice && new_payment_amount > 0) {
+						let is_phone_payment_method = (d._mode_of_payment_type || '').toLowerCase() === 'phone';
+						let payment_reference = is_phone_payment_method
+							? generate_simulated_mpesa_reference()
+							: values.reference;
+
+						frappe.call({
+							method: 'crystal_alluminium_works.api.record_customer_payment',
+							args: {
+								customer: values.customer,
+								job_card: job_card_name,
+								amount: new_payment_amount,
+								date: frappe.datetime.get_today(),
+								payment_method: values.payment_method,
+								deposit_to: values.deposit_to,
+								reference: payment_reference
+							},
+							freeze: true,
+							freeze_message: 'Recording Payment...',
+							callback: function() {
+								d.hide();
+								frappe.show_alert({ message: `Job Card ${job_card_name} created and payment recorded`, indicator: 'green' });
+								frappe.set_route('job-card-detail', job_card_name);
+							}
+						});
+						return;
+					}
+
+					d.hide();
+					frappe.show_alert({ message: `Job Card ${job_card_name} created`, indicator: 'green' });
+					frappe.set_route('job-card-detail', job_card_name);
 				}
 			});
 		}
@@ -1061,6 +1243,7 @@ async function open_job_card_modal(page, doc) {
 
 	d.fields_dict.payment_amount.$input.on('input', function() {
 		update_job_card_balance(d);
+		refresh_job_card_payment_capture_fields(d);
 	});
 
 	d.fields_dict.payment_mode.$input.on('change', function() {
@@ -1081,7 +1264,7 @@ async function open_job_card_modal(page, doc) {
 	});
 }
 
-function bind_action_events(page, doc, sales_orders, sales_invoices, existing_job_card) {
+function bind_action_events(page, doc, sales_invoices, existing_job_card) {
 	// ── Edit in Builder (Draft only) ──
 	$('#btn-edit-builder').on('click', async () => {
 		let customer_meta = doc.party_name
@@ -1132,7 +1315,6 @@ function bind_action_events(page, doc, sales_orders, sales_invoices, existing_jo
 				if (item.custom_auto_generated) continue; // Skip service rows
 
 				let category = item.custom_product_category || item.item_group || '';
-				let aluminium_metres = item.custom_aluminium_metres || 0;
 				let ceiling_sq_m = item.custom_ceiling_sq_m || 0;
 				let glass_area_sqft = flt(item.custom_area_sqft || 0);
 				let child_rows = service_rows_by_parent[item.idx] || [];
@@ -1149,13 +1331,13 @@ function bind_action_events(page, doc, sales_orders, sales_invoices, existing_jo
 				price_list: doc.selling_price_list || 'Retail',
 				qty: item.qty,
 				pcs: item.custom_glass_sale_mode === 'Sheet' ? sheet_details.pcs : item.qty,
-				metres: aluminium_metres || 1,
+				metres: item.qty || 1,
 				aluminium_color: item.custom_aluminium_color || '',
 				quantity: ceiling_sq_m || 0,
 				square_metres: ceiling_sq_m || 0,
 				ceiling_mode: ceiling_sq_m ? 'bundle' : 'single',
-				rate: category === 'Aluminium' && aluminium_metres
-					? (item.rate / aluminium_metres)
+				rate: category === 'Aluminium'
+					? item.rate
 					: (category === 'Ceiling' && ceiling_sq_m
 						? (item.rate / ceiling_sq_m)
 						: (category === 'Glass' ? get_builder_glass_base_rate(item) : item.rate)),
@@ -1231,13 +1413,25 @@ function bind_action_events(page, doc, sales_orders, sales_invoices, existing_jo
 		);
 	});
 
-	$('#btn-create-sales-order').on('click', () => {
+	$('#btn-create-job-card').on('click', () => {
 		open_job_card_modal(page, doc);
 	});
 
 	$('#btn-view-job-card').on('click', () => {
 		if (existing_job_card && existing_job_card.name) {
 			frappe.set_route('job-card-detail', existing_job_card.name);
+		}
+	});
+
+	$('#btn-go-to-job-card').on('click', () => {
+		if (existing_job_card && existing_job_card.name) {
+			frappe.set_route('job-card-detail', existing_job_card.name);
+		}
+	});
+
+	$('#btn-go-to-sales-invoice').on('click', () => {
+		if (sales_invoices && sales_invoices.length) {
+			frappe.set_route('sales-invoice-manager', sales_invoices[0].name);
 		}
 	});
 
@@ -1280,7 +1474,7 @@ function bind_action_events(page, doc, sales_orders, sales_invoices, existing_jo
 	});
 
 	// ── Print PDF ──
-	$('#btn-print').on('click', () => {
+	$('#btn-download-custom-print').on('click', () => {
 		let print_url = frappe.urllib.get_full_url(
 			`/api/method/crystal_alluminium_works.api.download_crystal_quotation_pdf?name=${encodeURIComponent(doc.name)}`
 		);

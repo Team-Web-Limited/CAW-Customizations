@@ -308,7 +308,21 @@ def _get_crystal_item_fields(read_only=False):
 def add_custom_fields():
     custom_fields = {
         # Quotation Item — editable fields
-        "Quotation Item": _get_crystal_item_fields(read_only=False),
+        "Quotation Item": _get_crystal_item_fields(read_only=False) + [
+            {
+                # Cumulative quantity already released across partial invoices,
+                # expressed in the row's native driving unit (pieces for glass,
+                # metres for aluminium, sq m for ceiling). Remaining to release =
+                # full driving qty - custom_collected_qty.
+                "fieldname": "custom_collected_qty",
+                "label": "Collected Qty",
+                "fieldtype": "Float",
+                "insert_after": "custom_parent_row_idx",
+                "read_only": 1,
+                "no_copy": 1,
+                "hidden": 1,
+            }
+        ],
         # Sales Order Item — frozen (read-only) copy of the quotation data
         "Sales Order Item": _get_crystal_item_fields(read_only=True),
         # Sales Invoice Item — frozen (read-only) copy for accounting records
@@ -330,6 +344,15 @@ def add_custom_fields():
                 "fieldtype": "Link",
                 "options": "CAW Job Card",
                 "insert_after": "custom_source_quotation",
+                "read_only": 1,
+                "no_copy": 1,
+                "hidden": 1,
+            },
+            {
+                "fieldname": "custom_is_partial",
+                "label": "Partial Invoice",
+                "fieldtype": "Check",
+                "insert_after": "custom_source_job_card",
                 "read_only": 1,
                 "no_copy": 1,
                 "hidden": 1,

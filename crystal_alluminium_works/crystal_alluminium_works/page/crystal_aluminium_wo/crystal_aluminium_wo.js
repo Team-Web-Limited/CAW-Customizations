@@ -83,13 +83,13 @@ function load_recent_quotations(page) {
 
 function get_dashboard_html() {
 	return `
-	<style>
-		.caw-dashboard {
-			max-width: 1000px;
-			margin: 0 auto;
-			padding: 24px 16px;
-			font-family: var(--font-stack);
-		}
+		<style>
+			.caw-dashboard {
+				max-width: 1440px;
+				margin: 0 auto;
+				padding: 24px 20px 32px;
+				font-family: var(--font-stack);
+			}
 
 		.caw-hero {
 			text-align: center;
@@ -109,24 +109,30 @@ function get_dashboard_html() {
 			margin: 0;
 		}
 
-		.caw-cards-grid {
-			display: grid;
-			grid-template-columns: repeat(5, minmax(130px, 1fr));
-			gap: 16px;
-			margin-bottom: 48px;
-		}
+			.caw-cards-grid {
+				display: grid;
+				grid-template-columns: repeat(3, minmax(0, 1fr));
+				gap: 18px;
+				margin-bottom: 48px;
+				align-items: stretch;
+			}
 
-		.caw-action-card {
-			background: var(--card-bg);
-			border: 1px solid var(--border-color);
-			border-radius: 12px;
-			padding: 20px 12px;
-			text-align: center;
-			cursor: pointer;
-			transition: all 0.2s ease;
-			position: relative;
-			overflow: hidden;
-		}
+			.caw-action-card {
+				background: var(--card-bg);
+				border: 1px solid var(--border-color);
+				border-radius: 12px;
+				min-height: 148px;
+				padding: 24px 18px;
+				text-align: center;
+				cursor: pointer;
+				transition: all 0.2s ease;
+				position: relative;
+				overflow: hidden;
+				display: flex;
+				flex-direction: column;
+				align-items: center;
+				justify-content: center;
+			}
 
 		.caw-action-card:hover {
 			border-color: var(--primary);
@@ -198,10 +204,38 @@ function get_dashboard_html() {
 			background: var(--subtle-fg);
 		}
 
-		.caw-recent-table tbody tr:not(:last-child) td {
-			border-bottom: 1px solid var(--border-color);
-		}
-	</style>
+			.caw-recent-table tbody tr:not(:last-child) td {
+				border-bottom: 1px solid var(--border-color);
+			}
+
+			@media (min-width: 1380px) {
+				.caw-cards-grid {
+					grid-template-columns: repeat(6, minmax(0, 1fr));
+				}
+			}
+
+			@media (max-width: 900px) {
+				.caw-dashboard {
+					padding-left: 16px;
+					padding-right: 16px;
+				}
+
+				.caw-cards-grid {
+					grid-template-columns: repeat(2, minmax(0, 1fr));
+				}
+			}
+
+			@media (max-width: 640px) {
+				.caw-cards-grid {
+					grid-template-columns: 1fr;
+				}
+
+				.caw-action-card {
+					min-height: 132px;
+					padding: 20px 16px;
+				}
+			}
+		</style>
 
 	<div class="caw-dashboard">
 		<div class="caw-hero">

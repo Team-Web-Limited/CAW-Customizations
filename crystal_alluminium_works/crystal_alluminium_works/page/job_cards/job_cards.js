@@ -96,9 +96,52 @@ function render_job_card_row(row) {
 			<td style="text-align:right;">${format_currency(row.quotation_amount || 0, 'KES')}</td>
 			<td style="text-align:right;">${format_currency(row.payment_amount || 0, 'KES')}</td>
 			<td style="text-align:right;font-weight:600;">${format_currency(row.balance_amount || 0, 'KES')}</td>
-			<td>${frappe.utils.escape_html(row.status || 'Draft')}</td>
+			<td>${render_job_card_status_pill(row.status)}</td>
 		</tr>
 	`;
+}
+
+function render_job_card_status_pill(status) {
+	let label = status || 'Draft';
+	let colors = get_job_card_status_colors(label);
+
+	return `
+		<span class="jc-status-pill" style="background:${colors.background}; color:${colors.text};">
+			<span class="jc-status-dot" style="background:${colors.dot};"></span>
+			${frappe.utils.escape_html(label)}
+		</span>
+	`;
+}
+
+function get_job_card_status_colors(status) {
+	let palette = {
+		'Draft': {
+			background: '#fef3c7',
+			text: '#b45309',
+			dot: '#f59e0b'
+		},
+		'In Progress': {
+			background: '#dbeafe',
+			text: '#1d4ed8',
+			dot: '#3b82f6'
+		},
+		'Completed': {
+			background: '#dcfce7',
+			text: '#166534',
+			dot: '#22c55e'
+		},
+		'Cancelled': {
+			background: '#fee2e2',
+			text: '#b91c1c',
+			dot: '#ef4444'
+		}
+	};
+
+	return palette[status] || {
+		background: 'var(--subtle-fg)',
+		text: 'var(--text-color)',
+		dot: 'var(--text-muted)'
+	};
 }
 
 function render_job_card_pagination($body, message) {
@@ -131,6 +174,8 @@ function get_job_cards_html() {
 		.jc-list-table tbody tr { cursor: pointer; }
 		.jc-list-table tbody tr:hover { background: var(--subtle-fg); }
 		.jc-list-table tbody tr:not(:last-child) td { border-bottom: 1px solid var(--border-color); }
+		.jc-status-pill { display:inline-flex; align-items:center; gap:6px; padding:4px 10px; border-radius:999px; font-size:12px; font-weight:700; line-height:1.2; white-space:nowrap; }
+		.jc-status-dot { width:8px; height:8px; border-radius:50%; flex:0 0 auto; }
 		.jc-list-pagination { padding: 16px 18px; border-top: 1px solid var(--border-color); text-align: center; }
 	</style>
 

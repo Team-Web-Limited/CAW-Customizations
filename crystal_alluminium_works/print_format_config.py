@@ -109,6 +109,12 @@ PRINT_FORMAT_CONFIGS = {
             "paybill_account_no": "QUOTE NO",
         },
     },
+    "Crystal Job Card": {
+        "doctype": "CAW Job Card",
+        "ref_label": "Job Card No",
+        "sections": [],
+        "defaults": {},
+    },
 }
 
 
@@ -185,13 +191,15 @@ def build_terms_html(print_format, values=None):
             f"Production begins upon receipt of {advance_payment_percent}% advance payment.",
             f"Final {final_payment_percent}% due upon delivery.",
         ]
-    else:
+    elif print_format == "Crystal Sales Invoice":
         discrepancy_days = _number(values.get("discrepancy_days")) or 3
         terms = [
             _escape(values.get("invoice_payment_terms")),
             _escape(values.get("ownership_note")),
             f"Any discrepancies must be reported within {discrepancy_days} days of delivery.",
         ]
+    else:
+        terms = []
 
     terms = [term for term in terms if term]
     return "<ol style=\"padding-left: 16px; margin: 0;\">" + "".join(f"<li>{term}</li>" for term in terms) + "</ol>"

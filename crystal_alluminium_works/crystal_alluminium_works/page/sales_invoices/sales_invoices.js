@@ -40,6 +40,7 @@ function get_sales_invoices_state(page) {
 		page.sales_invoices_state = {
 			page: 1,
 			page_length: 20,
+			filter_timer: null,
 		};
 	}
 	return page.sales_invoices_state;
@@ -47,10 +48,7 @@ function get_sales_invoices_state(page) {
 
 function bind_sales_invoices_events(page) {
 	let $body = $(page.body);
-
-	$body.on('click', '.si-list-apply', function() {
-		load_sales_invoices(page, 1);
-	});
+	let state = get_sales_invoices_state(page);
 
 	$body.on('click', '.si-list-clear', function() {
 		$body.find('[data-filter="search"]').val('');
@@ -61,8 +59,20 @@ function bind_sales_invoices_events(page) {
 		load_sales_invoices(page, 1);
 	});
 
+	$body.on('input', '[data-filter="search"], [data-filter="customer"]', function() {
+		clearTimeout(state.filter_timer);
+		state.filter_timer = setTimeout(function() {
+			load_sales_invoices(page, 1);
+		}, 250);
+	});
+
+	$body.on('change', '[data-filter="status"], [data-filter="from_date"], [data-filter="to_date"]', function() {
+		load_sales_invoices(page, 1);
+	});
+
 	$body.on('keydown', '.si-list-filters input', function(e) {
 		if (e.key === 'Enter') {
+			clearTimeout(state.filter_timer);
 			load_sales_invoices(page, 1);
 		}
 	});
@@ -108,7 +118,7 @@ function load_sales_invoices(page, page_number) {
 
 	$body.find('.si-list-body').html(`
 		<tr>
-			<td colspan="6" style="padding:24px; text-align:center; color:var(--text-muted);">
+			<td colspan="7" style="padding:24px; text-align:center; color:var(--text-muted);">
 				Loading sales invoices...
 			</td>
 		</tr>
@@ -138,7 +148,7 @@ function render_sales_invoices_table(page, rows) {
 	if (!rows.length) {
 		$body.html(`
 		<tr>
-			<td colspan="6" style="padding:24px; text-align:center; color:var(--text-muted);">
+			<td colspan="7" style="padding:24px; text-align:center; color:var(--text-muted);">
 				No sales invoices match the current filters.
 			</td>
 		</tr>
@@ -161,7 +171,9 @@ function render_sales_invoices_table(page, rows) {
 				</td>
 				<td style="padding:12px 16px; text-align:right;">
 					<div style="font-weight:600;">${format_currency(get_sales_invoice_row_display_total(invoice), invoice.currency || 'KES')}</div>
-					<div style="font-size:12px; color:var(--text-muted);">Outstanding ${format_currency(get_sales_invoice_row_display_outstanding(invoice), invoice.currency || 'KES')}</div>
+				</td>
+				<td style="padding:12px 16px; text-align:right;">
+					<div style="font-weight:600;">${format_currency(get_sales_invoice_row_display_outstanding(invoice), invoice.currency || 'KES')}</div>
 				</td>
 				<td style="padding:12px 16px;">
 					<div style="font-size:13px;">${invoice.pin || '—'}</div>
@@ -215,9 +227,9 @@ function get_sales_invoices_html() {
 	return `
 	<style>
 		.si-list-page {
-			max-width: 1180px;
+			max-width: 1440px;
 			margin: 0 auto;
-			padding: 20px 16px;
+			padding: 20px 20px 28px;
 			font-family: var(--font-stack);
 		}
 
@@ -251,17 +263,25 @@ function get_sales_invoices_html() {
 			margin-bottom: 20px;
 		}
 
-		.si-list-filter-grid {
-			display: grid;
-			grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+		.si-list-filter-row {
+			display: flex;
+			align-items: flex-end;
+			flex-wrap: wrap;
 			gap: 12px;
+		}
+
+		.si-list-filter-field {
+			flex: 1 1 180px;
+			min-width: 160px;
 		}
 
 		.si-list-filter-actions {
 			display: flex;
-			justify-content: flex-end;
+			align-items: flex-end;
 			gap: 10px;
-			margin-top: 14px;
+			margin-left: auto;
+			flex: 0 0 auto;
+			padding-bottom: 1px;
 		}
 
 		.si-list-table-wrap {
@@ -301,6 +321,19 @@ function get_sales_invoices_html() {
 			padding: 16px 18px;
 			border-top: 1px solid var(--border-color);
 		}
+
+		@media (max-width: 980px) {
+			.si-list-page {
+				padding-left: 16px;
+				padding-right: 16px;
+			}
+
+			.si-list-filter-actions {
+				margin-left: 0;
+				width: 100%;
+				justify-content: flex-end;
+			}
+		}
 	</style>
 
 	<div class="si-list-page">
@@ -310,16 +343,16 @@ function get_sales_invoices_html() {
 		</div>
 
 		<div class="si-list-filters">
-			<div class="si-list-filter-grid">
-				<div>
+			<div class="si-list-filter-row">
+				<div class="si-list-filter-field">
 					<label class="form-label">Search</label>
 					<input type="text" class="form-control" data-filter="search" placeholder="Invoice, customer, quotation">
 				</div>
-				<div>
+				<div class="si-list-filter-field">
 					<label class="form-label">Customer</label>
 					<input type="text" class="form-control" data-filter="customer" placeholder="Customer code">
 				</div>
-				<div>
+				<div class="si-list-filter-field">
 					<label class="form-label">Status</label>
 					<select class="form-control" data-filter="status">
 						<option>All</option>
@@ -332,18 +365,17 @@ function get_sales_invoices_html() {
 						<option>Cancelled</option>
 					</select>
 				</div>
-				<div>
+				<div class="si-list-filter-field">
 					<label class="form-label">From Date</label>
 					<input type="date" class="form-control" data-filter="from_date">
 				</div>
-				<div>
+				<div class="si-list-filter-field">
 					<label class="form-label">To Date</label>
 					<input type="date" class="form-control" data-filter="to_date">
 				</div>
-			</div>
-			<div class="si-list-filter-actions">
-				<button class="btn btn-default si-list-clear">Clear</button>
-				<button class="btn btn-primary si-list-apply">Apply Filters</button>
+				<div class="si-list-filter-actions">
+					<button class="btn btn-default si-list-clear">Clear</button>
+				</div>
 			</div>
 		</div>
 
@@ -356,13 +388,14 @@ function get_sales_invoices_html() {
 							<th>Invoice Number</th>
 							<th>Date</th>
 							<th style="text-align:right;">Amount</th>
+							<th style="text-align:right;">Balance</th>
 							<th>PIN</th>
 							<th style="text-align:center;">Status</th>
 						</tr>
 					</thead>
 					<tbody class="si-list-body">
 						<tr>
-							<td colspan="6" style="padding:24px; text-align:center; color:var(--text-muted);">
+							<td colspan="7" style="padding:24px; text-align:center; color:var(--text-muted);">
 								Loading...
 							</td>
 						</tr>

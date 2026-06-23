@@ -40,6 +40,7 @@ function get_sales_invoices_state(page) {
 		page.sales_invoices_state = {
 			page: 1,
 			page_length: 20,
+			filter_timer: null,
 		};
 	}
 	return page.sales_invoices_state;
@@ -47,10 +48,7 @@ function get_sales_invoices_state(page) {
 
 function bind_sales_invoices_events(page) {
 	let $body = $(page.body);
-
-	$body.on('click', '.si-list-apply', function() {
-		load_sales_invoices(page, 1);
-	});
+	let state = get_sales_invoices_state(page);
 
 	$body.on('click', '.si-list-clear', function() {
 		$body.find('[data-filter="search"]').val('');
@@ -61,8 +59,20 @@ function bind_sales_invoices_events(page) {
 		load_sales_invoices(page, 1);
 	});
 
+	$body.on('input', '[data-filter="search"], [data-filter="customer"]', function() {
+		clearTimeout(state.filter_timer);
+		state.filter_timer = setTimeout(function() {
+			load_sales_invoices(page, 1);
+		}, 250);
+	});
+
+	$body.on('change', '[data-filter="status"], [data-filter="from_date"], [data-filter="to_date"]', function() {
+		load_sales_invoices(page, 1);
+	});
+
 	$body.on('keydown', '.si-list-filters input', function(e) {
 		if (e.key === 'Enter') {
+			clearTimeout(state.filter_timer);
 			load_sales_invoices(page, 1);
 		}
 	});
@@ -85,6 +95,16 @@ function bind_sales_invoices_events(page) {
 		let name = $(this).data('name');
 		if (name) {
 			frappe.set_route('sales-invoice-manager', name, 'Cash');
+		}
+	});
+
+	$body.on('click', '.si-open-customer', function(e) {
+		e.preventDefault();
+		e.stopPropagation();
+
+		let customer = $(this).data('customer');
+		if (customer) {
+			frappe.set_route('customer-manager', customer);
 		}
 	});
 }
@@ -152,7 +172,11 @@ function render_sales_invoices_table(page, rows) {
 		return `
 			<tr class="si-list-row" data-name="${invoice.name}" style="cursor:pointer;">
 				<td style="padding:12px 16px;">
-					<div style="font-weight:600;">${invoice.customer_name || invoice.customer || '—'}</div>
+					<div style="font-weight:600;">
+						<a href="#" class="si-open-customer" data-customer="${frappe.utils.escape_html(invoice.customer || invoice.customer_name || '')}" style="color:var(--primary); text-decoration:none;">
+							${frappe.utils.escape_html(invoice.customer_name || invoice.customer || '—')}
+						</a>
+					</div>
 				</td>
 				<td style="padding:12px 16px; font-weight:600; color:var(--primary);">${invoice.name}</td>
 				<td style="padding:12px 16px;">
@@ -160,7 +184,6 @@ function render_sales_invoices_table(page, rows) {
 				</td>
 				<td style="padding:12px 16px; text-align:right;">
 					<div style="font-weight:600;">${format_currency(get_sales_invoice_row_display_total(invoice), invoice.currency || 'KES')}</div>
-					<div style="font-size:12px; color:var(--text-muted);">Outstanding ${format_currency(get_sales_invoice_row_display_outstanding(invoice), invoice.currency || 'KES')}</div>
 				</td>
 				<td style="padding:12px 16px; text-align:center;">
 					<span style="background:${status_color}20; color:${status_color}; padding:4px 12px; border-radius:12px; font-size:12px; font-weight:600;">
@@ -211,9 +234,9 @@ function get_sales_invoices_html() {
 	return `
 	<style>
 		.si-list-page {
-			max-width: 1180px;
+			max-width: 1440px;
 			margin: 0 auto;
-			padding: 20px 16px;
+			padding: 20px 20px 28px;
 			font-family: var(--font-stack);
 		}
 
@@ -247,17 +270,25 @@ function get_sales_invoices_html() {
 			margin-bottom: 20px;
 		}
 
-		.si-list-filter-grid {
-			display: grid;
-			grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+		.si-list-filter-row {
+			display: flex;
+			align-items: flex-end;
+			flex-wrap: wrap;
 			gap: 12px;
+		}
+
+		.si-list-filter-field {
+			flex: 1 1 180px;
+			min-width: 160px;
 		}
 
 		.si-list-filter-actions {
 			display: flex;
-			justify-content: flex-end;
+			align-items: flex-end;
 			gap: 10px;
-			margin-top: 14px;
+			margin-left: auto;
+			flex: 0 0 auto;
+			padding-bottom: 1px;
 		}
 
 		.si-list-table-wrap {
@@ -297,6 +328,19 @@ function get_sales_invoices_html() {
 			padding: 16px 18px;
 			border-top: 1px solid var(--border-color);
 		}
+
+		@media (max-width: 980px) {
+			.si-list-page {
+				padding-left: 16px;
+				padding-right: 16px;
+			}
+
+			.si-list-filter-actions {
+				margin-left: 0;
+				width: 100%;
+				justify-content: flex-end;
+			}
+		}
 	</style>
 
 	<div class="si-list-page">
@@ -306,16 +350,16 @@ function get_sales_invoices_html() {
 		</div>
 
 		<div class="si-list-filters">
-			<div class="si-list-filter-grid">
-				<div>
+			<div class="si-list-filter-row">
+				<div class="si-list-filter-field">
 					<label class="form-label">Search</label>
 					<input type="text" class="form-control" data-filter="search" placeholder="Invoice, customer, quotation">
 				</div>
-				<div>
+				<div class="si-list-filter-field">
 					<label class="form-label">Customer</label>
 					<input type="text" class="form-control" data-filter="customer" placeholder="Customer code">
 				</div>
-				<div>
+				<div class="si-list-filter-field">
 					<label class="form-label">Status</label>
 					<select class="form-control" data-filter="status">
 						<option>All</option>
@@ -328,18 +372,17 @@ function get_sales_invoices_html() {
 						<option>Cancelled</option>
 					</select>
 				</div>
-				<div>
+				<div class="si-list-filter-field">
 					<label class="form-label">From Date</label>
 					<input type="date" class="form-control" data-filter="from_date">
 				</div>
-				<div>
+				<div class="si-list-filter-field">
 					<label class="form-label">To Date</label>
 					<input type="date" class="form-control" data-filter="to_date">
 				</div>
-			</div>
-			<div class="si-list-filter-actions">
-				<button class="btn btn-default si-list-clear">Clear</button>
-				<button class="btn btn-primary si-list-apply">Apply Filters</button>
+				<div class="si-list-filter-actions">
+					<button class="btn btn-default si-list-clear">Clear</button>
+				</div>
 			</div>
 		</div>
 

@@ -118,7 +118,8 @@ function get_sales_invoice_item_uom_label(item) {
 
 function get_sales_invoice_item_uom_qty(item) {
 	if (item.custom_product_category === 'Aluminium') {
-		return flt(item.custom_aluminium_metres || 0);
+		// Sold per piece (1 piece = 1 metre); qty is the piece count.
+		return flt(item.qty || 0);
 	}
 
 	if (item.custom_product_category === 'Ceiling') {
@@ -207,7 +208,7 @@ function render_sales_invoice_glass_row(item, index) {
 
 function render_sales_invoice_aluminium_row(item, index, doc) {
 	let price_list = doc ? doc.selling_price_list : 'Retail';
-	let rate_per_m = item.custom_aluminium_metres ? (item.rate / item.custom_aluminium_metres) : item.rate;
+	let rate_per_m = item.rate;  // rate is per piece (1 piece = 1 metre)
 	return `
 		<tr>
 			<td style="text-align:center;">${index + 1}</td>
@@ -215,7 +216,7 @@ function render_sales_invoice_aluminium_row(item, index, doc) {
 			<td style="text-align:center;">${item.custom_aluminium_color ? frappe.utils.escape_html(item.custom_aluminium_color) : '-'}</td>
 			<td style="white-space:pre-wrap;">${item.description ? frappe.utils.escape_html(item.description) : '-'}</td>
 			<td style="text-align:center;">${item.qty || '-'}</td>
-			<td style="text-align:center;">${format_sales_invoice_review_number(item.custom_aluminium_metres || 0)}</td>
+			<td style="text-align:center;">${format_sales_invoice_review_number(item.qty || 0)}</td>
 			<td style="text-align:center;">
 				<span style="background:var(--subtle-fg);padding:2px 8px;border-radius:6px;font-size:12px;">${price_list}</span>
 			</td>
@@ -359,7 +360,10 @@ function get_sales_invoice_paid_amount(doc) {
 }
 
 function get_sales_invoice_display_paid_amount(doc, source_job_card) {
-	if (source_job_card) {
+	// A partial invoice is a final receipt for only the released items.  The
+	// linked Job Card still carries the balance for the entire quotation, so
+	// using its cumulative figures here makes this invoice appear underpaid.
+	if (source_job_card && !cint(doc.custom_is_partial)) {
 		return flt(source_job_card.payment_amount || 0);
 	}
 
@@ -367,7 +371,7 @@ function get_sales_invoice_display_paid_amount(doc, source_job_card) {
 }
 
 function get_sales_invoice_outstanding_for_ui(doc, source_job_card) {
-	if (source_job_card) {
+	if (source_job_card && !cint(doc.custom_is_partial)) {
 		return flt(source_job_card.balance_amount || 0);
 	}
 
@@ -376,6 +380,18 @@ function get_sales_invoice_outstanding_for_ui(doc, source_job_card) {
 	}
 
 	return get_sales_invoice_display_outstanding(doc);
+}
+
+function get_sales_invoice_workflow_job_card_state(source_job_card) {
+	let has_job_card = !!(source_job_card && source_job_card.name);
+
+	return {
+		is_complete: has_job_card,
+		icon: has_job_card ? '✓' : '2',
+		link_html: has_job_card
+			? `<a href="#" onclick="frappe.set_route('job-card-detail', '${source_job_card.name}')" class="sim-link">${source_job_card.name}</a>`
+			: '<span style="font-size: 11px; color: var(--text-muted);">Not linked</span>'
+	};
 }
 
 frappe.pages['sales-invoice-manager'].on_page_show = function(wrapper) {
@@ -423,8 +439,8 @@ async function render_sales_invoice_dashboard(page, invoice_name, wrapper, defau
 			page.set_title(`Sales Invoice: ${doc.name}`);
 		}
 
-		const sales_orders = [...new Set((doc.items || []).map(row => row.sales_order).filter(Boolean))];
 		const quotation_name = doc.custom_source_quotation || null;
+		const workflow_job_card = get_sales_invoice_workflow_job_card_state(source_job_card);
 		const manual_items = (doc.items || []).filter(item => !item.custom_auto_generated);
 		const glass_items = manual_items.filter(i => i.custom_product_category === 'Glass');
 		const aluminium_items = manual_items.filter(i => i.custom_product_category === 'Aluminium');
@@ -667,10 +683,10 @@ async function render_sales_invoice_dashboard(page, invoice_name, wrapper, defau
 					<div class="sim-label">Quotation</div>
 					${quotation_name ? `<a href="#" onclick="frappe.set_route('quotation-manager', '${quotation_name}')" class="sim-link">${quotation_name}</a>` : '<span style="font-size: 11px; color: var(--text-muted);">Not linked</span>'}
 				</div>
-				<div class="sim-step ${sales_orders.length ? 'active' : ''}">
-					<div class="sim-icon">${sales_orders.length ? '✓' : '2'}</div>
-					<div class="sim-label">Sales Order</div>
-					${sales_orders.length ? sales_orders.map(name => `<a href="#" onclick="frappe.set_route('sales-order-manager', '${name}')" class="sim-link">${name}</a>`).join('') : '<span style="font-size: 11px; color: var(--text-muted);">Direct invoice</span>'}
+				<div class="sim-step ${workflow_job_card.is_complete ? 'active' : ''}">
+					<div class="sim-icon">${workflow_job_card.icon}</div>
+					<div class="sim-label">Job Card</div>
+					${workflow_job_card.link_html}
 				</div>
 				<div class="sim-step active">
 					<div class="sim-icon">✓</div>
@@ -694,10 +710,7 @@ async function render_sales_invoice_dashboard(page, invoice_name, wrapper, defau
 							<div class="sim-info-label">Customer</div>
 							<div class="sim-info-val">${doc.customer || '—'}</div>
 						</div>
-						<div>
-							<div class="sim-info-label">Due Date</div>
-							<div class="sim-info-val">${doc.due_date ? frappe.datetime.global_date_format(doc.due_date) : '—'}</div>
-						</div>
+
 						<div>
 							<div class="sim-info-label">Grand Total</div>
 							<div class="sim-info-val">${format_currency(get_sales_invoice_display_total(doc), doc.currency || 'KES')}</div>
@@ -765,7 +778,7 @@ async function render_sales_invoice_dashboard(page, invoice_name, wrapper, defau
 			<div class="sim-card">
 				<div class="sim-card-header">Actions</div>
 				<div class="sim-card-body sim-actions">
-					${get_sales_invoice_action_buttons(doc, sales_orders, quotation_name)}
+					${get_sales_invoice_action_buttons(doc, quotation_name)}
 				</div>
 			</div>
 		</div>
@@ -784,23 +797,12 @@ async function render_sales_invoice_dashboard(page, invoice_name, wrapper, defau
 	}
 }
 
-function get_sales_invoice_action_buttons(doc, sales_orders, quotation_name) {
+function get_sales_invoice_action_buttons(doc, quotation_name) {
 	let buttons = `
-		<button class="btn btn-default" id="btn-open-form">
-			<i class="fa fa-external-link" style="margin-right:6px;"></i>Open Form
-		</button>
 		<button class="btn btn-default" id="btn-download-invoice">
 			<i class="fa fa-download" style="margin-right:6px;"></i>Download PDF
 		</button>
 	`;
-
-	if (sales_orders.length) {
-		buttons += `
-			<button class="btn btn-default" id="btn-open-sales-order" data-name="${sales_orders[0]}">
-				<i class="fa fa-shopping-cart" style="margin-right:6px;"></i>Open Sales Order
-			</button>
-		`;
-	}
 
 	if (quotation_name) {
 		buttons += `
@@ -841,19 +843,8 @@ function get_sales_invoice_action_buttons(doc, sales_orders, quotation_name) {
 function bind_sales_invoice_action_events(page, doc) {
 	const $body = $(page.body);
 
-	$body.find('#btn-open-form').on('click', () => {
-		frappe.set_route('Form', 'Sales Invoice', doc.name);
-	});
-
 	$body.find('#btn-download-invoice').on('click', () => {
 		download_sales_invoice_pdf(doc.name);
-	});
-
-	$body.find('#btn-open-sales-order').on('click', function() {
-		let name = $(this).data('name');
-		if (name) {
-			frappe.set_route('sales-order-manager', name);
-		}
 	});
 
 	$body.find('#btn-open-quotation').on('click', function() {

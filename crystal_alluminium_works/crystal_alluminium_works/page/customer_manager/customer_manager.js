@@ -1,4 +1,4 @@
-frappe.pages['customer-manager'].on_page_load = function(wrapper) {
+frappe.pages['customer-manager'].on_page_load = function (wrapper) {
 	var page = frappe.ui.make_app_page({
 		parent: wrapper,
 		title: 'Customer Manager',
@@ -10,9 +10,20 @@ frappe.pages['customer-manager'].on_page_load = function(wrapper) {
 
 	bind_customer_manager_events(page);
 	render_customer_manager_route(page);
+
+	// frappe.app.sidebar.set_workspace_sidebar() mis-detects the active sidebar
+	// when the route has a second segment (e.g. customer-manager/<customer name>),
+	// since it treats that segment as the entity to resolve the sidebar for
+	// instead of the page name. Re-assert our own sidebar after every route
+	// change so it doesn't fall back to the default app sidebar.
+	frappe.router.on('change', function () {
+		if (frappe.get_route()[0] === 'customer-manager' && frappe.app.sidebar) {
+			frappe.app.sidebar.setup('Crystal Alluminium Works');
+		}
+	});
 };
 
-frappe.pages['customer-manager'].on_page_show = function(wrapper) {
+frappe.pages['customer-manager'].on_page_show = function (wrapper) {
 	let page = wrapper.customer_manager_page || $(wrapper).data('page');
 	if (page) {
 		render_customer_manager_route(page);
@@ -20,6 +31,20 @@ frappe.pages['customer-manager'].on_page_show = function(wrapper) {
 };
 
 const CUSTOMER_MANAGER_VAT_RATE = 0.16;
+const CUSTOMER_MANAGER_PAGE_LENGTH = 30;
+
+function get_customer_manager_list_state(page) {
+	if (!page.customer_manager_list_state) {
+		page.customer_manager_list_state = {
+			page: 1,
+			page_length: CUSTOMER_MANAGER_PAGE_LENGTH,
+			total_count: 0,
+			has_more: false,
+		};
+	}
+
+	return page.customer_manager_list_state;
+}
 
 function get_customer_manager_list_columns(customer_type) {
 	let type = (customer_type || 'invoice').trim().toLowerCase();
@@ -79,17 +104,17 @@ function decode_customer_route_name(value) {
 function set_customer_list_actions(page) {
 	page.set_title('Customer Manager');
 	page.clear_secondary_action();
-	page.set_primary_action('New Customer', function() {
+	page.set_primary_action('New Customer', function () {
 		frappe.new_doc('Customer');
 	});
 }
 
 function set_customer_detail_actions(page, customer_name) {
 	page.set_title('Customer Details');
-	page.set_primary_action('Open Customer', function() {
+	page.set_primary_action('Open Customer', function () {
 		frappe.set_route('Form', 'Customer', customer_name);
 	});
-	page.set_secondary_action('Back to Customers', function() {
+	page.set_secondary_action('Back to Customers', function () {
 		frappe.set_route('customer-manager');
 	});
 }
@@ -97,6 +122,12 @@ function set_customer_detail_actions(page, customer_name) {
 function render_customer_list(page) {
 	set_customer_list_actions(page);
 	$(page.body).html(get_customer_manager_html());
+	page.customer_manager_list_state = {
+		page: 1,
+		page_length: CUSTOMER_MANAGER_PAGE_LENGTH,
+		total_count: 0,
+		has_more: false,
+	};
 	render_customer_manager_list_loading($(page.body), 'invoice', 'Loading customers...');
 	load_customers(page, 1);
 }
@@ -109,17 +140,31 @@ function get_customer_manager_html() {
 		.cm-list-hero h2 { margin-top: 0; font-size: 24px; font-weight: 700; color: var(--text-color); }
 		.cm-list-hero p { margin-bottom: 0; font-size: 14px; color: var(--text-muted); }
 		.cm-list-filters { padding: 18px; margin: 0 auto 24px; background: var(--fg-color); border: 1px solid var(--border-color); border-radius: 8px; box-shadow: var(--shadow-xs); }
-		.cm-list-filter-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px; margin-bottom: 16px; }
-		.cm-list-filter-actions { display: flex; justify-content: flex-end; gap: 12px; }
+		.cm-list-toolbar { display: flex; align-items: end; gap: 12px; flex-wrap: wrap; }
+		.cm-list-toolbar-group { min-width: 0; }
+		.cm-list-toolbar-group--search { flex: 1 1 320px; }
+		.cm-list-toolbar-group--type { flex: 0 1 220px; }
+		.cm-list-toolbar-actions { display: flex; align-items: end; justify-content: flex-end; gap: 12px; margin-left: auto; flex: 0 1 auto; }
+		.cm-list-toolbar .form-label { margin-bottom: 6px; display: block; }
 		.cm-list-table-wrap { margin: 0 auto; background: var(--fg-color); border: 1px solid var(--border-color); border-radius: 8px; box-shadow: var(--shadow-xs); overflow: hidden; }
-		.cm-list-table-scroller { overflow-x: auto; }
+		.cm-list-table-scroller { max-height: 620px; overflow: auto; }
 		.cm-list-table { width: 100%; min-width: 800px; border-collapse: collapse; }
-		.cm-list-table thead th { padding: 12px 16px; font-size: 12px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; text-align: left; letter-spacing: 0.5px; background: var(--subtle-fg); border-bottom: 1px solid var(--border-color); }
+		.cm-list-table thead th { position: sticky; top: 0; z-index: 1; padding: 12px 16px; font-size: 12px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; text-align: left; letter-spacing: 0.5px; background: var(--subtle-fg); border-bottom: 1px solid var(--border-color); }
 		.cm-list-table tbody tr { cursor: pointer; }
 		.cm-list-table tbody tr:not(:last-child) td { border-bottom: 1px solid var(--border-color); }
 		.cm-list-table tbody tr:hover { background: var(--subtle-fg); }
 		.cm-list-table td { padding: 12px 16px; font-size: 14px; vertical-align: middle; color: var(--text-color); }
-		.cm-list-pagination { padding: 16px 18px; border-top: 1px solid var(--border-color); text-align: center; }
+		.cm-list-pagination { padding: 16px 18px; border-top: 1px solid var(--border-color); }
+		.cm-list-pagination-bar { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; }
+		.cm-list-pagination-meta { font-size:13px; color:var(--text-muted); }
+		.cm-list-pagination-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+		.cm-list-pagination-page { font-size:13px; color:var(--text-color); min-width:70px; text-align:center; }
+		@media (max-width: 768px) {
+			.cm-list-toolbar-actions { width: 100%; justify-content: stretch; margin-left: 0; }
+			.cm-list-toolbar-actions .btn { flex: 1 1 0; }
+			.cm-list-pagination-page { min-width: auto; }
+			.cm-list-table-scroller { max-height: 440px; }
+		}
 		.cm-detail-page { max-width: 100%; margin: 0 auto; padding: 20px 16px; font-family: var(--font-stack); }
 		.cm-detail-header { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; margin-bottom: 20px; flex-wrap: wrap; }
 		.cm-detail-title h2 { margin: 0 0 8px; font-size: 26px; font-weight: 700; color: var(--heading-color); }
@@ -151,26 +196,25 @@ function get_customer_manager_html() {
 	<div class="cm-list-page">
 		<div class="cm-list-hero">
 			<h2>Customer Manager</h2>
-			<p>Manage all your customer profiles, tax PINs, and groups quickly.</p>
 		</div>
 
 		<div class="cm-list-filters">
-			<div class="cm-list-filter-grid">
-				<div>
+			<div class="cm-list-toolbar">
+				<div class="cm-list-toolbar-group cm-list-toolbar-group--search">
 					<label class="form-label">Search</label>
 					<input type="text" class="form-control" data-filter="search" placeholder="Customer name or ID">
 				</div>
-				<div>
+				<div class="cm-list-toolbar-group cm-list-toolbar-group--type">
 					<label class="form-label">Customer Type</label>
 					<select class="form-control" data-filter="customer_type">
 						<option value="invoice">Invoice Customers</option>
 						<option value="cash">Cash Customers</option>
 					</select>
 				</div>
-			</div>
-			<div class="cm-list-filter-actions">
-				<button class="btn btn-default cm-list-clear">Clear</button>
-				<button class="btn btn-primary cm-list-apply">Apply Filters</button>
+				<div class="cm-list-toolbar-actions">
+					<button class="btn btn-default cm-list-clear">Clear</button>
+					<button class="btn btn-primary cm-list-apply">Apply Filters</button>
+				</div>
 			</div>
 		</div>
 
@@ -194,44 +238,44 @@ function get_customer_manager_html() {
 function bind_customer_manager_events(page) {
 	let wrapper = page.body;
 
-	$(wrapper).on('click', '.cm-list-apply', function() {
+	$(wrapper).on('click', '.cm-list-apply', function () {
 		load_customers(page, 1);
 	});
 
-	$(wrapper).on('keydown', '[data-filter="search"]', function(e) {
+	$(wrapper).on('keydown', '[data-filter="search"]', function (e) {
 		if (e.key === 'Enter') {
 			e.preventDefault();
 			load_customers(page, 1);
 		}
 	});
 
-	$(wrapper).on('change', '[data-filter="customer_type"]', function() {
+	$(wrapper).on('change', '[data-filter="customer_type"]', function () {
 		load_customers(page, 1);
 	});
 
-	$(wrapper).on('click', '.cm-list-clear', function() {
+	$(wrapper).on('click', '.cm-list-clear', function () {
 		$(wrapper).find('[data-filter="search"]').val('');
 		$(wrapper).find('[data-filter="customer_type"]').val('invoice');
 		load_customers(page, 1);
 	});
 
-	$(wrapper).on('click', '.cm-list-body tr[data-name]', function(e) {
+	$(wrapper).on('click', '.cm-list-body tr[data-name]', function (e) {
 		let name = $(this).attr('data-name');
 		frappe.set_route('customer-manager', name);
 	});
 
-	$(wrapper).on('click', '.cm-detail-back', function() {
+	$(wrapper).on('click', '.cm-detail-back', function () {
 		frappe.set_route('customer-manager');
 	});
 
-	$(wrapper).on('click', '.cm-open-customer', function() {
+	$(wrapper).on('click', '.cm-open-customer', function () {
 		let name = $(this).attr('data-name');
 		if (name) {
 			frappe.set_route('Form', 'Customer', name);
 		}
 	});
 
-	$(wrapper).on('click', '.cm-invoice-row', function() {
+	$(wrapper).on('click', '.cm-invoice-row', function () {
 		let name = $(this).attr('data-name');
 		let payment_mode = $(this).attr('data-payment-mode');
 		if (name) {
@@ -239,32 +283,41 @@ function bind_customer_manager_events(page) {
 		}
 	});
 
-	$(wrapper).on('click', '.cm-quotation-row', function() {
+	$(wrapper).on('click', '.cm-quotation-row', function () {
 		let name = $(this).attr('data-name');
 		if (name) {
 			frappe.set_route('quotation-manager', name);
 		}
 	});
 
-	$(wrapper).on('click', '.cm-payment-row', function() {
+	$(wrapper).on('click', '.cm-payment-row', function () {
 		let name = $(this).attr('data-name');
 		if (name) {
 			frappe.set_route('Form', 'Payments', name);
 		}
 	});
 
-	$(wrapper).on('click', '.cm-job-card-row', function() {
+	$(wrapper).on('click', '.cm-payment-jobcard-link', function (e) {
+		e.preventDefault();
+		e.stopPropagation();
+		let job_card_name = $(this).attr('data-job-card');
+		if (job_card_name) {
+			frappe.set_route('job-card-detail', job_card_name);
+		}
+	});
+
+	$(wrapper).on('click', '.cm-job-card-row', function () {
 		let name = $(this).attr('data-name');
 		if (name) {
 			frappe.set_route('job-card-detail', name);
 		}
 	});
 
-	$(wrapper).on('change', '[data-filter="transaction_type"]', function() {
+	$(wrapper).on('change', '[data-filter="transaction_type"]', function () {
 		render_customer_selected_transaction_table(page);
 	});
 
-	$(wrapper).on('click', '.btn-paging', function() {
+	$(wrapper).on('click', '.btn-paging', function () {
 		if ($(this).hasClass('disabled')) return;
 		let p = $(this).attr('data-page');
 		load_customers(page, parseInt(p));
@@ -367,7 +420,7 @@ async function get_customer_manager_payments(customer_name) {
 	return get_customer_manager_records({
 		doctype: 'Payments',
 		filters: { customer: customer_name },
-		fields: ['name', 'amount', 'date', 'payment_method', 'deposit_to', 'reference', 'creation'],
+		fields: ['name', 'amount', 'date', 'payment_method', 'deposit_to', 'reference', 'job_card', 'creation'],
 		order_by: 'date desc, creation desc',
 	});
 }
@@ -400,13 +453,39 @@ async function get_customer_manager_records({ doctype, filters, fields, order_by
 	}
 }
 
+function get_customer_uninvoiced_job_cards(job_cards, invoices) {
+	let invoiced_quotations = new Set();
+	(invoices || []).forEach(invoice => {
+		if (invoice.custom_source_quotation) {
+			invoiced_quotations.add(invoice.custom_source_quotation);
+		}
+	});
+
+	return (job_cards || []).filter(job_card => {
+		if (job_card.status === 'Cancelled') {
+			return false;
+		}
+		return !job_card.quotation || !invoiced_quotations.has(job_card.quotation);
+	});
+}
+
 function get_customer_detail_html(customer, transactions) {
 	let all_invoices = transactions.invoices || [];
 	let quotations = transactions.quotations || [];
 	let payments = transactions.payments || [];
 	let job_cards = transactions.job_cards || [];
-	let total_sales = all_invoices.reduce((sum, invoice) => sum + get_customer_manager_invoice_total(invoice), 0);
-	let outstanding = all_invoices.reduce((sum, invoice) => sum + get_customer_manager_invoice_outstanding(invoice), 0);
+
+	// Cash Customer job cards only produce a Sales Invoice once fully paid, so a
+	// partially-paid job card has real committed revenue and a real outstanding
+	// balance that the Invoices list alone can't see yet. Fold those in here so
+	// Total Sales / Outstanding reflect job cards too, without double-counting
+	// ones that have already been invoiced.
+	let uninvoiced_job_cards = get_customer_uninvoiced_job_cards(job_cards, all_invoices);
+	let uninvoiced_job_card_total = uninvoiced_job_cards.reduce((sum, job_card) => sum + flt(job_card.quotation_amount || 0), 0);
+	let uninvoiced_job_card_outstanding = uninvoiced_job_cards.reduce((sum, job_card) => sum + flt(job_card.balance_amount || 0), 0);
+
+	let total_sales = all_invoices.reduce((sum, invoice) => sum + get_customer_manager_invoice_total(invoice), 0) + uninvoiced_job_card_total;
+	let outstanding = all_invoices.reduce((sum, invoice) => sum + get_customer_manager_invoice_outstanding(invoice), 0) + uninvoiced_job_card_outstanding;
 	let currency = (all_invoices[0] && all_invoices[0].currency) || 'KES';
 
 	return `
@@ -478,7 +557,7 @@ function get_customer_manager_style_block() {
 		.cm-detail-section-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
 		.cm-detail-section-title h3 { margin: 0; font-size: 18px; font-weight: 700; color: var(--heading-color); }
 		.cm-detail-section-title span { color: var(--text-muted); font-size: 13px; }
-		.cm-detail-filter { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+		.cm-detail-filter { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-right: 1.5rem; }
 		.cm-detail-filter label { margin: 0; color: var(--text-muted); font-size: 13px; }
 		.cm-detail-filter select { width: 180px; }
 		.cm-detail-table-wrap { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 8px; box-shadow: var(--shadow-xs); overflow: hidden; }
@@ -616,7 +695,12 @@ function get_customer_quotation_row_html(quotation) {
 	`;
 }
 
-function get_customer_payment_row_html(payment) {
+function get_customer_payment_row_html(payment, job_card) {
+	let job_card_cell = payment.job_card
+		? `<a href="#" class="cm-payment-jobcard-link" data-job-card="${cm_attr(payment.job_card)}" style="color:var(--primary); font-weight:600;">${cm_text(payment.job_card)}</a>`
+		: '-';
+	let balance_cell = job_card ? format_currency(job_card.balance_amount || 0, 'KES') : '-';
+
 	return `
 		<tr class="cm-transaction-row cm-payment-row" data-name="${cm_attr(payment.name)}">
 			<td>
@@ -625,8 +709,10 @@ function get_customer_payment_row_html(payment) {
 			</td>
 			<td>${payment.date ? cm_text(frappe.datetime.str_to_user(payment.date)) : '-'}</td>
 			<td style="text-align:right; font-weight:600;">${format_currency(payment.amount || 0, 'KES')}</td>
+			<td style="text-align:right;">${balance_cell}</td>
 			<td>${cm_text(payment.payment_method || '-')}</td>
 			<td>${cm_text(payment.deposit_to || '-')}</td>
+			<td>${job_card_cell}</td>
 		</tr>
 	`;
 }
@@ -659,18 +745,21 @@ function render_customer_selected_transaction_table(page) {
 	let transactions = page.customer_manager_transactions || {};
 	let config = get_customer_transaction_table_config(selected, transactions);
 	let rows = config.rows || [];
+
 	let header_html = config.columns.map(column => {
 		let style = column.align ? ` style="text-align:${cm_attr(column.align)};"` : '';
 		return `<th${style}>${cm_text(column.label)}</th>`;
 	}).join('');
+
 	let row_html = rows.length
 		? rows.map(config.render_row).join('')
 		: get_customer_empty_transaction_row(config.empty_message, config.columns.length);
 
 	$body.find('.cm-detail-table thead').html(`<tr>${header_html}</tr>`);
 	$body.find('.cm-detail-table tbody').html(row_html);
-	$body.find('.cm-transaction-count').text(`${rows.length} ${config.count_label}`);
 
+	// Show count only, e.g. "1" instead of "1 payment"
+	$body.find('.cm-transaction-count').text(rows.length);
 }
 
 function get_customer_transaction_table_config(selected, transactions) {
@@ -695,6 +784,11 @@ function get_customer_transaction_table_config(selected, transactions) {
 	}
 
 	if (selected === 'payments') {
+		let job_card_by_name = {};
+		job_cards.forEach(job_card => {
+			job_card_by_name[job_card.name] = job_card;
+		});
+
 		return {
 			rows: payments,
 			count_label: payments.length === 1 ? 'payment' : 'payments',
@@ -703,10 +797,14 @@ function get_customer_transaction_table_config(selected, transactions) {
 				{ label: 'Payment' },
 				{ label: 'Date' },
 				{ label: 'Amount', align: 'right' },
+				{ label: 'Balance', align: 'right' },
 				{ label: 'Method' },
 				{ label: 'Deposit To' },
+				{ label: 'Job Card' },
 			],
-			render_row: get_customer_payment_row_html,
+			render_row: function (payment) {
+				return get_customer_payment_row_html(payment, job_card_by_name[payment.job_card]);
+			},
 		};
 	}
 
@@ -797,6 +895,7 @@ function cm_attr(value) {
 }
 
 function load_customers(page, page_no) {
+	let state = get_customer_manager_list_state(page);
 	let wrapper = page.body;
 	let tbody = $(wrapper).find('.cm-list-body');
 	let search = ($(wrapper).find('[data-filter="search"]').val() || '').trim();
@@ -804,22 +903,25 @@ function load_customers(page, page_no) {
 	let columns = get_customer_manager_list_columns(customer_type);
 	render_customer_manager_list_loading($(wrapper), customer_type, 'Loading customers...');
 
-	let limit = 50;
-
 	frappe.call({
 		method: 'crystal_alluminium_works.api.get_customer_manager_customers',
 		args: {
 			search: search,
 			customer_type: customer_type,
 			page: page_no,
-			page_length: limit
+			page_length: state.page_length
 		},
-		callback: function(r) {
+		callback: function (r) {
 			let message = r.message || {};
 			let data = message.rows || [];
+			state.page = message.page || page_no || 1;
+			state.page_length = message.page_length || state.page_length;
+			state.total_count = message.total_count || 0;
+			state.has_more = !!message.has_more;
+
 			if (data.length === 0) {
 				tbody.html(`<tr><td colspan="${columns.length}" style="padding:24px; text-align:center; color:var(--text-muted);">No customers found.</td></tr>`);
-				$(wrapper).find('.cm-list-pagination').html('');
+				render_customer_manager_pagination(page);
 				return;
 			}
 
@@ -843,16 +945,30 @@ function load_customers(page, page_no) {
 			});
 
 			tbody.html(html);
-
-			// Basic pagination
-			let pagination_html = '';
-			if (page_no > 1) {
-				pagination_html += `<button class="btn btn-default btn-sm btn-paging" data-page="${page_no - 1}">Previous</button> `;
-			}
-			if (message.has_more) {
-				pagination_html += `<button class="btn btn-default btn-sm btn-paging" data-page="${page_no + 1}">Next</button>`;
-			}
-			$(wrapper).find('.cm-list-pagination').html(pagination_html);
+			render_customer_manager_pagination(page);
 		}
 	});
+}
+
+function render_customer_manager_pagination(page) {
+	let state = get_customer_manager_list_state(page);
+	let start = state.total_count ? ((state.page - 1) * state.page_length) + 1 : 0;
+	let end = Math.min(state.page * state.page_length, state.total_count || 0);
+
+	$(page.body).find('.cm-list-pagination').html(`
+		<div class="cm-list-pagination-bar">
+			<div class="cm-list-pagination-meta">
+				Showing ${start}-${end} of ${state.total_count || 0} customers
+			</div>
+			<div class="cm-list-pagination-actions">
+				<button class="btn btn-default btn-sm btn-paging ${state.page <= 1 ? 'disabled' : ''}" data-page="${state.page - 1}">
+					Previous
+				</button>
+				<span class="cm-list-pagination-page">Page ${state.page}</span>
+				<button class="btn btn-default btn-sm btn-paging ${!state.has_more ? 'disabled' : ''}" data-page="${state.page + 1}">
+					Next
+				</button>
+			</div>
+		</div>
+	`);
 }

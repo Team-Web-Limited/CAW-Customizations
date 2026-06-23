@@ -21,8 +21,19 @@ JOB_CARD_HISTORY_FIELDS = (
 
 class CAWJobCard(Document):
 	def before_save(self):
-		if frappe.utils.flt(self.payment_amount) > 0 and (not self.status or self.status == "Draft"):
+		if self.status == "Cancelled":
+			return
+
+		payment_amount = frappe.utils.flt(self.payment_amount)
+		quotation_amount = frappe.utils.flt(self.quotation_amount)
+		balance_amount = frappe.utils.flt(self.balance_amount)
+
+		if quotation_amount > 0 and (balance_amount <= 0 or payment_amount >= quotation_amount):
+			self.status = "Completed"
+		elif payment_amount > 0:
 			self.status = "In Progress"
+		else:
+			self.status = "Draft"
 
 	def after_insert(self):
 		self.create_history_record("Created")
@@ -34,6 +45,9 @@ class CAWJobCard(Document):
 
 		self.create_history_record("Updated")
 
+	def on_trash(self):
+		frappe.db.delete("CAW Job Card History", {"job_card": self.name})
+
 	def create_history_record(self, change_type):
 		if not frappe.db.exists("DocType", "CAW Job Card History"):
 			return
@@ -43,6 +57,9 @@ class CAWJobCard(Document):
 		previous_payment_amount = frappe.utils.flt(previous_doc.payment_amount if previous_doc else 0)
 		current_payment_amount = frappe.utils.flt(self.payment_amount or 0)
 		amount_paid = current_payment_amount if change_type == "Created" else current_payment_amount - previous_payment_amount
+		if amount_paid <= 0:
+			return
+
 		history = frappe.new_doc("CAW Job Card History")
 		history.job_card = self.name
 		history.changed_by = frappe.session.user

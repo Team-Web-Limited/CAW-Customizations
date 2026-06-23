@@ -38,7 +38,8 @@ function get_sales_order_item_uom_label(item) {
 
 function get_sales_order_item_uom_qty(item) {
 	if (item.custom_product_category === 'Aluminium') {
-		return flt(item.custom_aluminium_metres || 0);
+		// Sold per piece (1 piece = 1 metre); qty is the piece count.
+		return flt(item.qty || 0);
 	}
 
 	if (item.custom_product_category === 'Ceiling') {

@@ -1,6 +1,6 @@
 {
  "app": "crystal_alluminium_works",
- "creation": "2026-05-17 11:34:05.301666",
+ "creation": "2026-06-19 09:47:37.947137",
  "docstatus": 0,
  "doctype": "Workspace Sidebar",
  "header_icon": "hammer",
@@ -31,16 +31,6 @@
   {
    "child": 0,
    "collapsible": 1,
-   "indent": 0,
-   "keep_closed": 0,
-   "label": "Pages",
-   "link_type": "DocType",
-   "show_arrow": 0,
-   "type": "Section Break"
-  },
-  {
-   "child": 1,
-   "collapsible": 1,
    "icon": "panel-top",
    "indent": 0,
    "keep_closed": 0,
@@ -51,16 +41,14 @@
    "type": "Link"
   },
   {
-   "child": 1,
+   "child": 0,
    "collapsible": 1,
-   "icon": "panel-top",
    "indent": 0,
-   "keep_closed": 0,
-   "label": "Quotation Builder",
-   "link_to": "quotation-builder",
-   "link_type": "Page",
+   "keep_closed": 1,
+   "label": "Configurations",
+   "link_type": "DocType",
    "show_arrow": 0,
-   "type": "Link"
+   "type": "Section Break"
   },
   {
    "child": 1,
@@ -82,6 +70,28 @@
    "keep_closed": 0,
    "label": "Print Format Configurations",
    "link_to": "print-format-configurations",
+   "link_type": "Page",
+   "show_arrow": 0,
+   "type": "Link"
+  },
+  {
+   "child": 0,
+   "collapsible": 1,
+   "indent": 0,
+   "keep_closed": 1,
+   "label": "Quotations",
+   "link_type": "DocType",
+   "show_arrow": 0,
+   "type": "Section Break"
+  },
+  {
+   "child": 1,
+   "collapsible": 1,
+   "icon": "panel-top",
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "Quotation Builder",
+   "link_to": "quotation-builder",
    "link_type": "Page",
    "show_arrow": 0,
    "type": "Link"
@@ -111,6 +121,16 @@
    "type": "Link"
   },
   {
+   "child": 0,
+   "collapsible": 1,
+   "indent": 0,
+   "keep_closed": 1,
+   "label": "Sales & Invoicing",
+   "link_type": "DocType",
+   "show_arrow": 0,
+   "type": "Section Break"
+  },
+  {
    "child": 1,
    "collapsible": 1,
    "icon": "receipt",
@@ -137,6 +157,28 @@
   {
    "child": 1,
    "collapsible": 1,
+   "icon": "receipt",
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "Sales Invoice Manager",
+   "link_to": "sales-invoice-manager",
+   "link_type": "Page",
+   "show_arrow": 0,
+   "type": "Link"
+  },
+  {
+   "child": 0,
+   "collapsible": 1,
+   "indent": 0,
+   "keep_closed": 1,
+   "label": "Production",
+   "link_type": "DocType",
+   "show_arrow": 0,
+   "type": "Section Break"
+  },
+  {
+   "child": 1,
+   "collapsible": 1,
    "icon": "clipboard",
    "indent": 0,
    "keep_closed": 0,
@@ -147,16 +189,14 @@
    "type": "Link"
   },
   {
-   "child": 1,
+   "child": 0,
    "collapsible": 1,
-   "icon": "receipt",
    "indent": 0,
-   "keep_closed": 0,
-   "label": "Sales Invoice Manager",
-   "link_to": "sales-invoice-manager",
-   "link_type": "Page",
+   "keep_closed": 1,
+   "label": "Customers",
+   "link_type": "DocType",
    "show_arrow": 0,
-   "type": "Link"
+   "type": "Section Break"
   },
   {
    "child": 1,
@@ -171,6 +211,16 @@
    "type": "Link"
   },
   {
+   "child": 0,
+   "collapsible": 1,
+   "indent": 0,
+   "keep_closed": 1,
+   "label": "Payments",
+   "link_type": "DocType",
+   "show_arrow": 0,
+   "type": "Section Break"
+  },
+  {
    "child": 1,
    "collapsible": 1,
    "icon": "credit-card",
@@ -183,7 +233,7 @@
    "type": "Link"
   }
  ],
- "modified": "2026-06-12 11:33:40.427299",
+ "modified": "2026-06-19 15:39:16.854539",
  "modified_by": "Administrator",
  "module": "Crystal Alluminium Works",
  "name": "Crystal Alluminium Works",

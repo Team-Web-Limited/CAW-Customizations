@@ -65,7 +65,7 @@
    "fieldname": "payment_option",
    "fieldtype": "Select",
    "label": "Payment Option",
-   "options": "Cash\nPaybill\nBank"
+   "options": "Cash\nPaybill\nBank\nCheque"
   },
   {
    "fieldname": "customer_pin",

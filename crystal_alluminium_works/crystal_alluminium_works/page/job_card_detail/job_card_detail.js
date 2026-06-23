@@ -99,10 +99,61 @@ function refresh_job_card_payment_options(dialog, selected_option) {
 	dialog.set_df_property('payment_option', 'options', options.join('\n'));
 	dialog.set_value('payment_option', next_option);
 
-	let is_invoice = normalize_job_card_payment_mode(payment_mode) === 'invoice';
-	dialog.set_df_property('payment_amount', 'hidden', is_invoice ? 1 : 0);
-	dialog.set_df_property('balance_amount', 'hidden', is_invoice ? 1 : 0);
-	dialog.set_df_property('payment_amount', 'reqd', is_invoice ? 0 : 1);
+	refresh_job_card_payment_capture_fields(dialog);
+}
+
+function refresh_job_card_payment_capture_fields(dialog) {
+	let has_new_payment = flt(dialog.get_value('payment_amount') || 0) > 0;
+
+	['payment_method', 'deposit_to'].forEach(function(fieldname) {
+		dialog.set_df_property(fieldname, 'hidden', has_new_payment ? 0 : 1);
+	});
+	dialog.set_df_property('payment_method', 'reqd', has_new_payment ? 1 : 0);
+	dialog.set_df_property('deposit_to', 'reqd', has_new_payment ? 1 : 0);
+
+	// The visible Reference field is for bank transactions only (cheque/transfer number),
+	// entered manually. M-Pesa/Paybill gets its own simulated transaction code generated
+	// separately at save time (see generate_simulated_mpesa_reference) — the two are not
+	// the same field and are not interchangeable.
+	let mop_is_bank_type = (dialog._mode_of_payment_type || '').toLowerCase() === 'bank';
+	let reference_visible = has_new_payment && mop_is_bank_type;
+	dialog.set_df_property('reference', 'hidden', reference_visible ? 0 : 1);
+	dialog.set_df_property('reference', 'reqd', reference_visible ? 1 : 0);
+}
+
+function generate_simulated_mpesa_reference() {
+	// TODO: replace with the real M-Pesa transaction code once automated Paybill integration lands.
+	const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+	let code = '';
+	for (let i = 0; i < 10; i++) {
+		code += chars.charAt(Math.floor(Math.random() * chars.length));
+	}
+	return code;
+}
+
+async function refresh_job_card_deposit_to_options(dialog) {
+	let payment_method = dialog.get_value('payment_method');
+
+	if (!payment_method) {
+		dialog._mode_of_payment_type = null;
+		dialog._deposit_to_account_type = null;
+		refresh_job_card_payment_capture_fields(dialog);
+		return;
+	}
+
+	let response = await frappe.call({
+		method: 'crystal_alluminium_works.api.get_mode_of_payment_account_info',
+		args: { payment_method: payment_method }
+	});
+	let info = (response && response.message) || {};
+	dialog._mode_of_payment_type = info.mode_of_payment_type || null;
+	dialog._deposit_to_account_type = info.account_type || null;
+
+	if (info.default_account) {
+		await dialog.set_value('deposit_to', info.default_account);
+	}
+
+	refresh_job_card_payment_capture_fields(dialog);
 }
 
 async function get_job_card_customer_defaults(customer_name) {
@@ -163,10 +214,6 @@ function get_job_card_outstanding_balance(job_card, quotation_amount) {
 }
 
 function validate_job_card_payment_amount(dialog) {
-	if (normalize_job_card_payment_mode(dialog.get_value('payment_mode')) === 'invoice') {
-		return true;
-	}
-
 	let payment_limit = flt(dialog._payment_limit !== undefined && dialog._payment_limit !== null
 		? dialog._payment_limit
 		: dialog.get_value('quotation_amount') || 0, 2);
@@ -181,6 +228,32 @@ function validate_job_card_payment_amount(dialog) {
 		frappe.msgprint(__('Payment amount cannot exceed the current balance amount of {0}.', [
 			format_currency(payment_limit)
 		]));
+		return false;
+	}
+
+	return true;
+}
+
+function validate_job_card_payment_capture(dialog) {
+	let has_new_payment = flt(dialog.get_value('payment_amount') || 0) > 0;
+
+	if (!has_new_payment) {
+		return true;
+	}
+
+	if (!dialog.get_value('payment_method')) {
+		frappe.msgprint(__('Please select a Payment Method to record this payment.'));
+		return false;
+	}
+
+	if (!dialog.get_value('deposit_to')) {
+		frappe.msgprint(__('Please select a Deposit To account to record this payment.'));
+		return false;
+	}
+
+	let mop_is_bank_type = (dialog._mode_of_payment_type || '').toLowerCase() === 'bank';
+	if (mop_is_bank_type && !(dialog.get_value('reference') || '').trim()) {
+		frappe.msgprint(__('Please enter a Reference to record this payment.'));
 		return false;
 	}
 
@@ -213,8 +286,15 @@ async function open_edit_job_card_modal(page, job_card, quotation) {
 		job_card,
 		job_card.quotation_amount || (quotation && quotation.grand_total) || 0
 	);
-	let d = new frappe.ui.Dialog({
-		title: 'Edit Sales Order',
+
+	if (payment_limit <= 0) {
+		frappe.msgprint(__('This Job Card is fully settled and can no longer be edited.'));
+		return;
+	}
+
+	var d;
+	d = new frappe.ui.Dialog({
+		title: 'Edit Job Card',
 		fields: [
 			{ fieldtype: 'Section Break', label: 'Customer Details' },
 			{
@@ -247,10 +327,11 @@ async function open_edit_job_card_modal(page, job_card, quotation) {
 					queue_job_card_customer_defaults(d);
 				},
 				get_query: function() {
+					let current_payment_mode = d ? d.get_value('payment_mode') : (job_card.payment_mode || get_job_card_payment_mode_label(defaults.payment_mode));
 					return {
 						query: 'crystal_alluminium_works.api.search_builder_customers',
 						filters: {
-							payment_mode: normalize_job_card_payment_mode(d.get_value('payment_mode'))
+							payment_mode: normalize_job_card_payment_mode(current_payment_mode)
 						}
 					};
 				}
@@ -263,7 +344,52 @@ async function open_edit_job_card_modal(page, job_card, quotation) {
 			{ fieldtype: 'Currency', fieldname: 'quotation_amount', label: 'Quotation Amount', read_only: 1, default: flt(job_card.quotation_amount || (quotation && quotation.grand_total) || 0) },
 			{ fieldtype: 'Column Break' },
 			{ fieldtype: 'Currency', fieldname: 'payment_amount', label: 'Payment Amount', default: payment_limit, reqd: 1 },
-			{ fieldtype: 'Currency', fieldname: 'balance_amount', label: 'Balance', read_only: 1, default: payment_limit }
+			{ fieldtype: 'Currency', fieldname: 'balance_amount', label: 'Balance', read_only: 1, default: payment_limit },
+			{ fieldtype: 'Section Break', label: 'Record Payment' },
+			{
+				fieldtype: 'Link',
+				fieldname: 'payment_method',
+				label: 'Payment Method',
+				options: 'Mode of Payment',
+				change: function() {
+					refresh_job_card_deposit_to_options(d);
+				},
+				get_query: function() {
+					let is_invoice = normalize_job_card_payment_mode(d.get_value('payment_mode')) === 'invoice';
+					if (is_invoice) {
+						return {
+							filters: {
+								name: ['in', ['Bank Transfer i.e RTGS, TT']]
+							}
+						};
+					}
+
+					return {
+						filters: {
+							name: ['not in', ['USD TRANSFER', 'Petty Cash', 'petty-cash', 'petty cash']]
+						}
+					};
+				}
+			},
+			{ fieldtype: 'Column Break' },
+			{
+				fieldtype: 'Link',
+				fieldname: 'deposit_to',
+				label: 'Deposit To',
+				options: 'Account',
+				get_query: function() {
+					let account_type = d && d._deposit_to_account_type;
+					return {
+						filters: {
+							account_type: account_type || ['in', ['Bank', 'Cash']],
+							is_group: 0,
+							name: ['not in', ['DTB Bank USD A/C - CA', 'I & M USD A/C - CA']]
+						}
+					};
+				}
+			},
+			{ fieldtype: 'Column Break' },
+			{ fieldtype: 'Data', fieldname: 'reference', label: 'Reference', hidden: 1 }
 		],
 		primary_action_label: 'Save',
 		primary_action: function(values) {
@@ -271,7 +397,11 @@ async function open_edit_job_card_modal(page, job_card, quotation) {
 				return;
 			}
 
-			let is_invoice = normalize_job_card_payment_mode(values.payment_mode) === 'invoice';
+			if (!validate_job_card_payment_capture(d)) {
+				return;
+			}
+
+			let new_payment_amount = flt(values.payment_amount || 0);
 
 			frappe.call({
 				method: 'crystal_alluminium_works.api.create_job_card_from_quotation',
@@ -284,17 +414,49 @@ async function open_edit_job_card_modal(page, job_card, quotation) {
 					customer_pin: values.customer_pin,
 					phone_number: values.phone_number,
 					quotation_amount: values.quotation_amount,
-					payment_amount: is_invoice ? 0 : values.payment_amount,
-					balance_amount: is_invoice ? values.quotation_amount : values.balance_amount
+					payment_amount: new_payment_amount,
+					balance_amount: values.balance_amount
 				},
 				freeze: true,
 				freeze_message: 'Saving Job Card...',
 				callback: function(r) {
-					if (r.message) {
-						d.hide();
-						frappe.show_alert({ message: `Job Card ${r.message} saved`, indicator: 'green' });
-						load_single_job_card_detail(page, r.message);
+					if (!r.message) {
+						return;
 					}
+
+					let job_card_name = r.message;
+
+					if (new_payment_amount > 0) {
+						let is_phone_payment_method = (d._mode_of_payment_type || '').toLowerCase() === 'phone';
+						let payment_reference = is_phone_payment_method
+							? generate_simulated_mpesa_reference()
+							: values.reference;
+
+						frappe.call({
+							method: 'crystal_alluminium_works.api.record_customer_payment',
+							args: {
+								customer: values.customer,
+								job_card: job_card_name,
+								amount: new_payment_amount,
+								date: frappe.datetime.get_today(),
+								payment_method: values.payment_method,
+								deposit_to: values.deposit_to,
+								reference: payment_reference
+							},
+							freeze: true,
+							freeze_message: 'Recording Payment...',
+							callback: function() {
+								d.hide();
+								frappe.show_alert({ message: `Job Card ${job_card_name} saved and payment recorded`, indicator: 'green' });
+								load_single_job_card_detail(page, job_card_name);
+							}
+						});
+						return;
+					}
+
+					d.hide();
+					frappe.show_alert({ message: `Job Card ${job_card_name} saved`, indicator: 'green' });
+					load_single_job_card_detail(page, job_card_name);
 				}
 			});
 		}
@@ -310,6 +472,7 @@ async function open_edit_job_card_modal(page, job_card, quotation) {
 
 	d.fields_dict.payment_amount.$input.on('input', function() {
 		update_job_card_balance(d);
+		refresh_job_card_payment_capture_fields(d);
 	});
 
 	d.fields_dict.payment_mode.$input.on('change', function() {
@@ -318,6 +481,8 @@ async function open_edit_job_card_modal(page, job_card, quotation) {
 		d.set_value('customer_name', '');
 		d.set_value('customer_pin', '');
 		d.set_value('phone_number', '');
+		d.set_value('payment_method', '');
+		d.set_value('deposit_to', '');
 	});
 
 	d.fields_dict.customer.$input.on('awesomplete-selectcomplete', function() {
@@ -330,12 +495,427 @@ async function open_edit_job_card_modal(page, job_card, quotation) {
 
 function can_create_invoice_from_job_card(job_card, quotation, history, sales_invoices) {
 	let has_sales_invoice = !!((sales_invoices || []).length);
-	let is_invoice_customer = normalize_job_card_payment_mode(job_card.payment_mode) === 'invoice';
 	let quotation_amount = flt(job_card.quotation_amount || (quotation && quotation.grand_total) || 0);
 	let payment_amount = flt(job_card.payment_amount || 0);
 	return !has_sales_invoice
 		&& quotation_amount > 0
-		&& (is_invoice_customer || Math.abs(payment_amount - quotation_amount) < 0.0001);
+		&& Math.abs(payment_amount - quotation_amount) < 0.0001;
+}
+
+function can_create_partial_invoice_from_job_card(job_card, quotation) {
+	// Invoice customers can still release and bill collected items even when the
+	// running paid amount is negative and the job card remains in Draft.
+	let is_invoice_customer = normalize_job_card_payment_mode(job_card.payment_mode) === 'invoice';
+	return ((job_card.status || '').trim() === 'In Progress' || is_invoice_customer)
+		&& !!(quotation && quotation.has_releasable_items);
+}
+
+function jc_escape(value) {
+	return frappe.utils.escape_html(value === undefined || value === null ? '' : String(value));
+}
+
+function jc_short_uom(value) {
+	let normalized = String(value || '').trim().toLowerCase();
+	if (normalized === 'square foot') return 'sft';
+	if (normalized === 'square meter') return 'sqm';
+	if (['meter', 'metre', 'len'].includes(normalized)) return 'len';
+	if (['running foot', 'rft'].includes(normalized)) return 'rft';
+	if (normalized === 'nos') return 'nos';
+	return value || '-';
+}
+
+function jc_number(value, precision) {
+	return flt(value || 0, precision === undefined ? 2 : precision);
+}
+
+function get_job_card_print_table_context(quotation) {
+	let items = quotation && quotation.items ? quotation.items : [];
+	let parent_rows = items.filter(row => !row.custom_auto_generated);
+	let has_color_rows = parent_rows.some(row => (row.custom_aluminium_color || '').trim());
+	let has_glass_rows = parent_rows.some(row => (row.custom_product_category || '') === 'Glass');
+	let non_ceiling_rows = parent_rows.filter(row => (row.custom_product_category || '') !== 'Ceiling');
+	let ceiling_rows = parent_rows.filter(row => (row.custom_product_category || '') === 'Ceiling');
+	let ceiling_board_item_codes = ['AMC', 'AGC'];
+	let ceiling_component_labels = ['Board', 'MainT', 'Sub Cross 4ft', 'Sub Cross 2ft', 'Wall angle'];
+	let has_ceiling_bundle = ceiling_rows.some(row => flt(row.custom_ceiling_sq_m || 0) > 0);
+	let ceiling_single_labels = [];
+
+	ceiling_rows.forEach(row => {
+		if (flt(row.custom_ceiling_sq_m || 0) > 0) return;
+		let label = ceiling_board_item_codes.includes(row.item_code)
+			? 'Board'
+			: (row.item_name || row.item_code || '');
+		if (label && !ceiling_single_labels.includes(label)) {
+			ceiling_single_labels.push(label);
+		}
+	});
+
+	return {
+		items,
+		non_ceiling_rows,
+		ceiling_rows,
+		has_color_rows,
+		has_glass_rows,
+		has_ceiling_bundle,
+		ceiling_columns: has_ceiling_bundle ? ceiling_component_labels : ceiling_single_labels,
+		ceiling_board_item_codes
+	};
+}
+
+function get_job_card_child_rows(items, parent_idx) {
+	return (items || []).filter(row => row.custom_auto_generated && row.custom_parent_row_idx === parent_idx);
+}
+
+function get_job_card_row_quantities(row) {
+	let category = row.custom_product_category || '';
+	let pieces = flt(row.qty || 0);
+	let qty = flt(row.qty || 0);
+	let uom = row.uom || '';
+
+	if (category === 'Aluminium') {
+		// Sold per piece (1 piece = 1 metre); qty is the piece count.
+		qty = flt(row.qty || 0);
+		uom = row.uom || 'Meter';
+	} else if (category === 'Glass') {
+		if (row.custom_glass_sale_mode === 'Full Sheet') {
+			qty = flt(row.qty || 0);
+			uom = 'Nos';
+		} else if (row.custom_glass_sale_mode === 'Sheet') {
+			pieces = flt(row.custom_sheet_pcs || 0);
+			qty = flt(row.qty || 0);
+			uom = row.uom || 'Square Foot';
+		} else {
+			qty = flt(row.custom_area_sqft || 0) * flt(row.qty || 0);
+			uom = row.uom || 'Square Foot';
+		}
+	}
+
+	return { pieces, qty, uom };
+}
+
+// Quantity (in the row's native release unit) and its label, mirroring the server
+// helper _get_partial_row_native_full so the modal and invoice agree on "remaining".
+function get_partial_native_full(row) {
+	let category = row.custom_product_category || '';
+	if (category === 'Aluminium') return flt(row.qty || 0);
+	if (category === 'Glass' && row.custom_glass_sale_mode === 'Sheet') return flt(row.custom_sheet_pcs || 0) || flt(row.qty || 0);
+	if (category === 'Ceiling' && flt(row.custom_ceiling_sq_m || 0) > 0) return flt(row.custom_ceiling_sq_m || 0);
+	return flt(row.qty || 0);
+}
+
+function get_partial_unit(row) {
+	let category = row.custom_product_category || '';
+	if (category === 'Ceiling' && flt(row.custom_ceiling_sq_m || 0) > 0) return 'sqm';
+	return 'pcs';
+}
+
+function partial_line_amount(context, row) {
+	let line_amount = flt(row.amount || 0);
+	get_job_card_child_rows(context.items, row.idx).forEach(child => {
+		line_amount += flt(child.amount || 0);
+	});
+	return line_amount;
+}
+
+function render_partial_release_cell(context, row) {
+	let native_full = get_partial_native_full(row);
+	let collected = flt(row.custom_collected_qty || 0);
+	let remaining = flt(native_full - collected, 3);
+	if (remaining < 0) remaining = 0;
+	let line_amount = partial_line_amount(context, row);
+	let disabled = remaining <= 0 ? 'disabled' : '';
+	return `
+		<td class="jc-preview-center">
+			<input type="number" class="form-control input-xs jc-release-input"
+				style="width:108px;display:inline-block;text-align:right;"
+				min="0" max="${remaining}" step="any" value="${remaining}" ${disabled}
+				data-row-name="${jc_escape(row.name || '')}"
+				data-native-full="${native_full}"
+				data-line-amount="${line_amount}"
+				data-remaining="${remaining}">
+			<div style="font-size:11px;color:var(--text-muted);">/ ${jc_number(remaining, 2)} ${jc_escape(get_partial_unit(row))}</div>
+		</td>
+	`;
+}
+
+function render_job_card_partial_invoice_main_table(context) {
+	if (!context.non_ceiling_rows.length) {
+		return '';
+	}
+
+	let totals = { pcs: 0, qty: 0, holes: 0, notches: 0, amount: 0 };
+	let rows = context.non_ceiling_rows.map(row => {
+		let category = row.custom_product_category || '';
+		let quantities = get_job_card_row_quantities(row);
+		let child_rows = get_job_card_child_rows(context.items, row.idx);
+		let line_amount = flt(row.amount || 0);
+		let width_sides = cint(row.custom_polish_width_sides || 0);
+		let height_sides = cint(row.custom_polish_height_sides || 0);
+
+		child_rows.forEach(child => {
+			line_amount += flt(child.amount || 0);
+		});
+
+		if (category === 'Glass' && !width_sides && !height_sides && cint(row.custom_polishing || 0)) {
+			width_sides = 2;
+			height_sides = 2;
+		}
+
+		let polish_sides = width_sides + height_sides;
+		let display_width = category === 'Glass' ? (jc_number(row.custom_width_mm || 0, 0) || '-') : '-';
+		let display_height = category === 'Glass' ? (jc_number(row.custom_height_mm || 0, 0) || '-') : '-';
+
+		totals.pcs += flt(quantities.pieces || 0);
+		totals.qty += flt(quantities.qty || 0);
+		totals.holes += cint(row.custom_holes || 0);
+		totals.notches += cint(row.custom_notches || 0);
+		totals.amount += line_amount;
+
+		return `
+			<tr>
+				<td class="jc-preview-strong">${jc_escape(row.item_code || '')}</td>
+				<td>${jc_escape(row.item_name || row.item_code || '')}</td>
+				${context.has_color_rows ? `<td class="jc-preview-center">${jc_escape(row.custom_aluminium_color || '-')}</td>` : ''}
+				<td class="jc-preview-center">${jc_number(quantities.pieces, 2)}</td>
+				<td class="jc-preview-center">${jc_number(quantities.qty, 3)}</td>
+				<td class="jc-preview-center">${jc_escape(jc_short_uom(quantities.uom))}</td>
+				<td class="jc-preview-center">${category === 'Glass' ? jc_escape(row.custom_numbering || '-') : '-'}</td>
+				${context.has_glass_rows ? `
+					<td class="jc-preview-center">${jc_escape(display_width)}</td>
+					<td class="jc-preview-center">${jc_escape(display_height)}</td>
+					<td class="jc-preview-center">${category === 'Glass' && polish_sides > 0 ? polish_sides : '-'}</td>
+					<td class="jc-preview-center">${category === 'Glass' && cint(row.custom_holes || 0) > 0 ? cint(row.custom_holes || 0) : '-'}</td>
+					<td class="jc-preview-center">${category === 'Glass' && cint(row.custom_notches || 0) > 0 ? cint(row.custom_notches || 0) : '-'}</td>
+				` : ''}
+				<td class="jc-preview-right">${format_currency(line_amount)}</td>
+				${render_partial_release_cell(context, row)}
+			</tr>
+		`;
+	}).join('');
+
+	return `
+		<table class="jc-preview-table">
+			<thead>
+				<tr>
+					<th>Code</th>
+					<th>Item</th>
+					${context.has_color_rows ? '<th class="jc-preview-center">Color</th>' : ''}
+					<th class="jc-preview-center">Pcs</th>
+					<th class="jc-preview-center">Qty</th>
+					<th class="jc-preview-center">UOM</th>
+					<th class="jc-preview-center">No</th>
+					${context.has_glass_rows ? `
+						<th class="jc-preview-center">Width</th>
+						<th class="jc-preview-center">Height</th>
+						<th class="jc-preview-center">Polish Sides</th>
+						<th class="jc-preview-center">Holes</th>
+						<th class="jc-preview-center">Notches</th>
+					` : ''}
+					<th class="jc-preview-right">Amount</th>
+					<th class="jc-preview-center">Release</th>
+				</tr>
+			</thead>
+			<tbody>
+				${rows}
+				<tr>
+					<td colspan="${context.has_color_rows ? 3 : 2}"></td>
+					<td class="jc-preview-center jc-preview-strong">${jc_number(totals.pcs, 2)}</td>
+					<td class="jc-preview-center jc-preview-strong">${jc_number(totals.qty, 3)}</td>
+					${context.has_glass_rows ? `
+						<td colspan="5"></td>
+						<td class="jc-preview-center jc-preview-strong">${totals.holes}</td>
+						<td class="jc-preview-center jc-preview-strong">${totals.notches}</td>
+					` : '<td colspan="2"></td>'}
+					<td class="jc-preview-right jc-preview-strong">${format_currency(totals.amount)}</td>
+					<td></td>
+				</tr>
+			</tbody>
+		</table>
+	`;
+}
+
+function render_job_card_partial_invoice_ceiling_table(context) {
+	if (!context.ceiling_rows.length) {
+		return '';
+	}
+
+	let rows = context.ceiling_rows.map(row => {
+		let is_bundle = flt(row.custom_ceiling_sq_m || 0) > 0;
+		let ceiling_quantity = flt(row.custom_ceiling_sq_m || 0);
+		let child_rows = get_job_card_child_rows(context.items, row.idx);
+		let line_amount = flt(row.amount || 0);
+		let item_label = context.ceiling_board_item_codes.includes(row.item_code)
+			? 'Board'
+			: (row.item_name || row.item_code || '');
+		let display_uom = (is_bundle || context.ceiling_board_item_codes.includes(row.item_code))
+			? (row.uom || 'Square Meter')
+			: (row.uom || 'Nos');
+
+		child_rows.forEach(child => {
+			line_amount += flt(child.amount || 0);
+		});
+
+		let component_cells = context.ceiling_columns.map(column => {
+			let value = '-';
+			if (is_bundle) {
+				if (column === 'Board') {
+					value = cint((ceiling_quantity || 0) / 0.36);
+				} else {
+					let child = child_rows.find(child_row => (child_row.item_code || child_row.item_name || '') === column);
+					value = child ? jc_number(child.qty || 0, 0) : '-';
+				}
+			} else if (item_label === column) {
+				value = jc_number(row.qty || 0, 0);
+			}
+
+			return `<td class="jc-preview-center">${jc_escape(value)}</td>`;
+		}).join('');
+
+		return `
+			<tr>
+				<td class="jc-preview-center">${jc_escape(row.idx || '-')}</td>
+				<td>${jc_escape(row.item_name || row.item_code || '')}</td>
+				${context.has_ceiling_bundle ? `<td class="jc-preview-center">${is_bundle ? jc_number(ceiling_quantity, 3) : '-'}</td>` : ''}
+				<td class="jc-preview-center">${jc_escape(jc_short_uom(display_uom))}</td>
+				${component_cells}
+				<td class="jc-preview-right">${format_currency(line_amount)}</td>
+				${render_partial_release_cell(context, row)}
+			</tr>
+		`;
+	}).join('');
+
+	return `
+		<table class="jc-preview-table">
+			<thead>
+				<tr>
+					<th class="jc-preview-center">No</th>
+					<th>Item</th>
+					${context.has_ceiling_bundle ? '<th class="jc-preview-center">Quantity</th>' : ''}
+					<th class="jc-preview-center">UOM</th>
+					${context.ceiling_columns.map(column => `<th class="jc-preview-center">${jc_escape(column)}</th>`).join('')}
+					<th class="jc-preview-right">Amount</th>
+					<th class="jc-preview-center">Release</th>
+				</tr>
+			</thead>
+			<tbody>${rows}</tbody>
+		</table>
+	`;
+}
+
+function render_job_card_partial_invoice_preview(quotation) {
+	let context = get_job_card_print_table_context(quotation);
+	let main_table = render_job_card_partial_invoice_main_table(context);
+	let ceiling_table = render_job_card_partial_invoice_ceiling_table(context);
+
+	return `
+		<style>
+			.jc-preview-wrap { overflow:auto; max-height:65vh; }
+			.jc-preview-table { width:100%; min-width:920px; border-collapse:collapse; margin-bottom:16px; }
+			.jc-preview-table th { background:#f8f9fa; color:#2c3e50; padding:9px 7px; border-bottom:2px solid #dee2e6; font-size:12px; white-space:nowrap; }
+			.jc-preview-table td { padding:9px 7px; border-bottom:1px solid #dee2e6; vertical-align:middle; font-size:12px; }
+			.jc-preview-center { text-align:center; white-space:nowrap; }
+			.jc-preview-right { text-align:right; white-space:nowrap; }
+			.jc-preview-strong { font-weight:700; white-space:nowrap; }
+			.jc-release-input { height:32px !important; font-size:13px !important; padding:5px 8px !important; }
+			.jc-release-input::-webkit-inner-spin-button,
+			.jc-release-input::-webkit-outer-spin-button { min-height:28px; opacity:1; }
+		</style>
+		<div class="jc-preview-wrap">
+			${main_table}
+			${ceiling_table}
+			${!main_table && !ceiling_table ? '<div style="padding:24px;text-align:center;color:var(--text-muted);">No printable quotation items found.</div>' : ''}
+		</div>
+		<div class="jc-release-summary" style="margin-top:12px;border-top:1px solid #dee2e6;padding-top:10px;max-width:280px;margin-left:auto;font-size:13px;">
+			<div style="display:flex;justify-content:space-between;color:#6c757d;"><span>Subtotal</span><span data-summary="subtotal">-</span></div>
+			<div style="display:flex;justify-content:space-between;color:#6c757d;"><span>V.A.T (16%)</span><span data-summary="vat">-</span></div>
+			<div style="display:flex;justify-content:space-between;font-weight:700;font-size:16px;color:#2c3e50;margin-top:6px;"><span>Total</span><span data-summary="total">-</span></div>
+		</div>
+	`;
+}
+
+// Recompute the live Subtotal / VAT / Total from the current Release inputs.
+// Per-row released value = line_amount * (release / native_full); summed across rows.
+function update_partial_invoice_summary($wrapper) {
+	let subtotal = 0;
+	$wrapper.find('.jc-release-input').each(function() {
+		let $input = $(this);
+		let native_full = flt($input.attr('data-native-full'));
+		let line_amount = flt($input.attr('data-line-amount'));
+		let remaining = flt($input.attr('data-remaining'));
+		let release = flt($input.val());
+		if (release < 0) release = 0;
+		if (release > remaining) { release = remaining; $input.val(remaining); }
+		if (native_full > 0) {
+			subtotal += line_amount * (release / native_full);
+		}
+	});
+	let vat = subtotal * 0.16;
+	$wrapper.find('[data-summary="subtotal"]').text(format_currency(subtotal));
+	$wrapper.find('[data-summary="vat"]').text(format_currency(vat));
+	$wrapper.find('[data-summary="total"]').text(format_currency(subtotal + vat));
+	return subtotal;
+}
+
+async function create_partial_invoice_from_job_card(job_card, dialog) {
+	let releases = [];
+	dialog.fields_dict.preview.$wrapper.find('.jc-release-input').each(function() {
+		let $input = $(this);
+		let qty = flt($input.val());
+		let remaining = flt($input.attr('data-remaining'));
+		if (qty > remaining) qty = remaining;
+		if (qty > 0) {
+			releases.push({ row: $input.attr('data-row-name'), qty: qty });
+		}
+	});
+
+	if (!releases.length) {
+		frappe.msgprint(__('Enter a quantity to release for at least one item.'));
+		return;
+	}
+
+	let response = await frappe.call({
+		method: 'crystal_alluminium_works.api.make_partial_sales_invoice_from_job_card',
+		args: { job_card_name: job_card.name, releases: JSON.stringify(releases) },
+		freeze: true,
+		freeze_message: 'Creating partial Sales Invoice...'
+	});
+
+	if (response && !response.exc && response.message) {
+		dialog.hide();
+		frappe.show_alert({
+			message: 'Partial Sales Invoice Created!',
+			indicator: 'green'
+		});
+		frappe.set_route('sales-invoice-manager', response.message);
+	}
+}
+
+async function open_partial_invoice_modal(job_card) {
+	if (!job_card.quotation) {
+		frappe.msgprint(__('This Job Card is not linked to a Quotation.'));
+		return;
+	}
+
+	let quotation = await frappe.db.get_doc('Quotation', job_card.quotation);
+	let dialog = new frappe.ui.Dialog({
+		title: 'Partial Invoice',
+		size: 'extra-large',
+		fields: [
+			{ fieldtype: 'HTML', fieldname: 'preview' }
+		],
+		primary_action_label: 'Create Partial Invoice',
+		primary_action: function() {
+			create_partial_invoice_from_job_card(job_card, dialog);
+		}
+	});
+
+	let $wrapper = dialog.fields_dict.preview.$wrapper;
+	$wrapper.html(render_job_card_partial_invoice_preview(quotation));
+	$wrapper.on('input change', '.jc-release-input', function() {
+		update_partial_invoice_summary($wrapper);
+	});
+	update_partial_invoice_summary($wrapper);
+	dialog.show();
 }
 
 function bind_single_job_card_detail_events(page, $body, job_card, quotation, history, sales_invoices) {
@@ -349,7 +929,7 @@ function bind_single_job_card_detail_events(page, $body, job_card, quotation, hi
 
 	$body.on('click.job-card-detail', '[data-action="open-customer"]', function() {
 		if (job_card.customer) {
-			frappe.set_route('Form', 'Customer', job_card.customer);
+			frappe.set_route('customer-manager', job_card.customer);
 		}
 	});
 
@@ -357,24 +937,26 @@ function bind_single_job_card_detail_events(page, $body, job_card, quotation, hi
 		open_edit_job_card_modal(page, job_card, quotation);
 	});
 
+	$body.on('click.job-card-detail', '[data-action="download-job-card-pdf"]', function() {
+		let print_url = frappe.urllib.get_full_url(
+			`/api/method/crystal_alluminium_works.api.download_crystal_job_card_pdf?name=${encodeURIComponent(job_card.name)}`
+		);
+		window.open(print_url, '_blank');
+	});
+
 	$body.on('click.job-card-detail', '[data-action="create-sales-invoice"]', function() {
-		let is_invoice_customer = normalize_job_card_payment_mode(job_card.payment_mode) === 'invoice';
-		let confirm_message = is_invoice_customer
-			? '<b>Create Sales Invoice?</b><br><br>This will create a Sales Invoice from the Invoice Customer Job Card.'
-			: '<b>Create Sales Invoice?</b><br><br>This will create, submit, and mark the Sales Invoice as paid from the fully paid Job Card.';
-		let freeze_message = is_invoice_customer ? 'Creating Sales Invoice...' : 'Creating paid Sales Invoice...';
 		frappe.confirm(
-			confirm_message,
+			'<b>Create Sales Invoice?</b><br><br>This will create, submit, and mark the Sales Invoice as paid from the fully paid Job Card.',
 			() => {
 				frappe.call({
 					method: 'crystal_alluminium_works.api.make_sales_invoice_from_job_card',
 					args: { job_card_name: job_card.name },
 					freeze: true,
-					freeze_message: freeze_message,
+					freeze_message: 'Creating paid Sales Invoice...',
 					callback: function(r) {
 						if (!r.exc && r.message) {
 							frappe.show_alert({
-								message: is_invoice_customer ? 'Sales Invoice Created!' : 'Paid Sales Invoice Created!',
+								message: 'Paid Sales Invoice Created!',
 								indicator: 'green'
 							});
 							frappe.set_route('sales-invoice-manager', r.message);
@@ -383,6 +965,10 @@ function bind_single_job_card_detail_events(page, $body, job_card, quotation, hi
 				});
 			}
 		);
+	});
+
+	$body.on('click.job-card-detail', '[data-action="create-partial-invoice"]', function() {
+		open_partial_invoice_modal(job_card);
 	});
 
 	$body.on('click.job-card-detail', '[data-action="go-to-sales-invoice"]', function() {
@@ -464,7 +1050,9 @@ function render_job_card_history_section(history, currency) {
 function render_single_job_card_detail(job_card, quotation, history, sales_invoices) {
 	let currency = quotation && quotation.currency ? quotation.currency : 'KES';
 	let balance = flt(job_card.balance_amount || 0);
+	let can_edit_job_card = balance > 0;
 	let can_create_invoice = can_create_invoice_from_job_card(job_card, quotation, history, sales_invoices);
+	let can_create_partial_invoice = can_create_partial_invoice_from_job_card(job_card, quotation);
 	let has_sales_invoice = !!((sales_invoices || []).length);
 	let primary_invoice_action = has_sales_invoice
 		? '<button class="btn btn-primary" data-action="go-to-sales-invoice">Go to Sales Invoice</button>'
@@ -478,7 +1066,7 @@ function render_single_job_card_detail(job_card, quotation, history, sales_invoi
 
 	return `
 	<style>
-		.jc-detail-page { max-width: 1120px; margin: 0 auto; padding: 24px 16px; }
+		.jc-detail-page { max-width: 1320px; margin: 0 auto; padding: 24px 16px; }
 		.jc-detail-header { display:flex; justify-content:space-between; gap:18px; align-items:flex-start; margin-bottom:24px; }
 		.jc-detail-title h2 { margin:0 0 8px; font-size:26px; font-weight:700; color:var(--heading-color); }
 		.jc-detail-title p { margin:0; color:var(--text-muted); font-size:14px; }
@@ -523,13 +1111,14 @@ function render_single_job_card_detail(job_card, quotation, history, sales_invoi
 		<div class="jc-detail-header">
 			<div class="jc-detail-title">
 				<h2>${frappe.utils.escape_html(job_card.name || '')}</h2>
-				<p>${frappe.utils.escape_html(job_card.customer_name || job_card.customer || 'Customer not set')}</p>
 			</div>
 			<div class="jc-detail-actions">
 				<button class="btn btn-default" data-action="open-quotation">Open Quotation</button>
+				<button class="btn btn-default" data-action="download-job-card-pdf">Download Job Card PDF</button>
+				${can_create_partial_invoice ? '<button class="btn btn-default" data-action="create-partial-invoice">Partial Invoice</button>' : ''}
 				${primary_invoice_action}
 				<button class="btn btn-default" data-action="open-customer">Open Customer</button>
-				<button class="btn btn-primary" data-action="edit-job-card">Edit Job Card</button>
+				${can_edit_job_card ? '<button class="btn btn-primary" data-action="edit-job-card">Edit Job Card</button>' : ''}
 			</div>
 		</div>
 
