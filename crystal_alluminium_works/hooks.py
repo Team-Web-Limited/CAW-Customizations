@@ -13,7 +13,8 @@ fixtures = [
 	# Workspace commented out — replaced by custom Page
 	# {"dt": "Workspace", "filters": [["name", "in", ["Crystal Alluminium Works"]]]},
 	{"dt": "Desktop Icon", "filters": [["name", "in", ["Crystal Alluminium Works"]]]},
-	{"dt": "Custom Field", "filters": [["module", "in", ["Crystal Alluminium Works"]]]}
+	{"dt": "Custom Field", "filters": [["module", "in", ["Crystal Alluminium Works"]]]},
+	{"dt": "Letter Head", "filters": [["name", "in", ["Company Letterhead"]]]}
 ]
 
 # Each item in the list will be shown as an app in the apps page
