@@ -24,6 +24,7 @@
   "audit_section",
   "change_type",
   "changed_by",
+  "note",
   "snapshot_json"
  ],
  "fields": [
@@ -126,7 +127,13 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Change Type",
-   "options": "Created\nUpdated",
+   "options": "Created\nUpdated\nQuotation Amended\nInvoice Cancelled\nInvoice Amended",
+   "read_only": 1
+  },
+  {
+   "fieldname": "note",
+   "fieldtype": "Small Text",
+   "label": "Note",
    "read_only": 1
   },
   {

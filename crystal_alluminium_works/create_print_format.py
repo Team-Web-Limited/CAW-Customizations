@@ -409,24 +409,26 @@ def build_crystal_job_card_print_format_html():
     {% else %}{{ value or '-' }}{% endif %}
 {% endmacro %}
 
-<div class="letterhead" style="margin-bottom: 20px;">
-    <div style="font-size: 28px; font-weight: bold; color: #2c3e50; text-transform: uppercase;">Crystal Aluminium Works</div>
-    <div style="color: #7f8c8d; font-size: 13px;">Specialists in Aluminium, Laminated Glass, and Acoustic Ceilings</div>
+<div style="width: 100%; margin-bottom: 22px;">
+    <div style="display: table; width: 100%;">
+        <div style="display: table-row;">
+            <div style="display: table-cell; vertical-align: top; padding-right: 24px;">
+                <div style="font-size: 28px; font-weight: bold; color: #2c3e50; text-transform: uppercase;">Crystal Aluminium Works</div>
+                <div style="color: #7f8c8d; font-size: 13px;">Specialists in Aluminium, Laminated Glass, and Acoustic Ceilings</div>
+            </div>
+            <div style="display: table-cell; width: 240px; text-align: right; vertical-align: top;">
+                <div style="font-size: 26px; font-weight: bold; color: #2c3e50; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px;">Job Card</div>
+                <div style="display: inline-block; min-width: 220px; padding: 12px 16px; border: 1px solid #dfe6e9; border-radius: 4px; text-align: left;">
+                    <div style="color: #7f8c8d; font-size: 12px; text-transform: uppercase;">Approved Date</div>
+                    <div style="font-size: 16px; font-weight: bold; margin-top: 4px;">{{ frappe.utils.formatdate(job_card.creation) }}</div>
+                    <div style="color: #7f8c8d; font-size: 12px; text-transform: uppercase; margin-top: 12px;">Job Card No</div>
+                    <div style="font-size: 14px; font-weight: 600; margin-top: 4px;">{{ job_card.name }}</div>
+                </div>
+            </div>
+        </div>
+    </div>
 </div>
 <hr style="border-top: 2px solid #ecf0f1; margin-bottom: 20px;">
-<div class="row" style="margin-bottom: 24px;">
-    <div class="col-xs-6">
-        <div style="font-size: 16px; font-weight: bold;">{{ job_card.customer_name or job_card.customer }}</div>
-    </div>
-    <div class="col-xs-6 text-right">
-        <div style="font-size: 26px; font-weight: bold; color: #2c3e50; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px;">Job Card</div>
-        <div style="font-size: 16px; font-weight: bold;">{{ frappe.utils.formatdate(job_card.creation) }}</div>
-        <div style="font-size: 14px; margin-top: 10px;">{{ job_card.name }}</div>
-        {% if job_card.quotation %}
-        <div style="font-size: 14px; margin-top: 6px;">{{ job_card.quotation }}</div>
-        {% endif %}
-    </div>
-</div>
 
 <style>
     .cq-table {

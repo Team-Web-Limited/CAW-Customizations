@@ -22,6 +22,18 @@ const SALES_INVOICE_CEILING_COMPONENTS = [
 ];
 const SALES_INVOICE_CEILING_BOARD_ITEM_CODES = new Set(['AMC', 'AGC']);
 
+function get_sales_invoice_route_context() {
+	let route = frappe.get_route();
+	let route_options = typeof frappe.get_route_options === 'function'
+		? frappe.get_route_options()
+		: (frappe.route_options || {});
+
+	return {
+		invoice_name: route[1] || route_options.sales_invoice || null,
+		default_payment_mode: route[2] || route_options.payment_mode || null
+	};
+}
+
 function sales_invoice_is_ceiling_bundle(item) {
 	return flt(item.custom_ceiling_sq_m || 0) > 0;
 }
@@ -89,7 +101,10 @@ function get_sales_invoice_ceiling_component_qty(item, column, child_rows) {
 	let component_row = (child_rows || []).find(child =>
 		(child.item_code || child.item_name || '').trim() === column.key
 	);
-	return component_row ? Math.trunc(flt(component_row.qty || 0)) : '-';
+	if (component_row) {
+		return Math.trunc(flt(component_row.qty || 0));
+	}
+	return '-';
 }
 
 function get_sales_invoice_item_uom_label(item) {
@@ -394,6 +409,22 @@ function get_sales_invoice_workflow_job_card_state(source_job_card) {
 	};
 }
 
+function get_sales_invoice_payment_method_display(source_job_card) {
+	if (!source_job_card) {
+		return '—';
+	}
+
+	let payment_methods = Array.isArray(source_job_card.payment_methods)
+		? source_job_card.payment_methods.filter(Boolean)
+		: [];
+
+	if (payment_methods.length) {
+		return payment_methods.join(', ');
+	}
+
+	return source_job_card.payment_option || '—';
+}
+
 frappe.pages['sales-invoice-manager'].on_page_show = function(wrapper) {
 	let page = wrapper.page || (wrapper.control ? wrapper.control.page : null);
 
@@ -401,12 +432,9 @@ frappe.pages['sales-invoice-manager'].on_page_show = function(wrapper) {
 		page = $(wrapper).data('page');
 	}
 
-	let route = frappe.get_route();
-	let route_options = typeof frappe.get_route_options === 'function'
-		? frappe.get_route_options()
-		: (frappe.route_options || {});
-	let invoice_name = route[1] || route_options.sales_invoice || null;
-	let default_payment_mode = route[2] || route_options.payment_mode || null;
+	let route_context = get_sales_invoice_route_context();
+	let invoice_name = route_context.invoice_name;
+	let default_payment_mode = route_context.default_payment_mode;
 
 	if (!invoice_name) {
 		$(wrapper).find('.layout-main-section').html(`
@@ -659,7 +687,10 @@ async function render_sales_invoice_dashboard(page, invoice_name, wrapper, defau
 			.sim-table th { background: var(--control-bg); padding: 12px 16px; font-size: 12px; font-weight: 600; color: var(--text-muted); text-align: left; border-bottom: 1px solid var(--border-color); }
 			.sim-table td { padding: 12px 16px; border-bottom: 1px solid var(--border-color); font-size: 14px; }
 			.sim-table tr:last-child td { border-bottom: none; }
-			.sim-total-row { display: flex; justify-content: space-between; padding: 16px 20px; background: var(--control-bg); border-top: 1px solid var(--border-color); }
+			.sim-total-breakdown { border-top: 1px solid var(--border-color); background: var(--control-bg); }
+			.sim-subtotal-row { display: flex; justify-content: space-between; padding: 8px 20px; font-size: 14px; color: var(--text-muted); }
+			.sim-subtotal-row:first-child { padding-top: 16px; }
+			.sim-total-row { display: flex; justify-content: space-between; padding: 16px 20px; background: var(--control-bg); border-top: 1px solid var(--border-color); margin-top: 8px; }
 			.sim-total-val { font-size: 20px; font-weight: 700; color: var(--primary); }
 			.sim-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 			.sim-action-note { width: 100%; display: flex; align-items: center; padding: 8px 10px; border-radius: 6px; background: #fff7e6; color: #8a5a00; font-size: 13px; }
@@ -731,10 +762,7 @@ async function render_sales_invoice_dashboard(page, invoice_name, wrapper, defau
 							<div class="sim-info-label">Quotation Source</div>
 							<div class="sim-info-val">${quotation_name || '—'}</div>
 						</div>
-						<div>
-							<div class="sim-info-label">Job Card Source</div>
-							<div class="sim-info-val">${source_job_card ? source_job_card.name : '—'}</div>
-						</div>
+		
 					</div>
 				</div>
 			</div>
@@ -743,6 +771,10 @@ async function render_sales_invoice_dashboard(page, invoice_name, wrapper, defau
 				<div class="sim-card-header">Payments</div>
 				<div class="sim-card-body">
 					<div class="sim-info-grid" style="margin-bottom:18px;">
+						<div>
+							<div class="sim-info-label">Method of Payment</div>
+							<div class="sim-info-val">${frappe.utils.escape_html(get_sales_invoice_payment_method_display(source_job_card))}</div>
+						</div>
 						<div>
 							<div class="sim-info-label">Amount Paid So Far</div>
 							<div class="sim-info-val">${format_currency(get_sales_invoice_display_paid_amount(doc, source_job_card), doc.currency || 'KES')}</div>
@@ -769,9 +801,19 @@ async function render_sales_invoice_dashboard(page, invoice_name, wrapper, defau
 					${other_html}
 					${(!glass_html && !aluminium_html && !fittings_html && !ceiling_html && !other_html) ? '<p style="text-align:center;color:var(--text-muted);padding:20px;">No items in this invoice.</p>' : ''}
 				</div>
-				<div class="sim-total-row">
-					<span style="font-size: 16px; font-weight: 600;">Grand Total</span>
-					<span class="sim-total-val">${format_currency(get_sales_invoice_display_total(doc), doc.currency || 'KES')}</span>
+				<div class="sim-total-breakdown">
+					<div class="sim-subtotal-row">
+						<span>Subtotal</span>
+						<span>${format_currency(get_sales_invoice_display_total(doc) - get_sales_invoice_display_tax_total(doc), doc.currency || 'KES')}</span>
+					</div>
+					<div class="sim-subtotal-row">
+						<span>VAT (16%)</span>
+						<span>${format_currency(get_sales_invoice_display_tax_total(doc), doc.currency || 'KES')}</span>
+					</div>
+					<div class="sim-total-row">
+						<span style="font-size: 16px; font-weight: 600;">Grand Total</span>
+						<span class="sim-total-val">${format_currency(get_sales_invoice_display_total(doc), doc.currency || 'KES')}</span>
+					</div>
 				</div>
 			</div>
 
@@ -821,8 +863,11 @@ function get_sales_invoice_action_buttons(doc, quotation_name) {
 	} else if (doc.docstatus === 1) {
 		const paid_amount = get_sales_invoice_paid_amount(doc);
 		const outstanding = flt(doc.outstanding_amount || 0);
+		const is_job_card_invoice = !!doc.custom_source_job_card;
 
-		if (paid_amount <= 0) {
+		if (is_job_card_invoice || paid_amount <= 0) {
+			// Job-card invoices (incl. fully-paid POS-settled ones) can be cancelled —
+			// cancel_sales_invoice reverses the GL and the job-card payment impact.
 			buttons += `
 				<button class="btn btn-danger" id="btn-cancel-invoice">
 					<i class="fa fa-ban" style="margin-right:6px;"></i>Cancel Invoice
@@ -835,6 +880,20 @@ function get_sales_invoice_action_buttons(doc, quotation_name) {
 				</button>
 			`;
 		}
+
+		if (!doc.is_return) {
+			buttons += `
+				<button class="btn btn-default" id="btn-credit-note">
+					<i class="fa fa-reply" style="margin-right:6px;"></i>Credit Note / Return
+				</button>
+			`;
+		}
+	} else if (doc.docstatus === 2) {
+		buttons += `
+			<button class="btn btn-primary" id="btn-amend-invoice">
+				<i class="fa fa-pencil-square-o" style="margin-right:6px;"></i>Amend Invoice
+			</button>
+		`;
 	}
 
 	return buttons;
@@ -894,5 +953,102 @@ function bind_sales_invoice_action_events(page, doc) {
 			indicator: 'orange',
 			message: __('Cancel linked payments before cancelling this invoice.'),
 		});
+	});
+
+	// ── Credit Note / Sales Return (monetary corrections) ──
+	$body.find('#btn-credit-note').on('click', () => {
+		frappe.confirm(
+			'Create a Credit Note / Sales Return against this invoice?<br><br>Use this to correct <b>rates</b> (keep quantities) or to reverse <b>returned goods</b>. Adjust the return, then submit it.',
+			() => {
+				frappe.call({
+					method: 'erpnext.accounts.doctype.sales_invoice.sales_invoice.make_sales_return',
+					args: { source_name: doc.name },
+					freeze: true,
+					freeze_message: 'Creating credit note...',
+					callback: function(r) {
+						if (r.exc || !r.message) return;
+						const ret = r.message;
+						frappe.model.sync(ret);
+						frappe.set_route('Form', 'Sales Invoice', ret.name);
+					},
+				});
+			}
+		);
+	});
+
+	// ── Amend Invoice (administrative fields only) ──
+	$body.find('#btn-amend-invoice').on('click', () => {
+		frappe.call({
+			method: 'crystal_alluminium_works.api.get_invoice_amendment_eligibility',
+			args: { name: doc.name },
+			freeze: true,
+			callback: function(r) {
+				if (r.exc) return;
+				const elig = r.message || {};
+				if (!elig.can_amend) {
+					frappe.msgprint({
+						title: 'Cannot Amend Invoice',
+						indicator: 'red',
+						message: '<ul><li>' + (elig.reasons || ['Not eligible.']).join('</li><li>') + '</li></ul>',
+					});
+					return;
+				}
+				frappe.call({
+					method: 'crystal_alluminium_works.api.amend_sales_invoice',
+					args: { name: doc.name },
+					freeze: true,
+					freeze_message: 'Creating amendment...',
+					callback: async function(a) {
+						if (a.exc || !a.message) return;
+						const draft = await frappe.db.get_doc('Sales Invoice', a.message);
+						open_amend_invoice_dialog(page, draft);
+					},
+				});
+			},
+		});
+	});
+}
+
+function open_amend_invoice_dialog(page, draft) {
+	const d = new frappe.ui.Dialog({
+		title: `Amend Invoice — ${draft.name}`,
+		fields: [
+			{ fieldtype: 'HTML', options: '<p style="color:var(--text-muted);font-size:12px;">Only administrative fields can change. For money, quantity or tax corrections use a Credit Note / Return.</p>' },
+			{ fieldtype: 'Section Break' },
+			{ label: 'Posting Date', fieldname: 'posting_date', fieldtype: 'Date', default: draft.posting_date },
+			{ fieldtype: 'Column Break' },
+			{ label: 'Due Date', fieldname: 'due_date', fieldtype: 'Date', default: draft.due_date },
+			{ fieldtype: 'Section Break' },
+			{ label: 'Customer PO / Reference', fieldname: 'po_no', fieldtype: 'Data', default: draft.po_no },
+			{ label: 'Remarks', fieldname: 'remarks', fieldtype: 'Small Text', default: draft.remarks },
+			{ label: 'Terms', fieldname: 'terms', fieldtype: 'Text Editor', default: draft.terms },
+		],
+		primary_action_label: 'Save & Submit',
+		primary_action: function(values) {
+			frappe.call({
+				method: 'crystal_alluminium_works.api.update_and_submit_amended_invoice',
+				args: {
+					name: draft.name,
+					posting_date: values.posting_date,
+					due_date: values.due_date,
+					po_no: values.po_no,
+					remarks: values.remarks,
+					terms: values.terms,
+				},
+				freeze: true,
+				freeze_message: 'Submitting amended invoice...',
+				callback: function(r) {
+					if (r.exc) return;
+					d.hide();
+					frappe.show_alert({ message: `Amended invoice ${r.message} submitted`, indicator: 'green' });
+					render_sales_invoice_dashboard(page, r.message);
+				},
+			});
+		},
+	});
+	d.show();
+	d.$wrapper.find('.modal-body').css({
+		height: 'min(560px, calc(100vh - 180px))',
+		overflowY: 'auto',
 	});
 }

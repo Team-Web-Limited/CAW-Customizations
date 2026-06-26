@@ -7,6 +7,7 @@ ITEM_GLASS_TYPE_OPTIONS = "Ordinary\nLaminated\nReady Laminated\nToughened"
 GLASS_POLISH_TYPE_OPTIONS = "\n4-6\n8-10\n14-35"
 GLASS_HOLE_TYPE_OPTIONS = "\n5mm\n6mm\n8mm\n10mm\n15mm\n20mm"
 GLASS_NOTCH_TYPE_OPTIONS = "\nStandard\nSmall\nMirror Screws\nTimber Box"
+CUSTOMER_BILLING_TYPE_OPTIONS = "Invoice Customer\nCash Customer"
 
 
 def _get_crystal_item_fields(read_only=False):
@@ -307,6 +308,19 @@ def _get_crystal_item_fields(read_only=False):
 
 def add_custom_fields():
     custom_fields = {
+        "Customer": [
+            {
+                "fieldname": "custom_customer_billing_type",
+                "label": "Customer Billing Type",
+                "fieldtype": "Select",
+                "options": CUSTOMER_BILLING_TYPE_OPTIONS,
+                "default": "Cash Customer",
+                "insert_after": "customer_type",
+                "reqd": 1,
+                "in_standard_filter": 1,
+                "module": "Crystal Alluminium Works",
+            }
+        ],
         # Quotation Item — editable fields
         "Quotation Item": _get_crystal_item_fields(read_only=False) + [
             {
@@ -321,12 +335,66 @@ def add_custom_fields():
                 "read_only": 1,
                 "no_copy": 1,
                 "hidden": 1,
+            },
+            {
+                # Frozen full component breakdown for a ceiling bundle row, e.g.
+                # {"Board":277,"MainT":25,"Sub Cross 4ft":133,"Sub Cross 2ft":133,"Wall angle":25}.
+                # Written once on the first partial-invoice release for the row and used as
+                # the canonical reference for remaining-piece calculations across visits.
+                "fieldname": "custom_ceiling_snapshot_json",
+                "label": "Ceiling Snapshot JSON",
+                "fieldtype": "Small Text",
+                "insert_after": "custom_collected_qty",
+                "read_only": 1,
+                "no_copy": 1,
+                "hidden": 1,
+            },
+            {
+                # Cumulative quantity released to a CASH customer WITHOUT invoicing,
+                # in the row's native driving unit (pieces/metres/sq m). Kept separate
+                # from custom_collected_qty (which means "released AND invoiced" on the
+                # invoice-customer partial flow) so the final full invoice for a cash
+                # customer still bills every item. Remaining = native full - custom_released_qty.
+                "fieldname": "custom_released_qty",
+                "label": "Released Qty (Uninvoiced)",
+                "fieldtype": "Float",
+                "insert_after": "custom_ceiling_snapshot_json",
+                "read_only": 1,
+                "no_copy": 1,
+                "hidden": 1,
             }
         ],
         # Sales Order Item — frozen (read-only) copy of the quotation data
         "Sales Order Item": _get_crystal_item_fields(read_only=True),
         # Sales Invoice Item — frozen (read-only) copy for accounting records
-        "Sales Invoice Item": _get_crystal_item_fields(read_only=True),
+        "Sales Invoice Item": _get_crystal_item_fields(read_only=True) + [
+            {
+                # JSON map {item_code: pcs} of user-specified released pcs per ceiling
+                # component (Board/MainT/Sub Cross 4ft/Sub Cross 2ft/Wall angle), set only
+                # when a partial invoice's release is created with manual overrides.
+                # Falls back to the ratio formula in calculate_ceiling_pricing when absent.
+                "fieldname": "custom_ceiling_component_pcs",
+                "label": "Ceiling Component Pcs Override",
+                "fieldtype": "Small Text",
+                "insert_after": "custom_parent_row_idx",
+                "hidden": 1,
+                "no_copy": 1,
+                "read_only": 1,
+            },
+            {
+                # VAT-exclusive amount this invoice bills for a ceiling bundle row
+                # (= cash paid toward the ceiling this visit / 1.16). When set, it
+                # overrides the sqm×rate amount in calculate_ceiling_pricing so the
+                # ceiling row reflects money paid, decoupled from pieces released.
+                "fieldname": "custom_ceiling_paid_amount",
+                "label": "Ceiling Paid Amount",
+                "fieldtype": "Currency",
+                "insert_after": "custom_ceiling_component_pcs",
+                "hidden": 1,
+                "no_copy": 1,
+                "read_only": 1,
+            }
+        ],
         "Sales Invoice": [
             {
                 "fieldname": "custom_source_quotation",
@@ -361,7 +429,7 @@ def add_custom_fields():
     }
 
     create_custom_fields(custom_fields)
-    print("Custom fields added to Quotation Item, Sales Order Item, Sales Invoice Item, and Sales Invoice")
+    print("Custom fields added to Customer, Quotation Item, Sales Order Item, Sales Invoice Item, and Sales Invoice")
 
 
 def add_item_custom_fields():

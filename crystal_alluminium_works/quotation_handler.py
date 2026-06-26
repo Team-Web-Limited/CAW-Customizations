@@ -30,3 +30,12 @@ def on_validate(doc, method):
     if new_items:
         doc.calculate_taxes_and_totals()
 
+
+def on_submit(doc, method):
+    # When a freshly-amended Quotation is submitted, re-point its existing Job Card to
+    # this revision (the Job Card keeps its stable name/number).
+    if not doc.get("amended_from"):
+        return
+    from crystal_alluminium_works.api import _on_quotation_amendment_submitted
+    _on_quotation_amendment_submitted(doc)
+

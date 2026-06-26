@@ -52,6 +52,7 @@ const QB_SHEET_GLASS_TYPES = new Set(['Ordinary', 'Ready Laminated']);
 const QB_SHARED_GLASS_SHEET_CONFIG_KEY = 'Shared';
 const QB_CUSTOMER_PAYMENT_MODE_OPTIONS = 'Cash Customer\nInvoice Customer';
 const QB_DEFAULT_CUSTOMER_PAYMENT_MODE = 'invoice';
+const QB_VAT_RATE = 0.16;
 const QB_POLISH_TYPE_OPTIONS = '4-6\n8-10\n14-35';
 const QB_DEFAULT_POLISH_TYPE = '4-6';
 const QB_HOLE_TYPE_OPTIONS = '5mm\n6mm\n8mm\n10mm\n15mm\n20mm';
@@ -67,6 +68,28 @@ const QB_CEILING_COMPONENTS = [
 ];
 const QB_CEILING_COMPONENT_ITEM_CODES = QB_CEILING_COMPONENTS.map(component => component.label);
 const QB_CEILING_BOARD_ITEM_CODES = new Set(['AMC', 'AGC']);
+
+function refresh_quotation_builder(page) {
+	if (!page) {
+		return;
+	}
+
+	$(page.body).html(get_builder_html());
+	bind_events(page);
+	setup_customer_step(page);
+
+	if (window.qb_state && window.qb_state.items && window.qb_state.items.length > 0) {
+		render_items_table(page);
+	}
+
+	if (window.qb_state && window.qb_state.editing_quotation) {
+		page.set_title(`Editing: ${window.qb_state.editing_quotation}`);
+	} else {
+		page.set_title('Quotation Builder');
+	}
+
+	render_step(page, (window.qb_state && window.qb_state.step) || 1);
+}
 
 function is_ceiling_board_item(item) {
 	return QB_CEILING_BOARD_ITEM_CODES.has((item.item_code || '').trim());
@@ -212,12 +235,20 @@ function ensure_aluminium_colors(callback) {
 }
 
 function bind_events(page) {
-	$(page.body).on('click', '.qb-step-indicator', function () {
+	// These are delegated handlers bound on page.body itself, so replacing the
+	// body's inner HTML (e.g. via refresh_quotation_builder on every page show)
+	// does NOT detach them. bind_events runs multiple times, so without clearing
+	// the namespace first the handlers stack — one "+ Aluminium" click would then
+	// fire add_item_row several times, opening duplicate empty dialogs that look
+	// like the modal "resetting" instead of closing after Save.
+	$(page.body).off('.qbbuilder');
+
+	$(page.body).on('click.qbbuilder', '.qb-step-indicator', function () {
 		let step = parseInt($(this).data('step'));
 		if (step) render_step(page, step);
 	});
 
-	$(page.body).on('click', '.qb-add-btn', function () {
+	$(page.body).on('click.qbbuilder', '.qb-add-btn', function () {
 		let category = $(this).data('category');
 		let glassType = $(this).data('glass-type');
 		if (!category) return;
@@ -247,11 +278,11 @@ function bind_events(page) {
 		add_item_row(page, category);
 	});
 
-	$(page.body).on('click', '.qb-import-products-btn', function () {
+	$(page.body).on('click.qbbuilder', '.qb-import-products-btn', function () {
 		open_glass_import_dialog(page, QB_DEFAULT_GLASS_DIMENSION_UOM);
 	});
 
-	$(page.body).on('click', '.qb-nav-step', function () {
+	$(page.body).on('click.qbbuilder', '.qb-nav-step', function () {
 		let step = parseInt($(this).data('step'));
 		if (step) render_step(page, step);
 	});
@@ -350,6 +381,30 @@ function calculate_item_amount(item) {
 	}
 
 	return qty * rate;
+}
+
+function get_builder_subtotal() {
+	return window.qb_state.items.reduce((sum, item) => sum + flt(item.amount || 0), 0);
+}
+
+function get_builder_vat_total() {
+	return get_builder_subtotal() * QB_VAT_RATE;
+}
+
+function get_builder_grand_total() {
+	return get_builder_subtotal() + get_builder_vat_total();
+}
+
+function close_builder_dialog(dialog) {
+	if (!dialog) {
+		return;
+	}
+
+	// dialog.hide() already calls $wrapper.modal('hide') internally. Calling
+	// modal('hide') a second time here fired a redundant hide while the first
+	// was still transitioning, which left the .modal-backdrop stuck in the DOM
+	// so the dialog appeared not to close. Defer to hide() alone.
+	dialog.hide();
 }
 
 function get_review_breakdown_uom(label, item) {
@@ -756,7 +811,6 @@ function render_review_category_section(items, category) {
 	}
 
 	let meta = get_review_category_meta(category);
-	let subtotal = items.reduce((sum, item) => sum + (item.amount || 0), 0);
 	let is_ceiling = category === 'Ceiling';
 	let ceiling_review = is_ceiling ? get_ceiling_review_config(items) : null;
 
@@ -764,7 +818,6 @@ function render_review_category_section(items, category) {
 		<div style="margin-bottom:24px;">
 			<h5 style="margin:0 0 10px 0;font-size:15px;font-weight:600;color:${meta.color};display:flex;align-items:center;gap:8px;">
 				<span style="background:${meta.color}20;padding:3px 10px;border-radius:10px;font-size:12px;">${meta.icon}</span> ${meta.label}
-				<span style="margin-left:auto;font-size:13px;color:var(--text-muted);font-weight:500;">Subtotal: ${format_currency(subtotal, 'KES')}</span>
 			</h5>
 			<div class="table-responsive">
 				<table class="table table-bordered" style="background:var(--card-bg); margin-bottom:0;">
@@ -836,8 +889,6 @@ function render_review_step(page) {
 	let $summary = $(page.body).find('.qb-review-summary');
 	$summary.empty();
 
-	let grand = window.qb_state.items.reduce((s, i) => s + (i.amount || 0), 0);
-
 	// Separate items by category
 	let glass_items = window.qb_state.items.filter(i => i.category === 'Glass');
 	let aluminium_items = window.qb_state.items.filter(i => i.category === 'Aluminium');
@@ -849,10 +900,6 @@ function render_review_step(page) {
 		!['Glass', 'Aluminium', 'Fittings', 'Ceiling', 'Rubber', 'Silicone'].includes(i.category)
 	);
 
-	let glass_total = glass_items.reduce((s, i) => s + (i.amount || 0), 0);
-	let aluminium_total = aluminium_items.reduce((s, i) => s + (i.amount || 0), 0);
-	let fittings_total = fittings_items.reduce((s, i) => s + (i.amount || 0), 0);
-
 	// ── Glass Section ──
 	let glass_html = '';
 	if (glass_items.length) {
@@ -860,7 +907,6 @@ function render_review_step(page) {
 			<div style="margin-bottom:24px;">
 				<h5 style="margin:0 0 10px 0;font-size:15px;font-weight:600;color:#3498db;display:flex;align-items:center;gap:8px;">
 					<span style="background:#3498db20;padding:3px 10px;border-radius:10px;font-size:12px;">🔷</span> Glass Items
-					<span style="margin-left:auto;font-size:13px;color:var(--text-muted);font-weight:500;">Subtotal: ${format_currency(glass_total, 'KES')}</span>
 				</h5>
 				<div class="table-responsive">
 					<table class="table table-bordered" style="background:var(--card-bg); margin-bottom:0;">
@@ -903,7 +949,6 @@ function render_review_step(page) {
 			<div style="margin-bottom:24px;">
 				<h5 style="margin:0 0 10px 0;font-size:15px;font-weight:600;color:#95a5a6;display:flex;align-items:center;gap:8px;">
 					<span style="background:#95a5a620;padding:3px 10px;border-radius:10px;font-size:12px;">⬜</span> Aluminium Items
-					<span style="margin-left:auto;font-size:13px;color:var(--text-muted);font-weight:500;">Subtotal: ${format_currency(aluminium_total, 'KES')}</span>
 				</h5>
 				<div class="table-responsive">
 					<table class="table table-bordered" style="background:var(--card-bg); margin-bottom:0;">
@@ -935,7 +980,6 @@ function render_review_step(page) {
 			<div style="margin-bottom:24px;">
 				<h5 style="margin:0 0 10px 0;font-size:15px;font-weight:600;color:#e67e22;display:flex;align-items:center;gap:8px;">
 					<span style="background:#e67e2220;padding:3px 10px;border-radius:10px;font-size:12px;">🔶</span> Fittings Items
-					<span style="margin-left:auto;font-size:13px;color:var(--text-muted);font-weight:500;">Subtotal: ${format_currency(fittings_total, 'KES')}</span>
 				</h5>
 				<div class="table-responsive">
 					<table class="table table-bordered" style="background:var(--card-bg); margin-bottom:0;">
@@ -970,6 +1014,10 @@ function render_review_step(page) {
 		empty_html = `<p style="text-align:center;color:var(--text-muted);padding:20px;">No items added yet.</p>`;
 	}
 
+	let subtotal = get_builder_subtotal();
+	let vat_total = get_builder_vat_total();
+	let grand_total = get_builder_grand_total();
+
 	let html = `
 		<div style="background:var(--control-bg); padding:16px; border-radius:8px; border:1px solid var(--border-color);">
 			<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
@@ -978,10 +1026,6 @@ function render_review_step(page) {
 						<span style="color:var(--text-muted);">Customer:</span> 
 						${window.qb_state.customer || '<em style="color:var(--text-muted);">Not Selected</em>'}
 					</h4>
-					<div style="font-size:13px;color:var(--text-muted);margin-top:4px;">
-						<span style="color:var(--text-muted);">Payment Mode:</span>
-						${frappe.utils.escape_html(get_customer_payment_mode_label(window.qb_state.payment_mode || QB_DEFAULT_CUSTOMER_PAYMENT_MODE))}
-					</div>
 				</div>
 				<div style="display:flex; gap:8px; align-items:center;">
 					<button class="btn btn-default" id="btn-export-review">Export</button>
@@ -998,9 +1042,19 @@ function render_review_step(page) {
 			${other_html}
 			${empty_html}
 
-			<div style="background:var(--card-bg); border:1px solid var(--border-color); border-radius:6px; padding:14px 20px; display:flex; justify-content:space-between; align-items:center; margin-top:8px;">
-				<span style="font-size:15px;font-weight:600;">Grand Total</span>
-				<span style="font-size:18px;font-weight:700;color:var(--primary);">${format_currency(grand, 'KES')}</span>
+			<div style="background:var(--card-bg); border:1px solid var(--border-color); border-radius:6px; padding:14px 20px; margin-top:8px;">
+				<div style="display:flex; justify-content:space-between; align-items:center; gap:16px; padding-bottom:8px;">
+					<span style="color:var(--text-muted);">Subtotal</span>
+					<span style="font-weight:600;">${format_currency(subtotal, 'KES')}</span>
+				</div>
+				<div style="display:flex; justify-content:space-between; align-items:center; gap:16px; padding:8px 0; border-top:1px solid var(--border-color);">
+					<span style="color:var(--text-muted);">VAT (16%)</span>
+					<span style="font-weight:600;">${format_currency(vat_total, 'KES')}</span>
+				</div>
+				<div style="display:flex; justify-content:space-between; align-items:center; gap:16px; padding-top:10px; margin-top:8px; border-top:1px solid var(--border-color);">
+					<span style="font-size:15px;font-weight:600;">Grand Total</span>
+					<span style="font-size:18px;font-weight:700;color:var(--primary);">${format_currency(grand_total, 'KES')}</span>
+				</div>
 			</div>
 		</div>
 	`;
@@ -1627,7 +1681,7 @@ function open_item_editor(page, item, is_new = false) {
 						if (is_new) {
 							window.qb_state.items.push(item);
 						}
-						d.hide();
+						close_builder_dialog(d);
 						render_items_table(page);
 					}
 				});
@@ -1718,7 +1772,7 @@ function open_item_editor(page, item, is_new = false) {
 							if (is_new) {
 								window.qb_state.items.push(item);
 							}
-							d.hide();
+							close_builder_dialog(d);
 							render_items_table(page);
 						}
 					});
@@ -1801,7 +1855,7 @@ function open_item_editor(page, item, is_new = false) {
 						if (is_new) {
 							window.qb_state.items.push(item);
 						}
-						d.hide();
+						close_builder_dialog(d);
 						render_items_table(page);
 					}
 				});
@@ -1814,7 +1868,7 @@ function open_item_editor(page, item, is_new = false) {
 				window.qb_state.items.push(item);
 			}
 
-			d.hide();
+			close_builder_dialog(d);
 			render_items_table(page);
 		}
 	});
@@ -2591,21 +2645,5 @@ function get_builder_html() {
 
 frappe.pages['quotation-builder'].on_page_show = function (wrapper) {
 	let page = wrapper.page || $(wrapper).data('page') || wrapper;
-	// Initialize step 1 controls
-	setup_customer_step(page);
-
-	// If state has pre-populated items (e.g. coming from "Edit in Builder"), render them
-	if (window.qb_state && window.qb_state.items && window.qb_state.items.length > 0) {
-		render_items_table(page);
-	}
-
-	// Update page title if editing an existing quotation
-	if (window.qb_state && window.qb_state.editing_quotation) {
-		page.set_title(`Editing: ${window.qb_state.editing_quotation}`);
-	}
-
-	// Restore previous step if revisiting
-	if (window.qb_state && window.qb_state.step) {
-		render_step(page, window.qb_state.step);
-	}
+	refresh_quotation_builder(page);
 };

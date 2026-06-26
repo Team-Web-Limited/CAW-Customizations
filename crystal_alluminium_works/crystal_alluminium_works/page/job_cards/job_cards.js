@@ -61,10 +61,10 @@ function load_job_cards(page, page_no) {
 		search: $body.find('[data-filter="search"]').val() || '',
 		status: $body.find('[data-filter="status"]').val() || 'All',
 		page: page_no,
-		page_length: 50
+		page_length: 30
 	};
 
-	$tbody.html('<tr><td colspan="8" style="padding:24px;text-align:center;color:var(--text-muted);">Loading job cards...</td></tr>');
+	$tbody.html('<tr><td colspan="9" style="padding:24px;text-align:center;color:var(--text-muted);">Loading job cards...</td></tr>');
 
 	frappe.call({
 		method: 'crystal_alluminium_works.api.get_job_cards_page',
@@ -74,7 +74,7 @@ function load_job_cards(page, page_no) {
 			let rows = message.rows || [];
 
 			if (!rows.length) {
-				$tbody.html('<tr><td colspan="8" style="padding:24px;text-align:center;color:var(--text-muted);">No job cards found.</td></tr>');
+				$tbody.html('<tr><td colspan="9" style="padding:24px;text-align:center;color:var(--text-muted);">No job cards found.</td></tr>');
 				$body.find('.jc-list-pagination').html('');
 				return;
 			}
@@ -164,12 +164,12 @@ function get_job_cards_html() {
 		.jc-list-hero h2 { margin: 0 0 6px; font-size: 24px; font-weight: 700; color: var(--heading-color); }
 		.jc-list-hero p { margin: 0; font-size: 14px; color: var(--text-muted); }
 		.jc-list-filters { padding: 18px; margin-bottom: 24px; background: var(--fg-color); border: 1px solid var(--border-color); border-radius: 8px; box-shadow: var(--shadow-xs); }
-		.jc-list-filter-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; margin-bottom: 16px; }
-		.jc-list-filter-actions { display: flex; justify-content: flex-end; gap: 12px; }
+		.jc-list-filter-grid { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) auto; align-items: end; gap: 16px; }
+		.jc-list-filter-actions { display: flex; justify-content: flex-end; gap: 12px; white-space: nowrap; }
 		.jc-list-table-wrap { background: var(--fg-color); border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; box-shadow: var(--shadow-xs); }
-		.jc-list-table-scroller { overflow-x: auto; }
-		.jc-list-table { width: 100%; min-width: 980px; border-collapse: collapse; }
-		.jc-list-table th { padding: 12px 16px; font-size: 12px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; text-align: left; letter-spacing: 0.5px; background: var(--subtle-fg); border-bottom: 1px solid var(--border-color); }
+		.jc-list-table-scroller { height: 660px; overflow: auto; }
+		.jc-list-table { width: 100%; min-width: 980px; border-collapse: separate; border-spacing: 0; }
+		.jc-list-table th { position: sticky; top: 0; z-index: 2; padding: 12px 16px; font-size: 12px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; text-align: left; letter-spacing: 0.5px; background: var(--subtle-fg); border-bottom: 1px solid var(--border-color); }
 		.jc-list-table td { padding: 12px 16px; font-size: 14px; color: var(--text-color); vertical-align: middle; }
 		.jc-list-table tbody tr { cursor: pointer; }
 		.jc-list-table tbody tr:hover { background: var(--subtle-fg); }
@@ -177,6 +177,7 @@ function get_job_cards_html() {
 		.jc-status-pill { display:inline-flex; align-items:center; gap:6px; padding:4px 10px; border-radius:999px; font-size:12px; font-weight:700; line-height:1.2; white-space:nowrap; }
 		.jc-status-dot { width:8px; height:8px; border-radius:50%; flex:0 0 auto; }
 		.jc-list-pagination { padding: 16px 18px; border-top: 1px solid var(--border-color); text-align: center; }
+		@media (max-width: 767px) { .jc-list-filter-grid { grid-template-columns: 1fr; } .jc-list-filter-actions { justify-content: flex-start; } }
 	</style>
 
 	<div class="jc-list-page">
@@ -200,10 +201,10 @@ function get_job_cards_html() {
 						<option>Cancelled</option>
 					</select>
 				</div>
-			</div>
-			<div class="jc-list-filter-actions">
-				<button class="btn btn-default jc-list-clear">Clear</button>
-				<button class="btn btn-primary jc-list-apply">Apply Filters</button>
+				<div class="jc-list-filter-actions">
+					<button class="btn btn-default jc-list-clear">Clear</button>
+					<button class="btn btn-primary jc-list-apply">Apply Filters</button>
+				</div>
 			</div>
 		</div>
 

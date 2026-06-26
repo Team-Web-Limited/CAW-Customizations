@@ -105,8 +105,133 @@ function set_customer_list_actions(page) {
 	page.set_title('Customer Manager');
 	page.clear_secondary_action();
 	page.set_primary_action('New Customer', function () {
-		frappe.new_doc('Customer');
+		open_new_customer_dialog(page);
 	});
+}
+
+async function open_new_customer_dialog(page) {
+	let response = await frappe.call({
+		method: 'crystal_alluminium_works.api.get_customer_registration_defaults'
+	});
+	let defaults = response.message || {};
+	let dialog;
+
+	dialog = new frappe.ui.Dialog({
+		title: 'Register New Customer',
+		size: 'large',
+		fields: [
+			{ fieldtype: 'Section Break', label: 'Customer Details' },
+			{
+				fieldtype: 'Select',
+				fieldname: 'customer_billing_type',
+				label: 'Customer Type',
+				options: 'Invoice Customer\nCash Customer',
+				default: 'Cash Customer',
+				reqd: 1
+			},
+			{
+				fieldtype: 'Select',
+				fieldname: 'customer_type',
+				label: 'Entity Type',
+				options: 'Company\nIndividual\nPartnership',
+				default: 'Company',
+				reqd: 1
+			},
+			{ fieldtype: 'Column Break' },
+			{ fieldtype: 'Data', fieldname: 'customer_name', label: 'Customer Name', reqd: 1 },
+			{
+				fieldtype: 'Data',
+				fieldname: 'tax_id',
+				label: 'PIN (Tax ID)',
+				depends_on: "eval:doc.customer_billing_type=='Invoice Customer'"
+			},
+			{ fieldtype: 'Section Break', label: 'Classification' },
+			{
+				fieldtype: 'Link',
+				fieldname: 'customer_group',
+				label: 'Customer Group',
+				options: 'Customer Group',
+				default: defaults.customer_group,
+				reqd: 1,
+				get_query: function () { return { filters: { is_group: 0 } }; }
+			},
+			{ fieldtype: 'Column Break' },
+			{
+				fieldtype: 'Link',
+				fieldname: 'territory',
+				label: 'Territory',
+				options: 'Territory',
+				default: defaults.territory,
+				reqd: 1,
+				get_query: function () { return { filters: { is_group: 0 } }; }
+			},
+			{ fieldtype: 'Section Break', label: 'Primary Contact' },
+			{
+				fieldtype: 'Data',
+				fieldname: 'first_name',
+				label: 'Contact First Name',
+				depends_on: "eval:doc.customer_type!='Individual'"
+			},
+			{
+				fieldtype: 'Data',
+				fieldname: 'last_name',
+				label: 'Contact Last Name',
+				depends_on: "eval:doc.customer_type!='Individual'"
+			},
+			{ fieldtype: 'Column Break' },
+			{ fieldtype: 'Data', fieldname: 'mobile_no', label: 'Mobile Number', options: 'Phone' },
+			{ fieldtype: 'Data', fieldname: 'email_id', label: 'Email Address', options: 'Email' },
+			{ fieldtype: 'Section Break', label: 'Primary Address', collapsible: 1 },
+			{ fieldtype: 'Data', fieldname: 'address_line1', label: 'Address Line 1' },
+			{ fieldtype: 'Data', fieldname: 'address_line2', label: 'Address Line 2' },
+			{ fieldtype: 'Data', fieldname: 'pincode', label: 'Postal Code' },
+			{ fieldtype: 'Column Break' },
+			{ fieldtype: 'Data', fieldname: 'city', label: 'City' },
+			{ fieldtype: 'Data', fieldname: 'state', label: 'State / Province' },
+			{ fieldtype: 'Link', fieldname: 'country', label: 'Country', options: 'Country', default: defaults.country },
+			{ fieldtype: 'Section Break', label: 'Additional Details', collapsible: 1 },
+			{ fieldtype: 'Small Text', fieldname: 'customer_details', label: 'Notes' }
+		],
+		primary_action_label: 'Register Customer',
+		primary_action: async function (values) {
+			let has_address = ['address_line1', 'address_line2', 'city', 'state', 'pincode']
+				.some(fieldname => (values[fieldname] || '').trim());
+			if (has_address && !(values.address_line1 || '').trim()) {
+				frappe.msgprint('Address Line 1 is required when capturing an address.');
+				return;
+			}
+			if (has_address && !(values.city || '').trim()) {
+				frappe.msgprint('City is required when capturing an address.');
+				return;
+			}
+			if (has_address && !(values.country || '').trim()) {
+				frappe.msgprint('Country is required when capturing an address.');
+				return;
+			}
+
+			dialog.disable_primary_action();
+			try {
+				let result = await frappe.call({
+					method: 'crystal_alluminium_works.api.register_customer',
+					args: values,
+					freeze: true,
+					freeze_message: 'Registering customer...'
+				});
+				let customer = result.message || {};
+				dialog.hide();
+				frappe.show_alert({ message: `Customer ${customer.customer_name || customer.name} registered`, indicator: 'green' });
+
+				let type_filter = customer.customer_billing_type === 'Invoice Customer' ? 'invoice' : 'cash';
+				$(page.body).find('[data-filter="customer_type"]').val(type_filter);
+				$(page.body).find('[data-filter="search"]').val(customer.customer_name || customer.name || '');
+				load_customers(page, 1);
+			} finally {
+				dialog.enable_primary_action();
+			}
+		}
+	});
+
+	dialog.show();
 }
 
 function set_customer_detail_actions(page, customer_name) {
@@ -194,10 +319,6 @@ function get_customer_manager_html() {
 	</style>
 
 	<div class="cm-list-page">
-		<div class="cm-list-hero">
-			<h2>Customer Manager</h2>
-		</div>
-
 		<div class="cm-list-filters">
 			<div class="cm-list-toolbar">
 				<div class="cm-list-toolbar-group cm-list-toolbar-group--search">
@@ -509,7 +630,8 @@ function get_customer_detail_html(customer, transactions) {
 			<div class="cm-detail-info">
 				<div class="cm-detail-info-grid">
 					${get_customer_field_html('Customer ID', customer.name)}
-					${get_customer_field_html('Type', customer.customer_type)}
+					${get_customer_field_html('Customer Type', customer.custom_customer_billing_type)}
+					${get_customer_field_html('Entity Type', customer.customer_type)}
 					${get_customer_field_html('PIN (Tax ID)', customer.tax_id)}
 					${get_customer_field_html('Email', customer.email_id)}
 					${get_customer_field_html('Mobile', customer.mobile_no)}

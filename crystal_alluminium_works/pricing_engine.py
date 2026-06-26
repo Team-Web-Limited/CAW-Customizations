@@ -510,8 +510,8 @@ def calculate_ceiling_pricing(row, parent_idx):
         return []
 
     board_component = next((component for component in CEILING_COMPONENTS if component.get("uses_parent_item")), None)
-    parent_rate = get_item_rate(row.item_code, price_list, fallback_rate=800.0) / 1.16
     row.qty = 1
+    parent_rate = get_item_rate(row.item_code, price_list, fallback_rate=800.0) / 1.16
     row.rate = quantity * parent_rate
     row.amount = row.qty * row.rate
 
@@ -530,6 +530,15 @@ def calculate_ceiling_pricing(row, parent_idx):
 
         item_code = component.get("item_code")
         piece_qty = get_ceiling_whole_piece_qty(quantity, component["ratio"], component["mode"])
+
+        if piece_qty <= 0:
+            # These rows are informational-only counters of pieces handed out this
+            # visit (amount is always 0 — see _reset_auto_generated_ceiling_component_pricing).
+            # A component already fully released in an earlier partial invoice (or a
+            # component whose formula simply rounds to 0) has nothing to show here, and
+            # ERPNext's core Sales Invoice Item validation rejects qty == 0 rows outright.
+            continue
+
         auto_rows.append({
             "item_code": item_code,
             "item_name": frappe.get_cached_value("Item", item_code, "item_name") or item_code,

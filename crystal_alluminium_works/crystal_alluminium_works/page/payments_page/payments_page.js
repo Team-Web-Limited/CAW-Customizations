@@ -18,32 +18,60 @@ frappe.pages['payments-page'].on_page_show = function(wrapper) {
 	render_payments_page(page);
 };
 
+const PAYMENTS_PAGE_LENGTH = 30;
+
+function get_payments_page_state(page) {
+	if (!page._payments_page_state) {
+		page._payments_page_state = {
+			page: 1,
+			page_length: PAYMENTS_PAGE_LENGTH,
+			total_count: 0,
+			has_next: false,
+			request_serial: 0
+		};
+	}
+	return page._payments_page_state;
+}
+
 async function render_payments_page(page) {
 	let $body = $(page.body);
 	page.set_primary_action(__('Create Payment'), () => open_create_payment_modal(page));
 	$body.html('<div style="padding:40px;text-align:center;color:var(--text-muted);"><span class="spinner"></span> Loading...</div>');
 
-	let [mode_of_payments, payment_records] = await Promise.all([
-		get_payment_mode_options(),
-		get_payment_records()
-	]);
-
+	let mode_of_payments = await get_payment_mode_options();
 	page._payments_page_context = { mode_of_payments };
 
 	let html = `
 	<style>
-		.pay-page { max-width: 900px; margin: 0 auto; padding: 24px 16px; }
+		.pay-page { width:100%; max-width: 1400px; margin: 0 auto; padding: 24px 16px; }
 		.pay-toolbar { display: flex; justify-content: flex-end; margin-bottom: 18px; }
 		.pay-card { background: var(--fg-color); border: 1px solid var(--border-color); border-radius: 8px; box-shadow: var(--shadow-xs); overflow: hidden; margin-bottom: 20px; }
 		.pay-card-header { padding: 14px 18px; font-size: 15px; font-weight: 700; color: var(--heading-color); border-bottom: 1px solid var(--border-color); background: var(--subtle-fg); display: flex; align-items: center; gap: 10px; }
 		.pay-card-header .pay-icon { font-size: 18px; }
-		.pay-card-body { padding: 20px; }
-		.pay-table-wrap { overflow-x: auto; }
-		.pay-table { width: 100%; min-width: 760px; border-collapse: collapse; }
-		.pay-table th { padding: 11px 14px; font-size: 12px; font-weight: 700; color: var(--text-muted); text-align: left; border-bottom: 1px solid var(--border-color); background: var(--subtle-fg); }
+		.pay-filters { padding:16px 18px; border-bottom:1px solid var(--border-color); background:var(--fg-color); }
+		.pay-filter-grid { display:grid; grid-template-columns:minmax(260px, 2fr) minmax(180px, 1fr) minmax(150px, .8fr) minmax(150px, .8fr) auto; gap:12px; align-items:end; }
+		.pay-filter-field label { display:block; margin-bottom:6px; color:var(--text-muted); font-size:12px; font-weight:600; }
+		.pay-filter-actions { display:flex; gap:8px; }
+		.pay-table-scroll { height:560px; overflow:auto; }
+		.pay-table { width: 100%; min-width: 1050px; border-collapse: separate; border-spacing:0; }
+		.pay-table th { position:sticky; top:0; z-index:2; padding: 11px 14px; font-size: 12px; font-weight: 700; color: var(--text-muted); text-align: left; border-bottom: 1px solid var(--border-color); background: var(--subtle-fg); }
 		.pay-table td { padding: 12px 14px; font-size: 13px; color: var(--text-color); border-bottom: 1px solid var(--border-color); vertical-align: top; }
 		.pay-table tbody tr:last-child td { border-bottom: 0; }
 		.pay-muted { color: var(--text-muted); }
+		.pay-pagination { padding:14px 18px; border-top:1px solid var(--border-color); }
+		.pay-pagination-bar { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; }
+		.pay-pagination-meta { color:var(--text-muted); font-size:13px; }
+		.pay-pagination-actions { display:flex; align-items:center; gap:8px; }
+		.pay-pagination-page { min-width:70px; text-align:center; color:var(--text-color); font-size:13px; }
+		@media (max-width: 900px) {
+			.pay-filter-grid { grid-template-columns:repeat(2, minmax(0, 1fr)); }
+			.pay-filter-search, .pay-filter-actions { grid-column:1 / -1; }
+			.pay-table-scroll { height:480px; }
+		}
+		@media (max-width: 560px) {
+			.pay-filter-grid { grid-template-columns:1fr; }
+			.pay-filter-search, .pay-filter-actions { grid-column:auto; }
+		}
 	</style>
 
 	<div class="pay-page">
@@ -57,31 +85,56 @@ async function render_payments_page(page) {
 			<div class="pay-card-header">
 				<span class="pay-icon">#</span> Recent Payments
 			</div>
-			<div class="pay-card-body">
-				<div class="pay-table-wrap">
-					<table class="pay-table">
-						<thead>
-							<tr>
-								<th>Date</th>
-								<th>Customer</th>
-								<th style="text-align:right;">Amount</th>
-								<th>Method</th>
-								<th>Deposit To</th>
-								<th>Reference</th>
-							</tr>
-						</thead>
-						<tbody>
-							${render_payment_record_rows(payment_records)}
-						</tbody>
-					</table>
+			<div class="pay-filters">
+				<div class="pay-filter-grid">
+					<div class="pay-filter-field pay-filter-search">
+						<label>Search</label>
+						<input type="search" class="form-control" data-filter="search" placeholder="Customer, job card, reference, method or account">
+					</div>
+					<div class="pay-filter-field">
+						<label>Payment Method</label>
+						<select class="form-control" data-filter="payment_method">
+							<option value="">All methods</option>
+							${mode_of_payments.map(method => `<option value="${frappe.utils.escape_html(method)}">${frappe.utils.escape_html(method)}</option>`).join('')}
+						</select>
+					</div>
+					<div class="pay-filter-field">
+						<label>From Date</label>
+						<input type="date" class="form-control" data-filter="from_date">
+					</div>
+					<div class="pay-filter-field">
+						<label>To Date</label>
+						<input type="date" class="form-control" data-filter="to_date">
+					</div>
+					<div class="pay-filter-actions">
+						<button class="btn btn-primary pay-filter-apply">Search</button>
+						<button class="btn btn-default pay-filter-clear">Clear</button>
+					</div>
 				</div>
 			</div>
+			<div class="pay-table-scroll">
+				<table class="pay-table">
+					<thead>
+						<tr>
+							<th>Date</th>
+							<th>Customer</th>
+							<th style="text-align:right;">Amount</th>
+							<th>Method</th>
+							<th>Deposit To</th>
+							<th>Reference</th>
+						</tr>
+					</thead>
+					<tbody class="pay-table-body"></tbody>
+				</table>
+			</div>
+			<div class="pay-pagination"></div>
 		</div>
 	</div>
 	`;
 
 	$body.html(html);
 	bind_payments_page_events(page, $body);
+	load_payment_records(page, 1);
 }
 
 async function get_payment_mode_options() {
@@ -98,23 +151,6 @@ async function get_payment_mode_options() {
 		return (mop_response.message || []).map(row => row.name);
 	} catch (e) {
 		return ['Cash', 'Bank', 'Paybill', 'Cheque'];
-	}
-}
-
-async function get_payment_records() {
-	try {
-		let payments_response = await frappe.call({
-			method: 'frappe.client.get_list',
-			args: {
-				doctype: 'Payments',
-				fields: ['name', 'customer', 'amount', 'date', 'payment_method', 'deposit_to', 'reference'],
-				limit_page_length: 25,
-				order_by: 'creation desc'
-			}
-		});
-		return payments_response.message || [];
-	} catch (e) {
-		return [];
 	}
 }
 
@@ -142,9 +178,112 @@ function render_payment_record_rows(records) {
 }
 
 function bind_payments_page_events(page, $body) {
-	$body.find('#btn-create-payment').on('click', function() {
+	$body.off('.paymentsPage');
+
+	$body.on('click.paymentsPage', '#btn-create-payment', function() {
 		open_create_payment_modal(page);
 	});
+
+	$body.on('click.paymentsPage', '.pay-filter-apply', function() {
+		load_payment_records(page, 1);
+	});
+
+	$body.on('click.paymentsPage', '.pay-filter-clear', function() {
+		$body.find('[data-filter]').val('');
+		load_payment_records(page, 1);
+	});
+
+	$body.on('keydown.paymentsPage', '.pay-filters input', function(event) {
+		if (event.key === 'Enter') {
+			load_payment_records(page, 1);
+		}
+	});
+
+	$body.on('input.paymentsPage', '[data-filter="search"]', function() {
+		clearTimeout(page._payments_search_timer);
+		page._payments_search_timer = setTimeout(function() {
+			load_payment_records(page, 1);
+		}, 350);
+	});
+
+	$body.on('click.paymentsPage', '.pay-pagination-prev', function() {
+		let state = get_payments_page_state(page);
+		if (state.page > 1) {
+			load_payment_records(page, state.page - 1);
+		}
+	});
+
+	$body.on('click.paymentsPage', '.pay-pagination-next', function() {
+		let state = get_payments_page_state(page);
+		if (state.has_next) {
+			load_payment_records(page, state.page + 1);
+		}
+	});
+}
+
+function load_payment_records(page, page_number) {
+	let state = get_payments_page_state(page);
+	let $body = $(page.body);
+	let from_date = $body.find('[data-filter="from_date"]').val() || '';
+	let to_date = $body.find('[data-filter="to_date"]').val() || '';
+
+	if (from_date && to_date && from_date > to_date) {
+		frappe.msgprint(__('From Date cannot be after To Date.'));
+		return;
+	}
+
+	state.page = page_number || 1;
+	state.request_serial += 1;
+	let request_serial = state.request_serial;
+
+	$body.find('.pay-table-body').html(`
+		<tr><td colspan="6" class="pay-muted" style="text-align:center;padding:32px;">Loading payments...</td></tr>
+	`);
+
+	frappe.call({
+		method: 'crystal_alluminium_works.api.get_payments_page',
+		args: {
+			search: $body.find('[data-filter="search"]').val() || '',
+			payment_method: $body.find('[data-filter="payment_method"]').val() || '',
+			from_date: from_date,
+			to_date: to_date,
+			page: state.page,
+			page_length: state.page_length
+		},
+		callback: function(response) {
+			if (request_serial !== state.request_serial) {
+				return;
+			}
+
+			let result = response.message || {};
+			state.page = result.page || 1;
+			state.page_length = result.page_length || PAYMENTS_PAGE_LENGTH;
+			state.total_count = result.total_count || 0;
+			state.has_next = !!result.has_next;
+
+			$body.find('.pay-table-body').html(render_payment_record_rows(result.rows || []));
+			render_payments_pagination(page);
+			$body.find('.pay-table-scroll').scrollTop(0);
+		}
+	});
+}
+
+function render_payments_pagination(page) {
+	let state = get_payments_page_state(page);
+	let start = state.total_count ? ((state.page - 1) * state.page_length) + 1 : 0;
+	let end = Math.min(state.page * state.page_length, state.total_count);
+	let total_pages = Math.max(Math.ceil(state.total_count / state.page_length), 1);
+
+	$(page.body).find('.pay-pagination').html(`
+		<div class="pay-pagination-bar">
+			<div class="pay-pagination-meta">Showing ${start}-${end} of ${state.total_count} payments</div>
+			<div class="pay-pagination-actions">
+				<button class="btn btn-default pay-pagination-prev" ${state.page <= 1 ? 'disabled' : ''}>Previous</button>
+				<span class="pay-pagination-page">Page ${state.page} of ${total_pages}</span>
+				<button class="btn btn-default pay-pagination-next" ${!state.has_next ? 'disabled' : ''}>Next</button>
+			</div>
+		</div>
+	`);
 }
 
 function open_create_payment_modal(page) {
@@ -242,7 +381,7 @@ function open_create_payment_modal(page) {
 							message: __('Payment {0} recorded successfully.', [r.message]),
 							indicator: 'green'
 						});
-						render_payments_page(page);
+						load_payment_records(page, 1);
 					}
 				}
 			});

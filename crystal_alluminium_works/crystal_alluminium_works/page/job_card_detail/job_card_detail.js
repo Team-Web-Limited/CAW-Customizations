@@ -52,7 +52,11 @@ function load_single_job_card_detail(page, job_card_name) {
 				message.job_card,
 				message.quotation,
 				message.history || [],
-				message.sales_invoices || []
+				message.sales_invoices || [],
+				{
+					quotation_amendment_pending: !!message.quotation_amendment_pending,
+					invoice_amendment_pending: !!message.invoice_amendment_pending
+				}
 			));
 			bind_single_job_card_detail_events(
 				page,
@@ -510,6 +514,15 @@ function can_create_partial_invoice_from_job_card(job_card, quotation) {
 		&& !!(quotation && quotation.has_releasable_items);
 }
 
+function can_release_goods_from_job_card(job_card, quotation) {
+	// Cash customers release goods without an invoice while goods remain to release. Their
+	// payments flow separately through the deposit path; releases are pure fulfilment
+	// tracking and are allowed regardless of balance. The "no final invoice yet" condition
+	// is applied at the call site via has_sales_invoice.
+	let is_cash_customer = normalize_job_card_payment_mode(job_card.payment_mode) === 'cash';
+	return is_cash_customer && !!(quotation && quotation.has_cash_releasable_items);
+}
+
 function jc_escape(value) {
 	return frappe.utils.escape_html(value === undefined || value === null ? '' : String(value));
 }
@@ -593,6 +606,23 @@ function get_job_card_row_quantities(row) {
 	return { pieces, qty, uom };
 }
 
+// Mirrors CEILING_COMPONENTS in pricing_engine.py so the modal's suggested pcs
+// match what the server would derive from the same released sq m by default.
+const CEILING_COMPONENTS = [
+	{ item_code: 'Board', ratio: 0.36, mode: 'divide' },
+	{ item_code: 'MainT', ratio: 0.25, mode: 'multiply' },
+	{ item_code: 'Sub Cross 4ft', ratio: 1.33, mode: 'multiply' },
+	{ item_code: 'Sub Cross 2ft', ratio: 1.33, mode: 'multiply' },
+	{ item_code: 'Wall angle', ratio: 0.25, mode: 'multiply' }
+];
+
+function ceiling_component_default_pcs(release_sqm, component) {
+	let qty = flt(release_sqm || 0);
+	if (!qty || !component.ratio) return 0;
+	let piece_qty = component.mode === 'divide' ? qty / component.ratio : qty * component.ratio;
+	return Math.trunc(piece_qty);
+}
+
 // Quantity (in the row's native release unit) and its label, mirroring the server
 // helper _get_partial_row_native_full so the modal and invoice agree on "remaining".
 function get_partial_native_full(row) {
@@ -619,7 +649,9 @@ function partial_line_amount(context, row) {
 
 function render_partial_release_cell(context, row) {
 	let native_full = get_partial_native_full(row);
-	let collected = flt(row.custom_collected_qty || 0);
+	// Cash release tracks uninvoiced collection in custom_released_qty (kept separate from
+	// custom_collected_qty, which the invoice-customer partial flow uses).
+	let collected = flt((context.cash_release ? row.custom_released_qty : row.custom_collected_qty) || 0);
 	let remaining = flt(native_full - collected, 3);
 	if (remaining < 0) remaining = 0;
 	let line_amount = partial_line_amount(context, row);
@@ -635,6 +667,18 @@ function render_partial_release_cell(context, row) {
 				data-remaining="${remaining}">
 			<div style="font-size:11px;color:var(--text-muted);">/ ${jc_number(remaining, 2)} ${jc_escape(get_partial_unit(row))}</div>
 		</td>
+	`;
+}
+
+// "Release" header with an inline Reset button that restores every release qty
+// (and, for ceiling rows, every component pcs override) in this table back to
+// its formula default — scoped to the clicked table via .closest('table').
+function render_release_column_header() {
+	return `
+		<th class="jc-preview-center">
+			Release
+			<button type="button" class="btn btn-xs btn-default jc-reset-release-btn" style="margin-left:6px;padding:0 6px;">Reset</button>
+		</th>
 	`;
 }
 
@@ -687,7 +731,7 @@ function render_job_card_partial_invoice_main_table(context) {
 					<td class="jc-preview-center">${category === 'Glass' && cint(row.custom_holes || 0) > 0 ? cint(row.custom_holes || 0) : '-'}</td>
 					<td class="jc-preview-center">${category === 'Glass' && cint(row.custom_notches || 0) > 0 ? cint(row.custom_notches || 0) : '-'}</td>
 				` : ''}
-				<td class="jc-preview-right">${format_currency(line_amount)}</td>
+				<td class="jc-preview-right jc-row-amount">${format_currency(line_amount)}</td>
 				${render_partial_release_cell(context, row)}
 			</tr>
 		`;
@@ -712,7 +756,7 @@ function render_job_card_partial_invoice_main_table(context) {
 						<th class="jc-preview-center">Notches</th>
 					` : ''}
 					<th class="jc-preview-right">Amount</th>
-					<th class="jc-preview-center">Release</th>
+					${render_release_column_header()}
 				</tr>
 			</thead>
 			<tbody>
@@ -726,12 +770,24 @@ function render_job_card_partial_invoice_main_table(context) {
 						<td class="jc-preview-center jc-preview-strong">${totals.holes}</td>
 						<td class="jc-preview-center jc-preview-strong">${totals.notches}</td>
 					` : '<td colspan="2"></td>'}
-					<td class="jc-preview-right jc-preview-strong">${format_currency(totals.amount)}</td>
+					<td class="jc-preview-right jc-preview-strong jc-main-total-amount">${format_currency(totals.amount)}</td>
 					<td></td>
 				</tr>
 			</tbody>
 		</table>
 	`;
+}
+
+// Component pieces preview for a ceiling bundle row, computed from the release sq m
+// the user currently has entered — same ratio formula the server uses, so what's shown
+// here always matches what the invoice will actually generate.
+function render_ceiling_component_preview_cells(row, release_sqm, columns) {
+	return columns.map(column => {
+		let component = CEILING_COMPONENTS.find(c => c.item_code === column);
+		if (!component) return `<td class="jc-preview-center jc-ceiling-component-cell" data-row-name="${jc_escape(row.name || '')}" data-component="${jc_escape(column)}">-</td>`;
+		let pcs = ceiling_component_default_pcs(release_sqm, component);
+		return `<td class="jc-preview-center jc-ceiling-component-cell" data-row-name="${jc_escape(row.name || '')}" data-component="${jc_escape(column)}">${pcs}</td>`;
+	}).join('');
 }
 
 function render_job_card_partial_invoice_ceiling_table(context) {
@@ -755,21 +811,22 @@ function render_job_card_partial_invoice_ceiling_table(context) {
 			line_amount += flt(child.amount || 0);
 		});
 
-		let component_cells = context.ceiling_columns.map(column => {
-			let value = '-';
-			if (is_bundle) {
-				if (column === 'Board') {
-					value = cint((ceiling_quantity || 0) / 0.36);
-				} else {
-					let child = child_rows.find(child_row => (child_row.item_code || child_row.item_name || '') === column);
-					value = child ? jc_number(child.qty || 0, 0) : '-';
-				}
-			} else if (item_label === column) {
-				value = jc_number(row.qty || 0, 0);
-			}
-
-			return `<td class="jc-preview-center">${jc_escape(value)}</td>`;
-		}).join('');
+		// Bundle rows release on the same single sq-m input as every other row; the
+		// component columns are a read-only preview derived from that release qty via
+		// the standard ratios — pieces and money are no longer decoupled.
+		let component_cells;
+		if (is_bundle) {
+			let native_full = get_partial_native_full(row);
+			let collected = flt((context.cash_release ? row.custom_released_qty : row.custom_collected_qty) || 0);
+			let remaining = flt(native_full - collected, 3);
+			if (remaining < 0) remaining = 0;
+			component_cells = render_ceiling_component_preview_cells(row, remaining, context.ceiling_columns);
+		} else {
+			component_cells = context.ceiling_columns.map(column => {
+				let value = item_label === column ? jc_number(row.qty || 0, 0) : '-';
+				return `<td class="jc-preview-center">${jc_escape(value)}</td>`;
+			}).join('');
+		}
 
 		return `
 			<tr>
@@ -778,7 +835,7 @@ function render_job_card_partial_invoice_ceiling_table(context) {
 				${context.has_ceiling_bundle ? `<td class="jc-preview-center">${is_bundle ? jc_number(ceiling_quantity, 3) : '-'}</td>` : ''}
 				<td class="jc-preview-center">${jc_escape(jc_short_uom(display_uom))}</td>
 				${component_cells}
-				<td class="jc-preview-right">${format_currency(line_amount)}</td>
+				<td class="jc-preview-right jc-row-amount">${format_currency(line_amount)}</td>
 				${render_partial_release_cell(context, row)}
 			</tr>
 		`;
@@ -794,7 +851,7 @@ function render_job_card_partial_invoice_ceiling_table(context) {
 					<th class="jc-preview-center">UOM</th>
 					${context.ceiling_columns.map(column => `<th class="jc-preview-center">${jc_escape(column)}</th>`).join('')}
 					<th class="jc-preview-right">Amount</th>
-					<th class="jc-preview-center">Release</th>
+					${render_release_column_header()}
 				</tr>
 			</thead>
 			<tbody>${rows}</tbody>
@@ -802,8 +859,11 @@ function render_job_card_partial_invoice_ceiling_table(context) {
 	`;
 }
 
-function render_job_card_partial_invoice_preview(quotation) {
+function render_job_card_partial_invoice_preview(quotation, cash_release) {
 	let context = get_job_card_print_table_context(quotation);
+	// Cash release (no invoice): goods only — no payment, so no Subtotal/VAT/Total summary,
+	// and "remaining" is sourced from custom_released_qty.
+	context.cash_release = !!cash_release;
 	let main_table = render_job_card_partial_invoice_main_table(context);
 	let ceiling_table = render_job_card_partial_invoice_ceiling_table(context);
 
@@ -825,18 +885,21 @@ function render_job_card_partial_invoice_preview(quotation) {
 			${ceiling_table}
 			${!main_table && !ceiling_table ? '<div style="padding:24px;text-align:center;color:var(--text-muted);">No printable quotation items found.</div>' : ''}
 		</div>
+		${context.cash_release ? '' : `
 		<div class="jc-release-summary" style="margin-top:12px;border-top:1px solid #dee2e6;padding-top:10px;max-width:280px;margin-left:auto;font-size:13px;">
 			<div style="display:flex;justify-content:space-between;color:#6c757d;"><span>Subtotal</span><span data-summary="subtotal">-</span></div>
 			<div style="display:flex;justify-content:space-between;color:#6c757d;"><span>V.A.T (16%)</span><span data-summary="vat">-</span></div>
 			<div style="display:flex;justify-content:space-between;font-weight:700;font-size:16px;color:#2c3e50;margin-top:6px;"><span>Total</span><span data-summary="total">-</span></div>
 		</div>
+		`}
 	`;
 }
 
-// Recompute the live Subtotal / VAT / Total from the current Release inputs.
-// Per-row released value = line_amount * (release / native_full); summed across rows.
+// Recompute the live Subtotal / VAT / Total. Every row (ceiling bundles included)
+// contributes its released value: line_amount * release/native_full (VAT-exclusive).
 function update_partial_invoice_summary($wrapper) {
 	let subtotal = 0;
+	let main_total = 0;
 	$wrapper.find('.jc-release-input').each(function() {
 		let $input = $(this);
 		let native_full = flt($input.attr('data-native-full'));
@@ -846,9 +909,15 @@ function update_partial_invoice_summary($wrapper) {
 		if (release < 0) release = 0;
 		if (release > remaining) { release = remaining; $input.val(remaining); }
 		if (native_full > 0) {
-			subtotal += line_amount * (release / native_full);
+			let released_amount = line_amount * (release / native_full);
+			subtotal += released_amount;
+			main_total += released_amount;
+			// Keep the row's Amount cell in step with what's actually being released, so
+			// each line shows its contribution to this invoice instead of the full quoted value.
+			$input.closest('tr').find('.jc-row-amount').text(format_currency(released_amount));
 		}
 	});
+	$wrapper.find('.jc-main-total-amount').text(format_currency(main_total));
 	let vat = subtotal * 0.16;
 	$wrapper.find('[data-summary="subtotal"]').text(format_currency(subtotal));
 	$wrapper.find('[data-summary="vat"]').text(format_currency(vat));
@@ -856,9 +925,87 @@ function update_partial_invoice_summary($wrapper) {
 	return subtotal;
 }
 
+// Live component pieces preview for a ceiling bundle row's release input: recomputes
+// each component column from the currently typed release sq m via the standard ratios.
+function refresh_ceiling_component_preview($input) {
+	let remaining = flt($input.attr('data-remaining'));
+	let release = flt($input.val());
+	if (release < 0) release = 0;
+	if (release > remaining) release = remaining;
+	let row_name = $input.attr('data-row-name');
+	CEILING_COMPONENTS.forEach(component => {
+		let pcs = ceiling_component_default_pcs(release, component);
+		$input.closest('table')
+			.find(`.jc-ceiling-component-cell[data-row-name="${row_name}"][data-component="${component.item_code}"]`)
+			.text(pcs);
+	});
+}
+
+// The partial modal always records a payment (its amount is derived from the released
+// items), so the payment-capture fields are always shown — only the manual Reference
+// field is gated on bank-type modes of payment (phone modes get an auto reference).
+function refresh_partial_payment_reference(dialog) {
+	let mop_is_bank_type = (dialog._mode_of_payment_type || '').toLowerCase() === 'bank';
+	dialog.set_df_property('reference', 'hidden', mop_is_bank_type ? 0 : 1);
+	dialog.set_df_property('reference', 'reqd', mop_is_bank_type ? 1 : 0);
+}
+
+async function refresh_partial_deposit_to_options(dialog) {
+	let payment_method = dialog.get_value('payment_method');
+
+	if (!payment_method) {
+		dialog._mode_of_payment_type = null;
+		dialog._deposit_to_account_type = null;
+		refresh_partial_payment_reference(dialog);
+		return;
+	}
+
+	let response = await frappe.call({
+		method: 'crystal_alluminium_works.api.get_mode_of_payment_account_info',
+		args: { payment_method: payment_method }
+	});
+	let info = (response && response.message) || {};
+	dialog._mode_of_payment_type = info.mode_of_payment_type || null;
+	dialog._deposit_to_account_type = info.account_type || null;
+
+	if (info.default_account) {
+		await dialog.set_value('deposit_to', info.default_account);
+	}
+
+	refresh_partial_payment_reference(dialog);
+}
+
+function refresh_partial_payment_options(dialog, selected_option) {
+	let options = get_job_card_payment_option_choices(dialog.get_value('payment_mode'));
+	let next_option = options.includes(selected_option) ? selected_option : options[0] || '';
+	dialog.set_df_property('payment_option', 'options', options.join('\n'));
+	dialog.set_value('payment_option', next_option);
+}
+
+function validate_partial_payment_capture(dialog) {
+	if (!dialog.get_value('payment_method')) {
+		frappe.msgprint(__('Please select a Payment Method to record this payment.'));
+		return false;
+	}
+	if (!dialog.get_value('deposit_to')) {
+		frappe.msgprint(__('Please select a Deposit To account to record this payment.'));
+		return false;
+	}
+	let mop_is_bank_type = (dialog._mode_of_payment_type || '').toLowerCase() === 'bank';
+	if (mop_is_bank_type && !(dialog.get_value('reference') || '').trim()) {
+		frappe.msgprint(__('Please enter a Reference to record this payment.'));
+		return false;
+	}
+	return true;
+}
+
 async function create_partial_invoice_from_job_card(job_card, dialog) {
+	let $wrapper = dialog.fields_dict.preview.$wrapper;
+
+	// Every row's release qty, ceiling bundles included — pieces and money both flow
+	// from this same sq-m/qty release, same as quotation/sales order/full invoice.
 	let releases = [];
-	dialog.fields_dict.preview.$wrapper.find('.jc-release-input').each(function() {
+	$wrapper.find('.jc-release-input').each(function() {
 		let $input = $(this);
 		let qty = flt($input.val());
 		let remaining = flt($input.attr('data-remaining'));
@@ -869,13 +1016,38 @@ async function create_partial_invoice_from_job_card(job_card, dialog) {
 	});
 
 	if (!releases.length) {
-		frappe.msgprint(__('Enter a quantity to release for at least one item.'));
+		frappe.msgprint(__('Enter a quantity to release on the Release Items tab.'));
 		return;
 	}
 
+	if (!validate_partial_payment_capture(dialog)) {
+		return;
+	}
+
+	let is_phone_payment_method = (dialog._mode_of_payment_type || '').toLowerCase() === 'phone';
+	let payment_reference = is_phone_payment_method
+		? generate_simulated_mpesa_reference()
+		: dialog.get_value('reference');
+
+	let payment_details = {
+		customer: dialog.get_value('customer'),
+		customer_name: dialog.get_value('customer_name'),
+		customer_pin: dialog.get_value('customer_pin'),
+		phone_number: dialog.get_value('phone_number'),
+		payment_mode: normalize_job_card_payment_mode(dialog.get_value('payment_mode')),
+		payment_option: dialog.get_value('payment_option'),
+		payment_method: dialog.get_value('payment_method'),
+		deposit_to: dialog.get_value('deposit_to'),
+		reference: payment_reference
+	};
+
 	let response = await frappe.call({
 		method: 'crystal_alluminium_works.api.make_partial_sales_invoice_from_job_card',
-		args: { job_card_name: job_card.name, releases: JSON.stringify(releases) },
+		args: {
+			job_card_name: job_card.name,
+			releases: JSON.stringify(releases),
+			payment_details: JSON.stringify(payment_details)
+		},
 		freeze: true,
 		freeze_message: 'Creating partial Sales Invoice...'
 	});
@@ -897,11 +1069,100 @@ async function open_partial_invoice_modal(job_card) {
 	}
 
 	let quotation = await frappe.db.get_doc('Quotation', job_card.quotation);
-	let dialog = new frappe.ui.Dialog({
+	let payment_mode_label = job_card.payment_mode || get_job_card_payment_mode_label(job_card.payment_mode);
+	let payment_options = get_job_card_payment_option_choices(payment_mode_label);
+
+	var dialog;
+	dialog = new frappe.ui.Dialog({
 		title: 'Partial Invoice',
 		size: 'extra-large',
 		fields: [
-			{ fieldtype: 'HTML', fieldname: 'preview' }
+			{ fieldtype: 'Tab Break', fieldname: 'tab_release', label: 'Release Items', parent: 'CAW Job Card', hidden: false },
+			{ fieldtype: 'HTML', fieldname: 'preview' },
+			{ fieldtype: 'Tab Break', fieldname: 'tab_payment', label: 'Payment Details', parent: 'CAW Job Card', hidden: false },
+			{ fieldtype: 'Section Break', label: 'Customer Details', hide_border: true },
+			{
+				fieldtype: 'Select',
+				fieldname: 'payment_mode',
+				label: 'Payment Mode',
+				options: 'Cash Customer\nInvoice Customer',
+				default: payment_mode_label,
+				reqd: 1
+			},
+			{
+				fieldtype: 'Select',
+				fieldname: 'payment_option',
+				label: 'Payment Option',
+				options: payment_options.join('\n'),
+				default: job_card.payment_option || payment_options[0],
+				reqd: 1
+			},
+			{
+				fieldtype: 'Link',
+				fieldname: 'customer',
+				label: 'Customer',
+				options: 'Customer',
+				default: job_card.customer,
+				reqd: 1,
+				change: function() {
+					queue_job_card_customer_defaults(dialog);
+				},
+				get_query: function() {
+					// `customer` has a `default`, so Frappe validates it synchronously while
+					// the Dialog constructor is still running — before the `dialog = new
+					// frappe.ui.Dialog(...)` assignment below completes. At that moment this
+					// closure's `dialog` is still undefined, so guard against it (the resulting
+					// filter is irrelevant for that first, internal default-value validation).
+					return {
+						query: 'crystal_alluminium_works.api.search_builder_customers',
+						filters: {
+							payment_mode: normalize_job_card_payment_mode(dialog && dialog.get_value('payment_mode'))
+						}
+					};
+				}
+			},
+			{ fieldtype: 'Column Break' },
+			{ fieldtype: 'Data', fieldname: 'customer_name', label: 'Customer Name', default: job_card.customer_name },
+			{ fieldtype: 'Data', fieldname: 'customer_pin', label: 'Customer PIN', default: job_card.customer_pin || '' },
+			{ fieldtype: 'Data', fieldname: 'phone_number', label: 'Phone Number', default: job_card.phone_number || '' },
+			{ fieldtype: 'Section Break', label: 'Record Payment' },
+			{
+				fieldtype: 'Link',
+				fieldname: 'payment_method',
+				label: 'Payment Method',
+				options: 'Mode of Payment',
+				reqd: 1,
+				change: function() {
+					refresh_partial_deposit_to_options(dialog);
+				},
+				get_query: function() {
+					let is_invoice = normalize_job_card_payment_mode(dialog.get_value('payment_mode')) === 'invoice';
+					if (is_invoice) {
+						return { filters: { name: ['in', ['Bank Transfer i.e RTGS, TT']] } };
+					}
+					return { filters: { name: ['not in', ['USD TRANSFER', 'Petty Cash', 'petty-cash', 'petty cash']] } };
+				}
+			},
+			{ fieldtype: 'Column Break' },
+			{
+				fieldtype: 'Link',
+				fieldname: 'deposit_to',
+				label: 'Deposit To',
+				options: 'Account',
+				reqd: 1,
+				get_query: function() {
+					let account_type = dialog && dialog._deposit_to_account_type;
+					return {
+						filters: {
+							account_type: account_type || ['in', ['Bank', 'Cash']],
+							is_group: 0,
+							name: ['not in', ['DTB Bank USD A/C - CA', 'I & M USD A/C - CA']]
+						}
+					};
+				}
+			},
+			{ fieldtype: 'Column Break' },
+			{ fieldtype: 'Data', fieldname: 'reference', label: 'Reference', hidden: 1 }
 		],
 		primary_action_label: 'Create Partial Invoice',
 		primary_action: function() {
@@ -909,13 +1170,172 @@ async function open_partial_invoice_modal(job_card) {
 		}
 	});
 
+	// Dialog.hide() only hides the modal — it never removes $wrapper from <body>. Every
+	// previous "Partial Invoice" opened in this session (even after navigating away)
+	// stays parked in the DOM, and its Tab Break elements share the same ids as this
+	// new dialog's (the id is derived only from doctype + fieldname). Remove it once
+	// hidden so repeat opens never accumulate stale, id-colliding dialogs.
+	dialog.onhide = function() {
+		dialog.$wrapper.remove();
+	};
+
+	function refresh_partial_invoice_primary_action_visibility() {
+		let $primary_btn = dialog && dialog.get_primary_btn ? dialog.get_primary_btn() : null;
+		if (!$primary_btn || !$primary_btn.length) {
+			return;
+		}
+
+		// Read the active state straight off the Tab object (dialog.tabs, since
+		// frappe.ui.Dialog extends Layout) rather than matching the active nav button's
+		// label text. Text-matching is fragile — it silently breaks on translation, and
+		// can momentarily read stale DOM if called before the tab's own click handler
+		// (tab.js, not a Bootstrap tab plugin — no 'shown.bs.tab' event is ever fired
+		// here) has applied the 'active' class.
+		let payment_tab = (dialog.tabs || []).find(tab => tab.df.fieldname === 'tab_payment');
+		$primary_btn.toggle(!!(payment_tab && payment_tab.is_active()));
+	}
+
 	let $wrapper = dialog.fields_dict.preview.$wrapper;
 	$wrapper.html(render_job_card_partial_invoice_preview(quotation));
 	$wrapper.on('input change', '.jc-release-input', function() {
+		refresh_ceiling_component_preview($(this));
+		update_partial_invoice_summary($wrapper);
+	});
+	$wrapper.on('click', '.jc-reset-release-btn', function() {
+		let $table = $(this).closest('table');
+		$table.find('.jc-release-input').each(function() {
+			$(this).val($(this).attr('data-remaining'));
+			refresh_ceiling_component_preview($(this));
+		});
 		update_partial_invoice_summary($wrapper);
 	});
 	update_partial_invoice_summary($wrapper);
 	dialog.show();
+	refresh_partial_invoice_primary_action_visibility();
+
+	// tab.js builds its own click-driven tabs (not the Bootstrap tab plugin), so no
+	// 'shown.bs.tab' event is ever emitted here — only react to the click itself.
+	dialog.$wrapper.on('click', '.nav-link, .nav-item a', function() {
+		setTimeout(refresh_partial_invoice_primary_action_visibility, 0);
+	});
+
+	refresh_partial_payment_options(dialog, job_card.payment_option);
+
+	if (job_card.customer) {
+		await dialog.set_value('customer', job_card.customer);
+		await dialog.set_value('customer_name', job_card.customer_name || '');
+		await dialog.set_value('customer_pin', job_card.customer_pin || '');
+		await dialog.set_value('phone_number', job_card.phone_number || '');
+	}
+
+	dialog.fields_dict.payment_mode.$input.on('change', function() {
+		refresh_partial_payment_options(dialog);
+		dialog.set_value('customer', '');
+		dialog.set_value('customer_name', '');
+		dialog.set_value('customer_pin', '');
+		dialog.set_value('phone_number', '');
+		dialog.set_value('payment_method', '');
+		dialog.set_value('deposit_to', '');
+	});
+
+	dialog.fields_dict.customer.$input.on('awesomplete-selectcomplete', function() {
+		clearTimeout(dialog._job_card_customer_defaults_timer);
+		dialog._job_card_customer_defaults_timer = setTimeout(function() {
+			apply_job_card_customer_defaults(dialog);
+		}, 500);
+	});
+}
+
+// Cash-only "Release Goods": records what the customer physically collected without creating
+// a Sales Invoice or touching payment. Reuses the partial invoice's Release Items renderers in
+// cash_release mode (no Payment Details tab, no totals, no ceiling paid-now/Balance). Payment is
+// handled separately via the deposit / Edit Job Card path; the single full invoice is cut at the
+// end once fully paid.
+async function open_release_goods_modal(page, job_card) {
+	if (!job_card.quotation) {
+		frappe.msgprint(__('This Job Card is not linked to a Quotation.'));
+		return;
+	}
+
+	let quotation = await frappe.db.get_doc('Quotation', job_card.quotation);
+
+	var dialog;
+	dialog = new frappe.ui.Dialog({
+		title: 'Release Goods',
+		size: 'extra-large',
+		fields: [
+			{ fieldtype: 'HTML', fieldname: 'preview' }
+		],
+		primary_action_label: 'Release Goods',
+		primary_action: function() {
+			create_job_card_release(page, job_card, dialog);
+		}
+	});
+
+	// See open_partial_invoice_modal: remove the wrapper on hide so repeat opens never
+	// accumulate stale, id-colliding dialogs.
+	dialog.onhide = function() {
+		dialog.$wrapper.remove();
+	};
+
+	let $wrapper = dialog.fields_dict.preview.$wrapper;
+	$wrapper.html(render_job_card_partial_invoice_preview(quotation, true));
+	// Keep the per-row Amount cell reactive to the released qty (informational value of the
+	// goods); the summary panel is absent in cash mode so its updates are harmless no-ops.
+	$wrapper.on('input change', '.jc-release-input', function() {
+		refresh_ceiling_component_preview($(this));
+		update_partial_invoice_summary($wrapper);
+	});
+	$wrapper.on('click', '.jc-reset-release-btn', function() {
+		let $table = $(this).closest('table');
+		$table.find('.jc-release-input').each(function() {
+			$(this).val($(this).attr('data-remaining'));
+			refresh_ceiling_component_preview($(this));
+		});
+		update_partial_invoice_summary($wrapper);
+	});
+	update_partial_invoice_summary($wrapper);
+	dialog.show();
+}
+
+async function create_job_card_release(page, job_card, dialog) {
+	let $wrapper = dialog.fields_dict.preview.$wrapper;
+
+	// Every row's release qty, ceiling bundles included.
+	let releases = [];
+	$wrapper.find('.jc-release-input').each(function() {
+		let $input = $(this);
+		let qty = flt($input.val());
+		let remaining = flt($input.attr('data-remaining'));
+		if (qty > remaining) qty = remaining;
+		if (qty > 0) {
+			releases.push({ row: $input.attr('data-row-name'), qty: qty });
+		}
+	});
+
+	if (!releases.length) {
+		frappe.msgprint(__('Enter a quantity to release.'));
+		return;
+	}
+
+	let response = await frappe.call({
+		method: 'crystal_alluminium_works.api.make_job_card_release',
+		args: {
+			job_card_name: job_card.name,
+			releases: JSON.stringify(releases)
+		},
+		freeze: true,
+		freeze_message: 'Recording goods release...'
+	});
+
+	if (response && !response.exc && response.message) {
+		dialog.hide();
+		frappe.show_alert({
+			message: 'Goods released',
+			indicator: 'green'
+		});
+		load_single_job_card_detail(page, job_card.name);
+	}
 }
 
 function bind_single_job_card_detail_events(page, $body, job_card, quotation, history, sales_invoices) {
@@ -969,6 +1389,10 @@ function bind_single_job_card_detail_events(page, $body, job_card, quotation, hi
 
 	$body.on('click.job-card-detail', '[data-action="create-partial-invoice"]', function() {
 		open_partial_invoice_modal(job_card);
+	});
+
+	$body.on('click.job-card-detail', '[data-action="release-goods"]', function() {
+		open_release_goods_modal(page, job_card);
 	});
 
 	$body.on('click.job-card-detail', '[data-action="go-to-sales-invoice"]', function() {
@@ -1047,13 +1471,35 @@ function render_job_card_history_section(history, currency) {
 	`;
 }
 
-function render_single_job_card_detail(job_card, quotation, history, sales_invoices) {
+function render_single_job_card_detail(job_card, quotation, history, sales_invoices, flags) {
+	flags = flags || {};
+	let amendment_pending = !!(flags.quotation_amendment_pending || flags.invoice_amendment_pending);
 	let currency = quotation && quotation.currency ? quotation.currency : 'KES';
 	let balance = flt(job_card.balance_amount || 0);
-	let can_edit_job_card = balance > 0;
-	let can_create_invoice = can_create_invoice_from_job_card(job_card, quotation, history, sales_invoices);
-	let can_create_partial_invoice = can_create_partial_invoice_from_job_card(job_card, quotation);
 	let has_sales_invoice = !!((sales_invoices || []).length);
+	// Once any Sales Invoice exists for this Job Card (partial or full), all further
+	// money must flow through the Partial Invoice modal — it's the only path that
+	// creates an invoice and keeps released qty / ceiling pieces in sync. Edit Job
+	// Card only ever bumped a raw payment_amount with no invoice or release record
+	// behind it, so allowing it after invoicing started would let payments and
+	// balance drift away from what was actually invoiced/released. Customer detail
+	// fields (name/PIN/phone) are still editable from the Partial Invoice modal's
+	// Payment Details tab, so nothing is lost by hiding this button.
+	// Edit Job Card / the deposit counter has no GL and no invoice behind it — it's a
+	// cash-customer concept. For invoice customers, money flows through their POS-settled
+	// partial invoices, so a deposit here would double-count; hide it for them entirely
+	// (their customer-detail edits remain on the Partial Invoice modal's Payment Details tab).
+	let is_cash_customer = normalize_job_card_payment_mode(job_card.payment_mode) === 'cash';
+	let can_edit_job_card = balance > 0 && !has_sales_invoice && is_cash_customer;
+	let can_create_invoice = can_create_invoice_from_job_card(job_card, quotation, history, sales_invoices);
+	// Cash customers release goods WITHOUT an invoice (Release Goods); invoice customers
+	// keep the per-release Partial Invoice flow. The two are mutually exclusive by mode.
+	let can_create_partial_invoice = !amendment_pending && !is_cash_customer && can_create_partial_invoice_from_job_card(job_card, quotation);
+	let can_release_goods = !amendment_pending && !has_sales_invoice && can_release_goods_from_job_card(job_card, quotation);
+	if (amendment_pending) {
+		can_edit_job_card = false;
+		can_create_invoice = false;
+	}
 	let primary_invoice_action = has_sales_invoice
 		? '<button class="btn btn-primary" data-action="go-to-sales-invoice">Go to Sales Invoice</button>'
 		: (can_create_invoice ? '<button class="btn btn-primary" data-action="create-sales-invoice">Create Sales Invoice</button>' : '');
@@ -1068,9 +1514,11 @@ function render_single_job_card_detail(job_card, quotation, history, sales_invoi
 	<style>
 		.jc-detail-page { max-width: 1320px; margin: 0 auto; padding: 24px 16px; }
 		.jc-detail-header { display:flex; justify-content:space-between; gap:18px; align-items:flex-start; margin-bottom:24px; }
-		.jc-detail-title h2 { margin:0 0 8px; font-size:26px; font-weight:700; color:var(--heading-color); }
+		.jc-detail-title h2 { margin:0 0 8px; font-size:20px; line-height:1.25; font-weight:700; color:var(--heading-color); }
 		.jc-detail-title p { margin:0; color:var(--text-muted); font-size:14px; }
-		.jc-detail-actions { display:flex; gap:10px; flex-wrap:wrap; justify-content:flex-end; }
+		.jc-detail-actions { display:flex; gap:8px; flex-wrap:nowrap; justify-content:flex-end; overflow-x:auto; padding-bottom:2px; }
+		.jc-detail-actions .btn { flex:0 0 auto; white-space:nowrap; }
+		.jc-detail-actions .jc-download-btn { display:inline-flex; align-items:center; justify-content:center; gap:6px; }
 		.jc-detail-grid { display:grid; grid-template-columns: minmax(0, 1.15fr) minmax(300px, 0.85fr); gap:18px; }
 		.jc-detail-card { background:var(--fg-color); border:1px solid var(--border-color); border-radius:8px; box-shadow:var(--shadow-xs); overflow:hidden; }
 		.jc-detail-card h4 { margin:0; padding:14px 18px; font-size:14px; font-weight:700; color:var(--heading-color); border-bottom:1px solid var(--border-color); background:var(--subtle-fg); }
@@ -1114,13 +1562,23 @@ function render_single_job_card_detail(job_card, quotation, history, sales_invoi
 			</div>
 			<div class="jc-detail-actions">
 				<button class="btn btn-default" data-action="open-quotation">Open Quotation</button>
-				<button class="btn btn-default" data-action="download-job-card-pdf">Download Job Card PDF</button>
+				<button class="btn btn-primary jc-download-btn" data-action="download-job-card-pdf" title="Download Job Card PDF">${frappe.utils.icon('download', 'sm')}<span>Download</span></button>
 				${can_create_partial_invoice ? '<button class="btn btn-default" data-action="create-partial-invoice">Partial Invoice</button>' : ''}
+				${can_release_goods ? '<button class="btn btn-default" data-action="release-goods">Release Goods</button>' : ''}
 				${primary_invoice_action}
 				<button class="btn btn-default" data-action="open-customer">Open Customer</button>
 				${can_edit_job_card ? '<button class="btn btn-primary" data-action="edit-job-card">Edit Job Card</button>' : ''}
 			</div>
 		</div>
+
+		${amendment_pending ? `
+			<div style="margin-bottom:18px; padding:12px 16px; border-radius:8px; background:#fff7e6; border:1px solid #ffe1a8; color:#8a5a00; font-size:13px;">
+				<strong>Amendment in progress.</strong>
+				${flags.quotation_amendment_pending ? 'A Quotation amendment is pending — submit or discard the amended Quotation in the Quotation Manager. ' : ''}
+				${flags.invoice_amendment_pending ? 'A cancelled Sales Invoice is awaiting its amendment — submit the amended invoice in the Sales Invoice Manager. ' : ''}
+				Payments, invoices and releases are paused until it is resolved.
+			</div>
+		` : ''}
 
 		<div class="jc-detail-grid">
 			<div class="jc-detail-card">

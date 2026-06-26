@@ -96,6 +96,14 @@ function get_dashboard_html() {
 			margin-bottom: 40px;
 		}
 
+		.caw-hero-logo {
+			width: min(280px, 72vw);
+			max-height: 120px;
+			object-fit: contain;
+			display: block;
+			margin: 0 auto 18px;
+		}
+
 		.caw-hero h2 {
 			font-size: 28px;
 			font-weight: 700;
@@ -239,6 +247,11 @@ function get_dashboard_html() {
 
 	<div class="caw-dashboard">
 		<div class="caw-hero">
+			<img
+				class="caw-hero-logo"
+				src="/assets/crystal_alluminium_works/images/crystal-alluminium-works-logo.png"
+				alt="Crystal Aluminium Works logo"
+			/>
 			<h2>👋 Welcome back</h2>
 			<p>What would you like to do today?</p>
 		</div>

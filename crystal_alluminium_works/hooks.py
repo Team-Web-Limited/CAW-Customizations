@@ -20,7 +20,7 @@ fixtures = [
 add_to_apps_screen = [
 	{
 		"name": "crystal_alluminium_works",
-		"logo": "/assets/crystal_alluminium_works/images/crystal-alluminium-works-logo.svg",
+		"logo": "/assets/crystal_alluminium_works/images/crystal-alluminium-works-logo.png",
 		"title": "Crystal Alluminium Works",
 		"route": "/app/crystal-aluminium-wo",
 	}
@@ -31,7 +31,7 @@ add_to_apps_screen = [
 
 # include js, css files in header of desk.html
 # app_include_css = "/assets/crystal_alluminium_works/css/crystal_alluminium_works.css"
-# app_include_js = "/assets/crystal_alluminium_works/js/crystal_alluminium_works.js"
+app_include_js = "/assets/crystal_alluminium_works/js/workspace_sidebar_accordion.js"
 
 # include js, css files in header of web template
 # web_include_css = "/assets/crystal_alluminium_works/css/crystal_alluminium_works.css"
@@ -149,13 +149,15 @@ after_install = "crystal_alluminium_works.patches.refresh_workspace_sidebar_link
 
 doc_events = {
 	"Quotation": {
-		"validate": "crystal_alluminium_works.quotation_handler.on_validate"
+		"validate": "crystal_alluminium_works.quotation_handler.on_validate",
+		"on_submit": "crystal_alluminium_works.quotation_handler.on_submit"
 	},
 	"Sales Order": {
 		"validate": "crystal_alluminium_works.sales_order_handler.on_validate"
 	},
 	"Sales Invoice": {
-		"validate": "crystal_alluminium_works.sales_invoice_handler.on_validate"
+		"validate": "crystal_alluminium_works.sales_invoice_handler.on_validate",
+		"on_submit": "crystal_alluminium_works.api.on_sales_invoice_submit"
 	}
 }
 

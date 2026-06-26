@@ -13,6 +13,12 @@ frappe.pages['quotation-manager'].on_page_load = function(wrapper) {
 	render_quotation_manager_empty_state(page, wrapper);
 };
 
+// The Quotation Builder works in VAT-inclusive rates, but the saved Quotation
+// stores VAT-exclusive (net) rates (create_quotation_from_builder divides by 1.16).
+// When loading a saved quotation back into the builder we must gross the rate
+// back up by this factor, otherwise each edit→save cycle shrinks it by 1.16.
+const QM_VAT_MULTIPLIER = 1.16;
+
 const QM_CEILING_COMPONENTS = [
 	{ label: 'Board', ratio: 0.36, mode: 'divide' },
 	{ label: 'MainT', ratio: 0.25, mode: 'multiply' },
@@ -161,10 +167,10 @@ function get_manager_polish_sides_label(item) {
 function get_builder_glass_base_rate(item) {
 	let areaSqft = flt(item.custom_area_sqft || 0);
 	if (item.custom_glass_sale_mode === 'Full Sheet' || item.custom_glass_sale_mode === 'Sheet' || !areaSqft) {
-		return flt(item.rate || 0);
+		return flt(item.rate || 0) * QM_VAT_MULTIPLIER;
 	}
 
-	return flt(item.rate || 0) / areaSqft;
+	return (flt(item.rate || 0) / areaSqft) * QM_VAT_MULTIPLIER;
 }
 
 async function get_sheet_builder_details(item, glass_type) {
@@ -622,6 +628,8 @@ function render_quotation_dashboard(page, quotation_name, wrapper) {
 			.qm-total-val { font-size: 20px; font-weight: 700; color: var(--primary); }
 			
 			.qm-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+			.qm-actions #btn-amend-quo { order: 999; margin-left: auto; }
+			.qm-actions > p { order: 1000; }
 			.qm-toggle-icon.rotated { transform: rotate(90deg); }
 
 			.qm-workflow-tracker { display: flex; align-items: center; justify-content: space-between; padding: 20px; background: var(--card-bg); border-radius: 8px; box-shadow: var(--shadow-sm); margin-bottom: 20px; }
@@ -748,13 +756,33 @@ function get_action_buttons(doc, sales_invoices, existing_job_card) {
 			<button class="btn btn-primary" id="${has_job_card ? 'btn-view-job-card' : 'btn-create-job-card'}">
 				<i class="fa fa-briefcase" style="margin-right:6px;"></i>${has_job_card ? 'View Job Card' : 'Create Job Card'}
 			</button>
-			<button class="btn btn-danger-light" id="btn-mark-lost" style="border:1px solid #e74c3c; color:#e74c3c; background:transparent; margin-left: auto;">
+			<button class="btn btn-default" id="btn-download-custom-print">
+				<i class="fa fa-download" style="margin-right:6px;"></i>Download Quotation PDF
+			</button>
+			<button class="btn btn-default" id="btn-amend-quo">
+				<i class="fa fa-pencil-square-o" style="margin-right:6px;"></i>Amend Quotation
+			</button>
+			<button class="btn btn-danger-light" id="btn-mark-lost" style="border:1px solid #e74c3c; color:#e74c3c; background:transparent;">
 				<i class="fa fa-times" style="margin-right:6px;"></i>Mark as Lost
 			</button>
 		`;
 		note = `
 			<p style="color:var(--text-muted); width:100%; margin-top:10px; font-size:13px;">
-				Quotation is <strong>Open</strong> — waiting for customer acceptance. Click <strong>Create Job Card</strong> when the customer accepts.
+				Quotation is <strong>Open</strong> — waiting for customer acceptance. Click <strong>Create Job Card</strong> when the customer accepts. Use <strong>Amend Quotation</strong> to revise it before any invoice exists.
+			</p>
+		`;
+	} else if (doc.docstatus === 1 && doc.status === 'Converted') {
+		// A Job Card has been created from this quotation, but no Sales Order, Sales
+		// Invoice or goods release exists yet — still safely amendable.
+		buttons += `
+			<button class="btn btn-default" id="btn-amend-quo">
+				<i class="fa fa-pencil-square-o" style="margin-right:6px;"></i>Amend Quotation
+			</button>
+		`;
+		note = `
+			<p style="color:var(--text-muted); width:100%; margin-top:10px; font-size:13px;">
+				This quotation has been <strong>converted</strong> to a Job Card. You can still
+				<strong>Amend Quotation</strong> until an invoice, Sales Order or goods release exists.
 			</p>
 		`;
 	} else if (doc.docstatus === 1 && doc.status === 'Lost') {
@@ -770,9 +798,14 @@ function get_action_buttons(doc, sales_invoices, existing_job_card) {
 			</p>
 		`;
 	} else if (doc.docstatus === 2) { // Cancelled
+		buttons += `
+			<button class="btn btn-primary" id="btn-amend-quo">
+				<i class="fa fa-pencil-square-o" style="margin-right:6px;"></i>Amend Quotation
+			</button>
+		`;
 		note = `
 			<p style="color:var(--text-muted); width:100%; font-size: 13px;">
-				🚫 This quotation has been <strong>cancelled</strong>.
+				🚫 This quotation has been <strong>cancelled</strong>. Click <strong>Amend Quotation</strong> to open a new editable revision.
 			</p>
 		`;
 	}
@@ -1264,9 +1297,7 @@ async function open_job_card_modal(page, doc) {
 	});
 }
 
-function bind_action_events(page, doc, sales_invoices, existing_job_card) {
-	// ── Edit in Builder (Draft only) ──
-	$('#btn-edit-builder').on('click', async () => {
+async function open_quotation_in_builder(doc) {
 		let customer_meta = doc.party_name
 			? await frappe.db.get_value('Customer', doc.party_name, 'tax_id')
 			: null;
@@ -1336,11 +1367,14 @@ function bind_action_events(page, doc, sales_invoices, existing_job_card) {
 				quantity: ceiling_sq_m || 0,
 				square_metres: ceiling_sq_m || 0,
 				ceiling_mode: ceiling_sq_m ? 'bundle' : 'single',
-				rate: category === 'Aluminium'
-					? item.rate
-					: (category === 'Ceiling' && ceiling_sq_m
-						? (item.rate / ceiling_sq_m)
-						: (category === 'Glass' ? get_builder_glass_base_rate(item) : item.rate)),
+				// Ceiling bundles store the gross per-sq-m total (not divided by 1.16
+				// on save), so they round-trip directly. Every other category was
+				// stored net and must be grossed back up by the VAT multiplier.
+				rate: category === 'Ceiling' && ceiling_sq_m
+					? (item.rate / ceiling_sq_m)
+					: (category === 'Glass'
+						? get_builder_glass_base_rate(item)
+						: item.rate * QM_VAT_MULTIPLIER),
 					amount: display_amount,
 					// Glass-specific
 					sale_mode: item.custom_glass_sale_mode || 'Resized',
@@ -1390,6 +1424,56 @@ function bind_action_events(page, doc, sales_invoices, existing_job_card) {
 			}
 
 		frappe.set_route('quotation-builder');
+}
+
+function bind_action_events(page, doc, sales_invoices, existing_job_card) {
+	// ── Edit in Builder (Draft only) ──
+	$('#btn-edit-builder').on('click', () => open_quotation_in_builder(doc));
+
+	// ── Amend Quotation (Submitted/Cancelled → cancel + new amendment draft in Builder) ──
+	$('#btn-amend-quo').on('click', () => {
+		frappe.call({
+			method: 'crystal_alluminium_works.api.get_quotation_amendment_eligibility',
+			args: { quotation: doc.name },
+			freeze: true,
+			callback: function(r) {
+				if (r.exc) return;
+				let eligibility = r.message || {};
+				if (!eligibility.can_amend) {
+					frappe.msgprint({
+						title: 'Cannot Amend Quotation',
+						indicator: 'red',
+						message: '<ul><li>' + (eligibility.reasons || ['Not eligible.']).join('</li><li>') + '</li></ul>'
+					});
+					return;
+				}
+				frappe.confirm(
+					'<b>Amend this quotation?</b><br><br>The current revision is cancelled and a new editable revision opens in the Builder. The Job Card number stays the same.',
+					() => {
+						frappe.call({
+							method: 'crystal_alluminium_works.api.cancel_quotation',
+							args: { quotation: doc.name },
+							freeze: true,
+							freeze_message: 'Cancelling current revision...',
+							callback: function(c) {
+								if (c.exc) return;
+								frappe.call({
+									method: 'crystal_alluminium_works.api.amend_quotation',
+									args: { quotation: doc.name },
+									freeze: true,
+									freeze_message: 'Creating amendment...',
+									callback: async function(a) {
+										if (a.exc || !a.message) return;
+										let amended = await frappe.db.get_doc('Quotation', a.message);
+										open_quotation_in_builder(amended);
+									}
+								});
+							}
+						});
+					}
+				);
+			}
+		});
 	});
 
 	// ── Submit Quotation (Draft → Open) ──
