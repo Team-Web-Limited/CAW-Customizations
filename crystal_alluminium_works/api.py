@@ -443,6 +443,7 @@ def _download_crystal_pdf(doctype, name, print_format_name, ref_label, terms):
         build_crystal_job_card_print_format_html,
         build_crystal_payment_receipt_print_format_html,
         build_crystal_print_format_html,
+        embed_letterhead_image,
     )
     from crystal_alluminium_works.print_format_config import get_print_format_context
     from frappe.translate import print_language
@@ -470,6 +471,11 @@ def _download_crystal_pdf(doctype, name, print_format_name, ref_label, terms):
             terms=context.get("terms") or terms,
             payment_details=context.get("payment_details") or "",
         )
+
+    # Embed the letterhead inline as a data URI. wkhtmltopdf cannot fetch the
+    # /assets/ image URL during PDF generation (ContentNotFoundError), which left
+    # the logo blank here even though the stored print formats already embed it.
+    template_html = embed_letterhead_image(template_html)
 
     with print_language(doc.get("language") or frappe.local.lang):
         body = frappe.render_template(template_html, {"doc": doc})
