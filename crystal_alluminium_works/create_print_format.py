@@ -1,8 +1,39 @@
+import base64
+
 import frappe
 from crystal_alluminium_works.print_format_config import (
     get_print_format_context,
     ensure_default_print_format_configurations,
 )
+
+# The letterhead is embedded directly as a base64 data URI rather than linked via
+# its /assets/ URL. The static URL renders in the PDF and when opened directly, but
+# breaks in the desk print preview (the image is requested from a context where the
+# root-relative URL does not resolve back to the site origin). A data URI carries the
+# image inline, so it renders identically in the preview, PDF, and full-page views
+# with no dependency on asset serving or browser caching.
+LETTERHEAD_ASSET_PATH = "/assets/crystal_alluminium_works/images/crystal-alluminium-works-letterhead.jpeg"
+
+_LETTERHEAD_DATA_URI = None
+
+
+def get_letterhead_data_uri():
+    global _LETTERHEAD_DATA_URI
+    if _LETTERHEAD_DATA_URI is None:
+        image_path = frappe.get_app_path(
+            "crystal_alluminium_works",
+            "public",
+            "images",
+            "crystal-alluminium-works-letterhead.jpeg",
+        )
+        with open(image_path, "rb") as f:
+            encoded = base64.b64encode(f.read()).decode()
+        _LETTERHEAD_DATA_URI = f"data:image/jpeg;base64,{encoded}"
+    return _LETTERHEAD_DATA_URI
+
+
+def embed_letterhead_image(html):
+    return html.replace(LETTERHEAD_ASSET_PATH, get_letterhead_data_uri())
 
 def build_crystal_print_format_html(ref_label, terms, payment_details=""):
     html = f"""
@@ -766,6 +797,8 @@ def create_crystal_print_format(doctype, print_format_name, ref_label=None, term
         html = build_crystal_job_card_print_format_html()
     else:
         html = build_crystal_print_format_html(ref_label, terms, payment_details)
+
+    html = embed_letterhead_image(html)
 
     if not frappe.db.exists("Print Format", print_format_name):
         doc = frappe.get_doc({
