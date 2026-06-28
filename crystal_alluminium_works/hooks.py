@@ -14,7 +14,22 @@ fixtures = [
 	# {"dt": "Workspace", "filters": [["name", "in", ["Crystal Alluminium Works"]]]},
 	{"dt": "Desktop Icon", "filters": [["name", "in", ["Crystal Alluminium Works"]]]},
 	{"dt": "Custom Field", "filters": [["module", "in", ["Crystal Alluminium Works"]]]},
-	{"dt": "Letter Head", "filters": [["name", "in", ["Company Letterhead"]]]}
+	{"dt": "Letter Head", "filters": [["name", "in", ["Company Letterhead"]]]},
+	{
+		"dt": "Print Format",
+		"filters": [
+			[
+				"name",
+				"in",
+				[
+					"Crystal Quotation",
+					"Crystal Sales Invoice",
+					"Crystal Sales Order",
+					"Crystal Job Card",
+				],
+			]
+		],
+	},
 ]
 
 # Each item in the list will be shown as an app in the apps page
