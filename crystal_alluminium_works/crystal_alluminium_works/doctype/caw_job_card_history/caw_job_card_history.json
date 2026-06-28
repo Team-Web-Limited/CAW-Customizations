@@ -25,7 +25,8 @@
   "change_type",
   "changed_by",
   "note",
-  "snapshot_json"
+  "snapshot_json",
+  "receipt_no"
  ],
  "fields": [
   {
@@ -150,6 +151,13 @@
    "label": "Snapshot JSON",
    "options": "JSON",
    "read_only": 1
+  },
+  {
+   "fieldname": "receipt_no",
+   "fieldtype": "Data",
+   "label": "Receipt No",
+   "read_only": 1,
+   "unique": 1
   }
  ],
  "grid_page_length": 50,

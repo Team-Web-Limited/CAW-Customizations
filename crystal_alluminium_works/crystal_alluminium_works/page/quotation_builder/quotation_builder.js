@@ -89,6 +89,7 @@ function refresh_quotation_builder(page) {
 	}
 
 	render_step(page, (window.qb_state && window.qb_state.step) || 1);
+	update_review_button_visibility(page);
 }
 
 function is_ceiling_board_item(item) {
@@ -245,6 +246,9 @@ function bind_events(page) {
 
 	$(page.body).on('click.qbbuilder', '.qb-step-indicator', function () {
 		let step = parseInt($(this).data('step'));
+		if (step === 3 && !(window.qb_state && window.qb_state.items && window.qb_state.items.length)) {
+			return;
+		}
 		if (step) render_step(page, step);
 	});
 
@@ -284,6 +288,9 @@ function bind_events(page) {
 
 	$(page.body).on('click.qbbuilder', '.qb-nav-step', function () {
 		let step = parseInt($(this).data('step'));
+		if (step === 3 && !(window.qb_state && window.qb_state.items && window.qb_state.items.length)) {
+			return;
+		}
 		if (step) render_step(page, step);
 	});
 }
@@ -855,6 +862,7 @@ function render_step(page, step) {
 
 	$(page.body).find('.qb-step-content').hide();
 	$(page.body).find(`.qb-step-content[data-step="${step}"]`).show();
+	update_review_button_visibility(page);
 
 	if (step === 1) {
 		set_customer_step_focus(page);
@@ -865,6 +873,22 @@ function render_step(page, step) {
 	if (step === 3) {
 		render_review_step(page);
 	}
+}
+
+function update_review_button_visibility(page) {
+	let has_items = !!(window.qb_state && window.qb_state.items && window.qb_state.items.length);
+	$(page.body).find('.qb-step-content[data-step="2"] .qb-nav-step[data-step="3"]').toggle(has_items);
+}
+
+function update_customer_next_button_visibility(page, selected_customer = null) {
+	let customer = selected_customer;
+	if (customer === null && page.qb_customer_field) {
+		customer = page.qb_customer_field.get_value();
+	}
+	if (customer === null) {
+		customer = window.qb_state && window.qb_state.customer;
+	}
+	$(page.body).find('.qb-step-content[data-step="1"] .qb-next-1').toggle(!!customer);
 }
 
 function set_customer_step_focus(page) {
@@ -1119,6 +1143,7 @@ function setup_customer_step(page) {
 	if (window.qb_state.customer) {
 		customer_field.set_value(window.qb_state.customer);
 	}
+	update_customer_next_button_visibility(page, window.qb_state.customer || customer_field.get_value());
 
 	set_customer_step_focus(page);
 
@@ -1127,8 +1152,13 @@ function setup_customer_step(page) {
 		if (window.qb_state.payment_mode && window.qb_state.payment_mode !== next_mode) {
 			window.qb_state.customer = '';
 			customer_field.set_value('');
+			update_customer_next_button_visibility(page, '');
 		}
 		window.qb_state.payment_mode = next_mode;
+	});
+
+	customer_field.$input.on('change input blur awesomplete-selectcomplete', function () {
+		update_customer_next_button_visibility(page, customer_field.get_value());
 	});
 
 	$(page.body).find('.qb-next-1').off('click').on('click', function () {
@@ -1345,6 +1375,7 @@ function remove_item(page, id) {
 function render_items_table(page) {
 	let $tbody = $(page.body).find('.qb-items-body');
 	$tbody.empty();
+	update_review_button_visibility(page);
 
 	if (window.qb_state.items.length === 0) {
 		$tbody.html('<tr><td colspan="10" style="padding:20px;text-align:center;color:var(--text-muted);">No items added yet. Use the buttons above to add products.</td></tr>');

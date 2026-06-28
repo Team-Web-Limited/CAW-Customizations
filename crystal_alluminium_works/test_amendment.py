@@ -41,6 +41,46 @@ class TestQuotationAmendment(FrappeTestCase):
     def setUp(self):
         self.customer = _ensure_customer()
 
+    def test_cash_job_card_rejects_below_minimum_deposit(self):
+        quo = _make_submitted_quotation(self.customer)
+        quotation_amount = api._get_quotation_display_total(quo)
+        required_deposit = api._get_required_cash_job_card_deposit(quotation_amount)
+
+        with self.assertRaisesRegex(frappe.ValidationError, "at least 50%"):
+            api.create_job_card_from_quotation(
+                quotation=quo.name, customer=self.customer, payment_mode="Cash Customer",
+                payment_option="Cash", payment_amount=required_deposit - 1, quotation_amount=quotation_amount,
+            )
+
+    def test_cash_job_card_accepts_minimum_deposit(self):
+        quo = _make_submitted_quotation(self.customer)
+        quotation_amount = api._get_quotation_display_total(quo)
+        required_deposit = api._get_required_cash_job_card_deposit(quotation_amount)
+
+        jc_name = api.create_job_card_from_quotation(
+            quotation=quo.name, customer=self.customer, payment_mode="Cash Customer",
+            payment_option="Cash", payment_amount=required_deposit, quotation_amount=quotation_amount,
+        )
+
+        jc = frappe.get_doc("CAW Job Card", jc_name)
+        self.assertEqual(jc.payment_amount, required_deposit)
+        self.assertEqual(jc.balance_amount, api._round_job_card_amount(quotation_amount - required_deposit))
+
+    def test_cash_job_card_accepts_above_minimum_deposit(self):
+        quo = _make_submitted_quotation(self.customer)
+        quotation_amount = api._get_quotation_display_total(quo)
+        required_deposit = api._get_required_cash_job_card_deposit(quotation_amount)
+        # Anything from 50% up to the full amount is allowed.
+        above_minimum = api._round_job_card_amount((quotation_amount + required_deposit) / 2)
+
+        jc_name = api.create_job_card_from_quotation(
+            quotation=quo.name, customer=self.customer, payment_mode="Cash Customer",
+            payment_option="Cash", payment_amount=above_minimum, quotation_amount=quotation_amount,
+        )
+
+        jc = frappe.get_doc("CAW Job Card", jc_name)
+        self.assertEqual(jc.payment_amount, above_minimum)
+
     def test_chain_resolver_walks_both_directions(self):
         quo = _make_submitted_quotation(self.customer)
         quo.cancel()

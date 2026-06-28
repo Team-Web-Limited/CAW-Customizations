@@ -666,8 +666,6 @@ async function render_sales_invoice_dashboard(page, invoice_name, wrapper, defau
 		let html = `
 		<style>
 			.sim-dashboard { max-width: 100%; margin: 0 auto; padding: 20px; font-family: var(--font-stack); }
-			.sim-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; padding: 20px; background: var(--card-bg); border-radius: 8px; box-shadow: var(--shadow-sm); gap: 16px; flex-wrap: wrap; }
-			.sim-header h2 { margin: 0; font-size: 20px; }
 			.sim-badge { padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
 			.sim-badge.orange { background: #fdf3e1; color: #e67e22; }
 			.sim-badge.blue { background: #e8f4fd; color: #3498db; }
@@ -726,15 +724,8 @@ async function render_sales_invoice_dashboard(page, invoice_name, wrapper, defau
 				</div>
 			</div>
 
-			<div class="sim-header">
-				<div>
-					<h2>${doc.customer_name || doc.customer}</h2>
-					<div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">Created ${frappe.datetime.prettyDate(doc.creation)}</div>
-				</div>
-			</div>
-
 			<div class="sim-card">
-				<div class="sim-card-header">Invoice Summary</div>
+				<div class="sim-card-header" style="display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap;">Invoice Summary <span style="font-size:13px; font-weight:400; color:var(--text-muted);">Created ${frappe.datetime.prettyDate(doc.creation)}</span></div>
 				<div class="sim-card-body">
 					<div class="sim-info-grid">
 						<div>
@@ -759,33 +750,16 @@ async function render_sales_invoice_dashboard(page, invoice_name, wrapper, defau
 							<div class="sim-info-val">${format_currency(get_sales_invoice_outstanding_for_ui(doc, source_job_card), doc.currency || 'KES')}</div>
 						</div>
 						<div>
-							<div class="sim-info-label">Quotation Source</div>
-							<div class="sim-info-val">${quotation_name || '—'}</div>
-						</div>
-		
-					</div>
-				</div>
-			</div>
-
-			<div class="sim-card">
-				<div class="sim-card-header">Payments</div>
-				<div class="sim-card-body">
-					<div class="sim-info-grid" style="margin-bottom:18px;">
-						<div>
 							<div class="sim-info-label">Method of Payment</div>
 							<div class="sim-info-val">${frappe.utils.escape_html(get_sales_invoice_payment_method_display(source_job_card))}</div>
 						</div>
 						<div>
-							<div class="sim-info-label">Amount Paid So Far</div>
-							<div class="sim-info-val">${format_currency(get_sales_invoice_display_paid_amount(doc, source_job_card), doc.currency || 'KES')}</div>
-						</div>
-						<div>
-							<div class="sim-info-label">Outstanding Balance</div>
-							<div class="sim-info-val">${format_currency(get_sales_invoice_outstanding_for_ui(doc, source_job_card), doc.currency || 'KES')}</div>
-						</div>
-						<div>
 							<div class="sim-info-label">Invoice Status</div>
 							<div class="sim-info-val">${doc.status || 'Draft'}</div>
+						</div>
+						<div>
+							<div class="sim-info-label">Quotation Source</div>
+							<div class="sim-info-val">${quotation_name || '—'}</div>
 						</div>
 					</div>
 				</div>

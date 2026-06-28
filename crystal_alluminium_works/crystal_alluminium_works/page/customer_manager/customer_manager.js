@@ -427,6 +427,15 @@ function bind_customer_manager_events(page) {
 		}
 	});
 
+	$(wrapper).on('click', '.cm-payment-allocate', function (e) {
+		e.preventDefault();
+		e.stopPropagation();
+		let payment_name = $(this).attr('data-payment');
+		if (payment_name) {
+			open_allocate_payment_modal(page, payment_name);
+		}
+	});
+
 	$(wrapper).on('click', '.cm-job-card-row', function () {
 		let name = $(this).attr('data-name');
 		if (name) {
@@ -446,6 +455,7 @@ function bind_customer_manager_events(page) {
 }
 
 async function render_customer_detail(page, customer_name) {
+	page.customer_manager_current_customer = customer_name;
 	set_customer_detail_actions(page, customer_name);
 	$(page.body).html(`
 		<style>
@@ -538,12 +548,18 @@ async function get_customer_manager_quotations(customer_name) {
 }
 
 async function get_customer_manager_payments(customer_name) {
-	return get_customer_manager_records({
-		doctype: 'Payments',
-		filters: { customer: customer_name },
-		fields: ['name', 'amount', 'date', 'payment_method', 'deposit_to', 'reference', 'job_card', 'creation'],
-		order_by: 'date desc, creation desc',
-	});
+	// Dedicated endpoint so each payment's job-card allocation rows come back embedded
+	// (frappe.client.get_list can't return child tables).
+	try {
+		let response = await frappe.call({
+			method: 'crystal_alluminium_works.api.get_customer_payments',
+			args: { customer: customer_name },
+		});
+		return response.message || [];
+	} catch (e) {
+		console.error(e);
+		return [];
+	}
 }
 
 async function get_customer_manager_job_cards(customer_name) {
@@ -574,19 +590,49 @@ async function get_customer_manager_records({ doctype, filters, fields, order_by
 	}
 }
 
-function get_customer_uninvoiced_job_cards(job_cards, invoices) {
-	let invoiced_quotations = new Set();
-	(invoices || []).forEach(invoice => {
-		if (invoice.custom_source_quotation) {
-			invoiced_quotations.add(invoice.custom_source_quotation);
-		}
+function get_payment_allocations(payment) {
+	// Prefer explicit split allocations (a payment spread across several job cards); fall
+	// back to the legacy single job_card field (the whole payment on that one job card).
+	if (payment.allocations && payment.allocations.length) {
+		return payment.allocations
+			.filter(row => row.job_card)
+			.map(row => ({ job_card: row.job_card, amount: flt(row.amount || 0) }));
+	}
+	if (payment.job_card) {
+		return [{ job_card: payment.job_card, amount: flt(payment.amount || 0) }];
+	}
+	return [];
+}
+
+function get_payment_allocated_total(payment) {
+	return get_payment_allocations(payment).reduce((sum, row) => sum + flt(row.amount || 0), 0);
+}
+
+function get_payment_unallocated(payment) {
+	// Whatever isn't pinned to a job card is the customer's advance / credit.
+	return Math.max(flt(payment.amount || 0) - get_payment_allocated_total(payment), 0);
+}
+
+function compute_job_card_overpayment_credits(job_cards, payments) {
+	// job_card.payment_amount/balance_amount are now kept in sync server-side for both
+	// customer types (Cash: Create/Edit Job Card; Invoice: api.py
+	// _sync_job_card_balance_from_payments, driven by the Payments doctype), so callers can
+	// read those fields directly. The one thing those fields can't show is overpayment: the
+	// backend caps payment_amount at quotation_amount, so paying more than the quotation
+	// (e.g. an invoice customer's Payments allocations exceeding it) doesn't appear there.
+	// Recompute the real allocated total here just to surface that excess as credit.
+	let paid_by_job_card = {};
+	(payments || []).forEach(payment => {
+		get_payment_allocations(payment).forEach(alloc => {
+			paid_by_job_card[alloc.job_card] = flt(paid_by_job_card[alloc.job_card] || 0) + flt(alloc.amount || 0);
+		});
 	});
 
-	return (job_cards || []).filter(job_card => {
-		if (job_card.status === 'Cancelled') {
-			return false;
-		}
-		return !job_card.quotation || !invoiced_quotations.has(job_card.quotation);
+	(job_cards || []).forEach(job_card => {
+		let paid = job_card.payment_mode === 'Cash Customer'
+			? flt(job_card.payment_amount || 0)
+			: flt(paid_by_job_card[job_card.name] || 0);
+		job_card._statement_excess = Math.max(paid - flt(job_card.quotation_amount || 0), 0);
 	});
 }
 
@@ -596,17 +642,35 @@ function get_customer_detail_html(customer, transactions) {
 	let payments = transactions.payments || [];
 	let job_cards = transactions.job_cards || [];
 
-	// Cash Customer job cards only produce a Sales Invoice once fully paid, so a
-	// partially-paid job card has real committed revenue and a real outstanding
-	// balance that the Invoices list alone can't see yet. Fold those in here so
-	// Total Sales / Outstanding reflect job cards too, without double-counting
-	// ones that have already been invoiced.
-	let uninvoiced_job_cards = get_customer_uninvoiced_job_cards(job_cards, all_invoices);
-	let uninvoiced_job_card_total = uninvoiced_job_cards.reduce((sum, job_card) => sum + flt(job_card.quotation_amount || 0), 0);
-	let uninvoiced_job_card_outstanding = uninvoiced_job_cards.reduce((sum, job_card) => sum + flt(job_card.balance_amount || 0), 0);
+	// The statement of account is driven by Job Cards + Payments, not by Sales Invoices:
+	// invoices only ever track released items now, never payments, for either customer type
+	// (see api.py create_job_card_from_quotation / _sync_job_card_balance_from_payments), so
+	// job_card.balance_amount is trustworthy directly for both. Account every non-cancelled
+	// Job Card via (quotation_amount, balance_amount) and drop the Sales Invoices owned by
+	// those Job Cards from the invoice-side sum to avoid double counting. Stand-alone invoices
+	// (no owning Job Card) still count directly.
+	compute_job_card_overpayment_credits(job_cards, payments);
 
-	let total_sales = all_invoices.reduce((sum, invoice) => sum + get_customer_manager_invoice_total(invoice), 0) + uninvoiced_job_card_total;
-	let outstanding = all_invoices.reduce((sum, invoice) => sum + get_customer_manager_invoice_outstanding(invoice), 0) + uninvoiced_job_card_outstanding;
+	let accounted_job_cards = job_cards.filter(job_card => job_card.status !== 'Cancelled');
+	let accounted_quotations = new Set(accounted_job_cards.map(job_card => job_card.quotation).filter(Boolean));
+
+	let standalone_invoices = all_invoices.filter(invoice => !accounted_quotations.has(invoice.custom_source_quotation));
+
+	let job_card_total = accounted_job_cards.reduce((sum, job_card) => sum + flt(job_card.quotation_amount || 0), 0);
+	let job_card_outstanding = accounted_job_cards.reduce((sum, job_card) => sum + flt(job_card.balance_amount || 0), 0);
+
+	let total_sales = standalone_invoices.reduce((sum, invoice) => sum + get_customer_manager_invoice_total(invoice), 0) + job_card_total;
+	let outstanding = standalone_invoices.reduce((sum, invoice) => sum + get_customer_manager_invoice_outstanding(invoice), 0) + job_card_outstanding;
+
+	// "Account for every penny": money not owed against anything becomes a visible credit
+	// pool the user allocates deliberately (Allocate action on a payment) — it is NOT netted
+	// into Outstanding. Two sources: payments with no job card (general / advance deposits),
+	// and overpayment beyond a job card's quotation amount.
+	let unallocated_payment_credit = (payments || []).reduce(
+		(sum, payment) => sum + get_payment_unallocated(payment), 0);
+	let overpaid_job_card_credit = accounted_job_cards.reduce(
+		(sum, job_card) => sum + flt(job_card._statement_excess || 0), 0);
+	let advance_credit = unallocated_payment_credit + overpaid_job_card_credit;
 	let currency = (all_invoices[0] && all_invoices[0].currency) || 'KES';
 
 	return `
@@ -625,6 +689,7 @@ function get_customer_detail_html(customer, transactions) {
 				${get_customer_stat_html('Job Cards', job_cards.length)}
 				${get_customer_stat_html('Total Sales', format_currency(total_sales, currency))}
 				${get_customer_stat_html('Outstanding', format_currency(outstanding, currency))}
+				${get_customer_stat_html('Advance / Credit', format_currency(advance_credit, currency))}
 			</div>
 
 			<div class="cm-detail-info">
@@ -817,11 +882,107 @@ function get_customer_quotation_row_html(quotation) {
 	`;
 }
 
-function get_customer_payment_row_html(payment, job_card) {
-	let job_card_cell = payment.job_card
-		? `<a href="#" class="cm-payment-jobcard-link" data-job-card="${cm_attr(payment.job_card)}" style="color:var(--primary); font-weight:600;">${cm_text(payment.job_card)}</a>`
-		: '-';
-	let balance_cell = job_card ? format_currency(job_card.balance_amount || 0, 'KES') : '-';
+function open_allocate_payment_modal(page, payment_name) {
+	let customer_name = page.customer_manager_current_customer;
+	let transactions = page.customer_manager_transactions || {};
+	let payment = (transactions.payments || []).find(p => String(p.name) === String(payment_name)) || {};
+	let existing = get_payment_allocations(payment);
+
+	let d = new frappe.ui.Dialog({
+		title: __('Allocate Payment'),
+		fields: [
+			{
+				fieldtype: 'HTML',
+				fieldname: 'summary',
+				options: `<div style="margin-bottom:10px; color:var(--text-muted);">Payment amount: <b>${format_currency(payment.amount || 0, 'KES')}</b>. Split it across one or more job cards — anything left unallocated stays as the customer’s advance / credit.</div>`
+			},
+			{
+				fieldtype: 'Table',
+				fieldname: 'allocations',
+				label: 'Job Card Allocations',
+				cannot_add_rows: false,
+				in_place_edit: false,
+				data: existing.map(a => ({ job_card: a.job_card, amount: a.amount })),
+				fields: [
+					{
+						fieldtype: 'Link',
+						fieldname: 'job_card',
+						label: 'Job Card',
+						options: 'CAW Job Card',
+						in_list_view: 1,
+						reqd: 1,
+						columns: 7,
+						get_query: function() {
+							return {
+								filters: {
+									customer: customer_name || '',
+									status: ['!=', 'Cancelled']
+								}
+							};
+						}
+					},
+					{
+						fieldtype: 'Currency',
+						fieldname: 'amount',
+						label: 'Amount',
+						in_list_view: 1,
+						reqd: 1,
+						columns: 3
+					}
+				]
+			}
+		],
+		primary_action_label: __('Save Allocation'),
+		primary_action: function(values) {
+			let allocations = (values.allocations || [])
+				.filter(row => row.job_card)
+				.map(row => ({ job_card: row.job_card, amount: flt(row.amount || 0) }));
+			if (allocations.some(row => row.amount <= 0)) {
+				frappe.msgprint(__('Each allocation must have an amount greater than zero.'));
+				return;
+			}
+			let allocated_total = allocations.reduce((sum, row) => sum + flt(row.amount || 0), 0);
+			if (allocated_total - flt(payment.amount || 0) > 0.0001) {
+				frappe.msgprint(__('Allocated amount cannot exceed the payment amount.'));
+				return;
+			}
+			frappe.call({
+				method: 'crystal_alluminium_works.api.set_payment_allocations',
+				args: { payment: payment_name, allocations: JSON.stringify(allocations) },
+				freeze: true,
+				freeze_message: __('Saving allocation...'),
+				callback: function(r) {
+					if (!r.exc) {
+						d.hide();
+						frappe.show_alert({ message: __('Allocation saved.'), indicator: 'green' });
+						render_customer_detail(page, customer_name);
+					}
+				}
+			});
+		}
+	});
+	d.show();
+}
+
+function get_customer_payment_row_html(payment) {
+	let allocations = get_payment_allocations(payment);
+	let unallocated = get_payment_unallocated(payment);
+
+	let job_card_cell;
+	if (allocations.length) {
+		let links = allocations.map(a =>
+			`<a href="#" class="cm-payment-jobcard-link" data-job-card="${cm_attr(a.job_card)}" style="color:var(--primary); font-weight:600;">${cm_text(a.job_card)}</a>`
+			+ ` <span style="color:var(--text-muted); font-size:12px;">(${format_currency(a.amount || 0, 'KES')})</span>`
+		).join('<br>');
+		let edit_btn = `<button type="button" class="btn btn-xs btn-default cm-payment-allocate" data-payment="${cm_attr(payment.name)}" style="margin-top:4px;">Edit</button>`;
+		job_card_cell = `${links}<div>${edit_btn}</div>`;
+	} else {
+		job_card_cell = `<button type="button" class="btn btn-xs btn-default cm-payment-allocate" data-payment="${cm_attr(payment.name)}">Allocate</button>`;
+	}
+
+	let unallocated_cell = unallocated > 0.0001
+		? `<span title="Unallocated — treated as advance / credit">${format_currency(unallocated, 'KES')}</span>`
+		: `<span style="color:var(--text-muted);">${format_currency(0, 'KES')}</span>`;
 
 	return `
 		<tr class="cm-transaction-row cm-payment-row" data-name="${cm_attr(payment.name)}">
@@ -831,7 +992,7 @@ function get_customer_payment_row_html(payment, job_card) {
 			</td>
 			<td>${payment.date ? cm_text(frappe.datetime.str_to_user(payment.date)) : '-'}</td>
 			<td style="text-align:right; font-weight:600;">${format_currency(payment.amount || 0, 'KES')}</td>
-			<td style="text-align:right;">${balance_cell}</td>
+			<td style="text-align:right;">${unallocated_cell}</td>
 			<td>${cm_text(payment.payment_method || '-')}</td>
 			<td>${cm_text(payment.deposit_to || '-')}</td>
 			<td>${job_card_cell}</td>
@@ -906,11 +1067,6 @@ function get_customer_transaction_table_config(selected, transactions) {
 	}
 
 	if (selected === 'payments') {
-		let job_card_by_name = {};
-		job_cards.forEach(job_card => {
-			job_card_by_name[job_card.name] = job_card;
-		});
-
 		return {
 			rows: payments,
 			count_label: payments.length === 1 ? 'payment' : 'payments',
@@ -919,14 +1075,12 @@ function get_customer_transaction_table_config(selected, transactions) {
 				{ label: 'Payment' },
 				{ label: 'Date' },
 				{ label: 'Amount', align: 'right' },
-				{ label: 'Balance', align: 'right' },
+				{ label: 'Unallocated', align: 'right' },
 				{ label: 'Method' },
 				{ label: 'Deposit To' },
-				{ label: 'Job Card' },
+				{ label: 'Job Card(s)' },
 			],
-			render_row: function (payment) {
-				return get_customer_payment_row_html(payment, job_card_by_name[payment.job_card]);
-			},
+			render_row: get_customer_payment_row_html,
 		};
 	}
 

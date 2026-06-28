@@ -739,6 +739,11 @@ function get_action_buttons(doc, sales_invoices, existing_job_card) {
 				<i class="fa fa-pencil" style="margin-right:6px;"></i>Edit in Builder
 			</button>
 		`;
+		note = `
+			<p style="color:var(--text-muted); width:100%; margin-top:10px; font-size:13px;">
+				Quotation is <strong>Draft</strong> — waiting for customer acceptance or ammendments before converting to open status.
+			</p>
+		`;
 	} else if (doc.docstatus === 1 && has_sales_invoices) {
 		buttons += `
 			<button class="btn btn-primary" id="btn-go-to-sales-invoice">
@@ -768,7 +773,7 @@ function get_action_buttons(doc, sales_invoices, existing_job_card) {
 		`;
 		note = `
 			<p style="color:var(--text-muted); width:100%; margin-top:10px; font-size:13px;">
-				Quotation is <strong>Open</strong> — waiting for customer acceptance. Click <strong>Create Job Card</strong> when the customer accepts. Use <strong>Amend Quotation</strong> to revise it before any invoice exists.
+				Use <strong>Amend Quotation</strong> to revise it before any invoice exists.
 			</p>
 		`;
 	} else if (doc.docstatus === 1 && doc.status === 'Converted') {
@@ -848,8 +853,11 @@ function get_job_card_payment_mode_label(value) {
 }
 
 function get_job_card_payment_option_choices(payment_mode) {
+	// These are actual Mode of Payment names — the chosen option IS the payment method, and
+	// its deposit account is derived from Mode of Payment Account. Cash customers pay by
+	// cash / mpesa / bank transfer; invoice customers by cheque only.
 	return normalize_job_card_payment_mode(payment_mode) === 'cash'
-		? ['Cash', 'Paybill', 'Cheque']
+		? ['Cash', 'Paybill', 'Bank Transfer i.e RTGS, TT', 'PESALINK']
 		: ['Cheque'];
 }
 
@@ -886,27 +894,32 @@ function refresh_job_card_payment_options(dialog) {
 	dialog.set_df_property('payment_amount', 'reqd', is_invoice ? 0 : 1);
 	dialog.set_df_property('record_payment_section', 'hidden', is_invoice ? 1 : 0);
 
-	refresh_job_card_payment_capture_fields(dialog);
+	// The chosen payment_option is the Mode of Payment, so derive its deposit account.
+	refresh_job_card_deposit_to_options(dialog);
+}
+
+function update_job_card_save_button_visibility(dialog) {
+	let is_invoice = normalize_job_card_payment_mode(dialog.get_value('payment_mode')) === 'invoice';
+	let has_payment_amount = flt(dialog.get_value('payment_amount') || 0) > 0;
+	let $primary_btn = dialog.get_primary_btn ? dialog.get_primary_btn() : dialog.$wrapper.find('.modal-footer .btn-primary');
+	$primary_btn.toggle(is_invoice || has_payment_amount);
 }
 
 function refresh_job_card_payment_capture_fields(dialog) {
 	let is_cash = normalize_job_card_payment_mode(dialog.get_value('payment_mode')) === 'cash';
-	let has_new_payment = is_cash && flt(dialog.get_value('payment_amount') || 0) > 0;
 
-	['payment_method', 'deposit_to'].forEach(function(fieldname) {
-		dialog.set_df_property(fieldname, 'hidden', has_new_payment ? 0 : 1);
-	});
-	dialog.set_df_property('payment_method', 'reqd', has_new_payment ? 1 : 0);
-	dialog.set_df_property('deposit_to', 'reqd', has_new_payment ? 1 : 0);
+	// deposit_to is auto-derived and read-only, so keep it visible for cash payments.
+	dialog.set_df_property('deposit_to', 'hidden', is_cash ? 0 : 1);
 
 	// The visible Reference field is for bank transactions only (cheque/transfer number),
 	// entered manually. M-Pesa/Paybill gets its own simulated transaction code generated
 	// separately at save time (see generate_simulated_mpesa_reference) — the two are not
 	// the same field and are not interchangeable.
 	let mop_is_bank_type = (dialog._mode_of_payment_type || '').toLowerCase() === 'bank';
-	let reference_visible = has_new_payment && mop_is_bank_type;
+	let reference_visible = is_cash && mop_is_bank_type;
 	dialog.set_df_property('reference', 'hidden', reference_visible ? 0 : 1);
 	dialog.set_df_property('reference', 'reqd', reference_visible ? 1 : 0);
+	update_job_card_save_button_visibility(dialog);
 }
 
 function generate_simulated_mpesa_reference() {
@@ -920,7 +933,8 @@ function generate_simulated_mpesa_reference() {
 }
 
 async function refresh_job_card_deposit_to_options(dialog) {
-	let payment_method = dialog.get_value('payment_method');
+	// The payment_option IS the Mode of Payment now.
+	let payment_method = dialog.get_value('payment_option');
 
 	if (!payment_method) {
 		dialog._mode_of_payment_type = null;
@@ -1005,7 +1019,12 @@ function get_job_card_outstanding_balance(job_card, quotation_amount) {
 	return balance;
 }
 
-function validate_job_card_payment_amount(dialog) {
+function get_required_cash_job_card_payment(quotation_amount) {
+	return flt(flt(quotation_amount || 0, 2) * 0.50, 2);
+}
+
+function validate_job_card_payment_amount(dialog, options) {
+	options = options || {};
 	if (normalize_job_card_payment_mode(dialog.get_value('payment_mode')) === 'invoice') {
 		return true;
 	}
@@ -1023,6 +1042,16 @@ function validate_job_card_payment_amount(dialog) {
 	if (payment_amount <= 0) {
 		frappe.msgprint(__('Please enter a payment amount to create a job card for a cash customer.'));
 		return false;
+	}
+
+	if (options.require_minimum_cash_deposit) {
+		let required_payment = get_required_cash_job_card_payment(dialog.get_value('quotation_amount'));
+		if (required_payment - payment_amount > 0.009) {
+			frappe.msgprint(__('Cash customer Job Cards require an initial payment of at least 50% of the quotation amount ({0}).', [
+				format_currency(required_payment)
+			]));
+			return false;
+		}
 	}
 
 	if (payment_amount > payment_limit) {
@@ -1043,13 +1072,13 @@ function validate_job_card_payment_capture(dialog) {
 		return true;
 	}
 
-	if (!dialog.get_value('payment_method')) {
+	if (!dialog.get_value('payment_option')) {
 		frappe.msgprint(__('Please select a Payment Method to record this payment.'));
 		return false;
 	}
 
 	if (!dialog.get_value('deposit_to')) {
-		frappe.msgprint(__('Please select a Deposit To account to record this payment.'));
+		frappe.msgprint(__('No deposit account is configured for the selected payment method. Please configure its Mode of Payment Account.'));
 		return false;
 	}
 
@@ -1123,10 +1152,13 @@ async function open_job_card_modal(page, doc) {
 			{
 				fieldtype: 'Select',
 				fieldname: 'payment_option',
-				label: 'Payment Options',
+				label: 'Payment Method',
 				options: get_job_card_payment_option_choices(get_job_card_payment_mode_label(defaults.payment_mode)).join('\n'),
 				default: get_job_card_payment_option_choices(get_job_card_payment_mode_label(defaults.payment_mode))[0],
-				reqd: 1
+				reqd: 1,
+				change: function() {
+					refresh_job_card_deposit_to_options(d);
+				}
 			},
 			{
 				fieldtype: 'Link',
@@ -1160,43 +1192,18 @@ async function open_job_card_modal(page, doc) {
 			{ fieldtype: 'Section Break', fieldname: 'record_payment_section', label: 'Record Payment' },
 			{
 				fieldtype: 'Link',
-				fieldname: 'payment_method',
-				label: 'Payment Method',
-				options: 'Mode of Payment',
-				change: function() {
-					refresh_job_card_deposit_to_options(d);
-				},
-				get_query: function() {
-					return {
-						filters: {
-							name: ['not in', ['USD TRANSFER', 'Petty Cash', 'petty-cash', 'petty cash']]
-						}
-					};
-				}
-			},
-			{ fieldtype: 'Column Break' },
-			{
-				fieldtype: 'Link',
 				fieldname: 'deposit_to',
 				label: 'Deposit To',
 				options: 'Account',
-				get_query: function() {
-					let account_type = d && d._deposit_to_account_type;
-					return {
-						filters: {
-							account_type: account_type || ['in', ['Bank', 'Cash']],
-							is_group: 0,
-							name: ['not in', ['DTB Bank USD A/C - CA', 'I & M USD A/C - CA']]
-						}
-					};
-				}
+				read_only: 1,
+				description: 'Auto-derived from the selected payment method.'
 			},
 			{ fieldtype: 'Column Break' },
 			{ fieldtype: 'Data', fieldname: 'reference', label: 'Reference', hidden: 1 }
 		],
 		primary_action_label: 'Save',
 		primary_action: function(values) {
-			if (!validate_job_card_payment_amount(d)) {
+			if (!validate_job_card_payment_amount(d, { require_minimum_cash_deposit: !existing_job_card })) {
 				return;
 			}
 
@@ -1243,7 +1250,7 @@ async function open_job_card_modal(page, doc) {
 								job_card: job_card_name,
 								amount: new_payment_amount,
 								date: frappe.datetime.get_today(),
-								payment_method: values.payment_method,
+								payment_method: values.payment_option,
 								deposit_to: values.deposit_to,
 								reference: payment_reference
 							},
@@ -1273,6 +1280,7 @@ async function open_job_card_modal(page, doc) {
 		await d.set_value('customer', defaults.customer || quotation_customer);
 	}
 	update_job_card_balance(d);
+	update_job_card_save_button_visibility(d);
 
 	d.fields_dict.payment_amount.$input.on('input', function() {
 		update_job_card_balance(d);

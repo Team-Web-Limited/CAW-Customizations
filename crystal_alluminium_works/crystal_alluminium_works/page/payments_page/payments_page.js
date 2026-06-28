@@ -143,6 +143,9 @@ async function get_payment_mode_options() {
 			method: 'frappe.client.get_list',
 			args: {
 				doctype: 'Mode of Payment',
+				// Only enabled customer-receipt methods. USD TRANSFER and Petty Cash are
+				// supplier / outgoing, not customer receipts.
+				filters: { enabled: 1, name: ['not in', ['USD TRANSFER', 'Petty Cash']] },
 				fields: ['name'],
 				limit_page_length: 0,
 				order_by: 'name asc'
@@ -150,7 +153,7 @@ async function get_payment_mode_options() {
 		});
 		return (mop_response.message || []).map(row => row.name);
 	} catch (e) {
-		return ['Cash', 'Bank', 'Paybill', 'Cheque'];
+		return ['Cash', 'Paybill', 'Bank Transfer i.e RTGS, TT', 'PESALINK', 'Cheque'];
 	}
 }
 
@@ -288,6 +291,28 @@ function render_payments_pagination(page) {
 
 function open_create_payment_modal(page) {
 	let mode_of_payments = (page._payments_page_context && page._payments_page_context.mode_of_payments) || ['Cash', 'Bank', 'Paybill', 'Cheque'];
+
+	function get_allocation_total() {
+		return (d.get_value('allocations') || []).reduce((sum, row) => sum + flt(row.amount || 0), 0);
+	}
+
+	// Live "how much is left" indicator above the allocations grid, recomputed as the user
+	// types the amount or edits allocation rows.
+	function update_allocation_balance() {
+		if (!d || !d.fields_dict.allocation_balance) {
+			return;
+		}
+		let amount = flt(d.get_value('amount') || 0);
+		let remaining = amount - get_allocation_total();
+		let over = remaining < -0.0001;
+		let exact = amount > 0 && Math.abs(remaining) < 0.0001;
+		let color = over ? '#e24c4c' : (exact ? '#28a745' : 'var(--text-muted)');
+		let label = over ? __('Over-allocated by') : __('Unallocated balance');
+		d.fields_dict.allocation_balance.$wrapper.html(
+			`<div style="padding:4px 0 8px; font-weight:600; color:${color};">${label}: ${format_currency(Math.abs(remaining), 'KES')}</div>`
+		);
+	}
+
 	let d = new frappe.ui.Dialog({
 		title: __('Create Payment'),
 		fields: [
@@ -301,6 +326,16 @@ function open_create_payment_modal(page) {
 					return {
 						query: 'crystal_alluminium_works.api.get_customer_names'
 					};
+				},
+				onchange: function() {
+					// Job cards are customer-specific, so any allocation rows from a
+					// previously chosen customer must not survive a customer change.
+					let grid = d.fields_dict.allocations && d.fields_dict.allocations.grid;
+					if (grid) {
+						grid.df.data = [];
+						grid.refresh();
+					}
+					update_allocation_balance();
 				}
 			},
 			{ fieldtype: 'Column Break' },
@@ -309,8 +344,93 @@ function open_create_payment_modal(page) {
 				fieldname: 'amount',
 				label: 'Amount',
 				reqd: 1,
+				onchange: function() {
+					update_allocation_balance();
+				}
 			}
 			,
+			{ fieldtype: 'Section Break' },
+			{
+				fieldtype: 'HTML',
+				fieldname: 'allocation_balance'
+			},
+			{
+				fieldtype: 'Table',
+				fieldname: 'allocations',
+				label: 'Job Card Allocations',
+				description: 'Optional — split this payment across job cards. Anything left unallocated becomes the customer’s advance / credit.',
+				cannot_add_rows: false,
+				in_place_edit: false,
+				data: [],
+				fields: [
+					{
+						fieldtype: 'Link',
+						fieldname: 'job_card',
+						label: 'Job Card',
+						options: 'CAW Job Card',
+						in_list_view: 1,
+						reqd: 1,
+						columns: 7,
+						get_query: function() {
+							return {
+								filters: {
+									customer: d.get_value('customer') || '',
+									status: ['!=', 'Cancelled']
+								}
+							};
+						},
+						onchange: function() {
+							let row = this.doc;
+							let control = this;
+							if (!row || !row.job_card) {
+								return;
+							}
+							// Pre-fill this row with the job card's current outstanding balance,
+							// capped at whatever the payment still has left to allocate (and 0 if
+							// nothing is owed). The user can edit it afterwards.
+							frappe.call({
+								method: 'crystal_alluminium_works.api.get_job_card_statement_balance',
+								args: { job_card: row.job_card },
+								callback: function(r) {
+									let balance = flt((r.message || {}).balance || 0);
+									let top_amount = flt(d.get_value('amount') || 0);
+									let others = (d.get_value('allocations') || []).reduce(function(sum, a) {
+										return sum + (a.name === row.name ? 0 : flt(a.amount || 0));
+									}, 0);
+									let remaining = Math.max(top_amount - others, 0);
+									row.amount = Math.max(Math.min(balance, remaining), 0);
+									if (control.grid_row) {
+										control.grid_row.refresh_field('amount');
+									}
+									update_allocation_balance();
+								}
+							});
+						}
+					},
+					{
+						fieldtype: 'Currency',
+						fieldname: 'amount',
+						label: 'Amount',
+						in_list_view: 1,
+						reqd: 1,
+						columns: 3,
+						onchange: function() {
+							// Never let the running allocations exceed the payment amount:
+							// clamp the row just edited down to whatever balance remains.
+							let amount = flt(d.get_value('amount') || 0);
+							let total = (d.get_value('allocations') || []).reduce((sum, row) => sum + flt(row.amount || 0), 0);
+							let over = total - amount;
+							if (over > 0.0001 && this.doc) {
+								this.doc.amount = Math.max(flt(this.doc.amount || 0) - over, 0);
+								if (this.grid_row) {
+									this.grid_row.refresh_field('amount');
+								}
+							}
+							update_allocation_balance();
+						}
+					}
+				]
+			},
 			{ fieldtype: 'Section Break' },
 			{
 				fieldtype: 'Date',
@@ -325,7 +445,23 @@ function open_create_payment_modal(page) {
 				fieldname: 'payment_method',
 				label: 'Payment Method',
 				options: [''].concat(mode_of_payments).join('\n'),
-				reqd: 1
+				reqd: 1,
+				onchange: function() {
+					// Deposit account follows the method — derive it from Mode of Payment Account.
+					let payment_method = d.get_value('payment_method');
+					if (!payment_method) {
+						d.set_value('deposit_to', '');
+						return;
+					}
+					frappe.call({
+						method: 'crystal_alluminium_works.api.get_mode_of_payment_account_info',
+						args: { payment_method: payment_method },
+						callback: function(r) {
+							let info = (r && r.message) || {};
+							d.set_value('deposit_to', info.default_account || '');
+						}
+					});
+				}
 			},
 			{ fieldtype: 'Section Break' },
 			{
@@ -334,14 +470,8 @@ function open_create_payment_modal(page) {
 				label: 'Deposit To',
 				options: 'Account',
 				reqd: 1,
-				get_query: function() {
-					return {
-						filters: {
-							account_type: ['in', ['Bank', 'Cash']],
-							is_group: 0
-						}
-					};
-				}
+				read_only: 1,
+				description: 'Auto-derived from the selected payment method.'
 			},
 			{ fieldtype: 'Column Break' },
 			{
@@ -362,31 +492,83 @@ function open_create_payment_modal(page) {
 				return;
 			}
 
-			frappe.call({
-				method: 'crystal_alluminium_works.api.record_customer_payment',
-				args: {
-					customer: values.customer,
-					amount: values.amount,
-					date: values.date,
-					payment_method: values.payment_method,
-					reference: values.reference,
-					deposit_to: values.deposit_to
-				},
-				freeze: true,
-				freeze_message: 'Recording Payment...',
-				callback: function(r) {
-					if (r.message) {
-						d.hide();
-						frappe.show_alert({
-							message: __('Payment {0} recorded successfully.', [r.message]),
-							indicator: 'green'
-						});
-						load_payment_records(page, 1);
+			let allocations = (values.allocations || [])
+				.filter(row => row.job_card)
+				.map(row => ({ job_card: row.job_card, amount: flt(row.amount || 0) }));
+			if (allocations.some(row => row.amount <= 0)) {
+				frappe.msgprint(__('Each allocation must have an amount greater than zero.'));
+				return;
+			}
+			let allocated_total = allocations.reduce((sum, row) => sum + flt(row.amount || 0), 0);
+			if (allocated_total - flt(values.amount || 0) > 0.0001) {
+				frappe.msgprint(__('Allocated amount cannot exceed the payment amount.'));
+				return;
+			}
+
+			let save_payment = function() {
+				frappe.call({
+					method: 'crystal_alluminium_works.api.record_customer_payment',
+					args: {
+						customer: values.customer,
+						amount: values.amount,
+						date: values.date,
+						payment_method: values.payment_method,
+						reference: values.reference,
+						deposit_to: values.deposit_to,
+						allocations: JSON.stringify(allocations)
+					},
+					freeze: true,
+					freeze_message: 'Recording Payment...',
+					callback: function(r) {
+						if (r.message) {
+							d.hide();
+							frappe.show_alert({
+								message: __('Payment {0} recorded successfully.', [r.message]),
+								indicator: 'green'
+							});
+							load_payment_records(page, 1);
+						}
 					}
-				}
-			});
+				});
+			};
+
+			// Soft nudge: nothing is allocated, yet this customer already owes. Don't block —
+			// recording it as an advance / credit is a legitimate flow (e.g. funding a future
+			// job card) — just make sure the blank wasn't accidental.
+			if (allocations.length === 0) {
+				frappe.call({
+					method: 'crystal_alluminium_works.api.get_customer_outstanding',
+					args: { customer: values.customer },
+					callback: function(r) {
+						let info = r.message || {};
+						let outstanding = flt(info.outstanding || 0);
+						if (outstanding > 0.0001) {
+							frappe.confirm(
+								__('This customer owes {0} but this payment isn’t allocated to any job card. Record it as advance / credit?',
+									[format_currency(outstanding, info.currency || 'KES')]),
+								save_payment
+							);
+						} else {
+							save_payment();
+						}
+					}
+				});
+			} else {
+				save_payment();
+			}
 		}
 	});
 
+	// Live updates as the user types: the top amount, plus any edit/add/remove inside the
+	// allocations grid (delegated so it covers rows created after the dialog opened).
+	d.fields_dict.amount.$input.on('input', update_allocation_balance);
+	d.fields_dict.allocations.grid.wrapper.on('input', 'input', function() {
+		setTimeout(update_allocation_balance, 30);
+	});
+	d.fields_dict.allocations.grid.wrapper.on('click', '.grid-remove-rows, .grid-add-row', function() {
+		setTimeout(update_allocation_balance, 60);
+	});
+
+	update_allocation_balance();
 	d.show();
 }

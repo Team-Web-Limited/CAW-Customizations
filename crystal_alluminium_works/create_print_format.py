@@ -17,8 +17,7 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
 {{% endmacro %}}
 
 <div class="letterhead" style="margin-bottom: 20px;">
-    <div style="font-size: 28px; font-weight: bold; color: #2c3e50; text-transform: uppercase;">Crystal Aluminium Works</div>
-    <div style="color: #7f8c8d; font-size: 13px;">Specialists in Aluminium, Laminated Glass, and Acoustic Ceilings</div>
+    <img src="/assets/crystal_alluminium_works/images/crystal-alluminium-works-letterhead.jpeg" style="max-width: 100%; height: auto;" alt="Crystal Aluminium Works">
 </div>
 <hr style="border-top: 2px solid #ecf0f1; margin-bottom: 20px;">
 <div class="row" style="margin-bottom: 30px;">
@@ -393,6 +392,103 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
     return html
 
 
+def build_crystal_payment_receipt_print_format_html():
+    return """
+{% set history = doc %}
+
+<div style="width: 100%; margin-bottom: 22px;">
+    <div style="display: table; width: 100%; table-layout: fixed;">
+        <div style="display: table-row;">
+            <div style="display: table-cell; width: 70%; vertical-align: top; padding-right: 16px;">
+                <div style="margin-left: -48px;">
+                    <img src="/assets/crystal_alluminium_works/images/crystal-alluminium-works-letterhead.jpeg" style="display: block; width: calc(100% + 48px); max-width: none; height: auto;" alt="Crystal Aluminium Works">
+                </div>
+            </div>
+            <div style="display: table-cell; width: 240px; text-align: right; vertical-align: top;">
+                <div style="font-size: 26px; font-weight: bold; color: #2c3e50; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px;">Receipt</div>
+                <div style="display: inline-block; min-width: 220px; padding: 12px 16px; border: 1px solid #dfe6e9; border-radius: 4px; text-align: left;">
+                    <div style="color: #7f8c8d; font-size: 12px; text-transform: uppercase;">Date</div>
+                    <div style="font-size: 16px; font-weight: bold; margin-top: 4px;">{{ frappe.utils.formatdate(history.creation) }}</div>
+                    <div style="color: #7f8c8d; font-size: 12px; text-transform: uppercase; margin-top: 12px;">Receipt No</div>
+                    <div style="font-size: 14px; font-weight: 600; margin-top: 4px;">{{ history.receipt_no or history.name }}</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+<hr style="border-top: 2px solid #ecf0f1; margin-bottom: 20px;">
+
+<div class="row" style="margin-bottom: 30px;">
+    <div class="col-xs-6">
+        <div style="color: #7f8c8d; font-size: 12px; text-transform: uppercase;">Customer Name</div>
+        <div style="font-size: 16px; font-weight: bold;">{{ history.customer_name or history.customer }}</div>
+    </div>
+    <div class="col-xs-6 text-right">
+        <div style="color: #7f8c8d; font-size: 12px; text-transform: uppercase;">Job Card No</div>
+        <div style="font-size: 16px; font-weight: bold;">{{ history.job_card }}</div>
+    </div>
+</div>
+
+<div style="padding: 18px; background: #f8f9fa; border-radius: 4px; margin-bottom: 20px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; font-size: 13px; color: #6c757d; text-transform: uppercase; padding-bottom: 10px; border-bottom: 1px solid #dee2e6;">
+        <span>Payment Mode</span>
+        <span>{{ history.payment_mode or '-' }}</span>
+    </div>
+    <div style="display:flex; justify-content:space-between; align-items:center; font-size: 13px; color: #6c757d; text-transform: uppercase; padding: 10px 0; border-bottom: 1px solid #dee2e6;">
+        <span>Payment Option</span>
+        <span>{{ history.payment_option or '-' }}</span>
+    </div>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-top: 12px;">
+        <span style="font-size: 14px; color: #6c757d; text-transform: uppercase;">Amount Received</span>
+        <span style="font-size: 24px; font-weight: bold; color: #2c3e50;">{{ frappe.format_value(history.amount_paid, df={'fieldtype': 'Currency'}, doc=history) }}</span>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-xs-6">
+        <div style="color: #7f8c8d; font-size: 12px; text-transform: uppercase;">Paid To Date</div>
+        <div style="font-size: 15px; font-weight: 600;">{{ frappe.format_value(history.payment_amount, df={'fieldtype': 'Currency'}, doc=history) }}</div>
+    </div>
+    <div class="col-xs-6 text-right">
+        <div style="color: #7f8c8d; font-size: 12px; text-transform: uppercase;">Balance</div>
+        <div style="font-size: 15px; font-weight: 600;">{{ frappe.format_value(history.balance_amount, df={'fieldtype': 'Currency'}, doc=history) }}</div>
+    </div>
+</div>
+
+{% set quotation = frappe.get_doc('Quotation', history.quotation) if history.quotation else None %}
+{% set receipt_items = (quotation.items if quotation else [])|rejectattr('custom_auto_generated')|list %}
+{% if receipt_items %}
+<style>
+    .pr-items-table { width: 100%; border-collapse: collapse; margin-top: 24px; }
+    .pr-items-table th { background-color: #f8f9fa; color: #2c3e50; padding: 8px 6px; border-bottom: 2px solid #dee2e6; font-size: 11px; text-align: left; }
+    .pr-items-table td { padding: 8px 6px; border-bottom: 1px solid #dee2e6; font-size: 12px; }
+    .pr-items-table .pr-right { text-align: right; }
+</style>
+<table class="pr-items-table">
+    <thead>
+        <tr>
+            <th>Item</th>
+            <th class="pr-right">Qty/Pcs</th>
+            <th>UOM</th>
+            <th class="pr-right">Amount</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for row in receipt_items %}
+        {% set qty = row.custom_sheet_pcs if (row.custom_product_category == 'Glass' and row.custom_glass_sale_mode == 'Sheet' and frappe.utils.flt(row.custom_sheet_pcs or 0) > 0) else (row.custom_ceiling_sq_m if (row.custom_product_category == 'Ceiling' and frappe.utils.flt(row.custom_ceiling_sq_m or 0) > 0) else row.qty) %}
+        <tr>
+            <td>{{ row.item_name or row.item_code }}</td>
+            <td class="pr-right">{{ frappe.utils.flt(qty, 2) }}</td>
+            <td>{{ row.uom or '-' }}</td>
+            <td class="pr-right">{{ frappe.format_value(row.amount, df={'fieldtype': 'Currency'}, doc=history) }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+"""
+
+
 def build_crystal_job_card_print_format_html():
     return """
 {% set job_card = doc %}
@@ -410,11 +506,12 @@ def build_crystal_job_card_print_format_html():
 {% endmacro %}
 
 <div style="width: 100%; margin-bottom: 22px;">
-    <div style="display: table; width: 100%;">
+    <div style="display: table; width: 100%; table-layout: fixed;">
         <div style="display: table-row;">
-            <div style="display: table-cell; vertical-align: top; padding-right: 24px;">
-                <div style="font-size: 28px; font-weight: bold; color: #2c3e50; text-transform: uppercase;">Crystal Aluminium Works</div>
-                <div style="color: #7f8c8d; font-size: 13px;">Specialists in Aluminium, Laminated Glass, and Acoustic Ceilings</div>
+            <div style="display: table-cell; width: 70%; vertical-align: top; padding-right: 16px;">
+                <div style="margin-left: -48px;">
+                    <img src="/assets/crystal_alluminium_works/images/crystal-alluminium-works-letterhead.jpeg" style="display: block; width: calc(100% + 48px); max-width: none; height: auto;" alt="Crystal Aluminium Works">
+                </div>
             </div>
             <div style="display: table-cell; width: 240px; text-align: right; vertical-align: top;">
                 <div style="font-size: 26px; font-weight: bold; color: #2c3e50; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px;">Job Card</div>

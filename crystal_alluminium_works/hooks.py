@@ -159,6 +159,9 @@ doc_events = {
 	"Sales Invoice": {
 		"validate": "crystal_alluminium_works.sales_invoice_handler.on_validate",
 		"on_submit": "crystal_alluminium_works.api.on_sales_invoice_submit"
+	},
+	"Payments": {
+		"on_trash": "crystal_alluminium_works.api.on_payments_trash"
 	}
 }
 

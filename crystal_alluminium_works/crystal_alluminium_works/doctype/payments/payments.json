@@ -13,7 +13,8 @@
   "date",
   "payment_method",
   "deposit_to",
-  "reference"
+  "reference",
+  "allocations"
  ],
  "fields": [
   {
@@ -66,6 +67,13 @@
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Reference"
+  },
+  {
+   "description": "Split this payment across one or more job cards. Any amount left unallocated is treated as the customer's advance / credit.",
+   "fieldname": "allocations",
+   "fieldtype": "Table",
+   "label": "Job Card Allocations",
+   "options": "Payment Job Card Allocation"
   }
  ],
  "grid_page_length": 50,
