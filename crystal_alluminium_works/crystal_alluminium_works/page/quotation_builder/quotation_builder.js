@@ -12,7 +12,8 @@ frappe.pages['quotation-builder'].on_page_load = function (wrapper) {
 			customer: '',
 			payment_mode: 'invoice',
 			items: [],
-			step: 1
+			step: 1,
+			price_adjustment: null
 		};
 	} else if (!window.qb_state.payment_mode) {
 		window.qb_state.payment_mode = QB_DEFAULT_CUSTOMER_PAYMENT_MODE;
@@ -286,6 +287,8 @@ function bind_events(page) {
 		open_glass_import_dialog(page, QB_DEFAULT_GLASS_DIMENSION_UOM);
 	});
 
+	setup_price_adjustment_controls(page);
+
 	$(page.body).on('click.qbbuilder', '.qb-nav-step', function () {
 		let step = parseInt($(this).data('step'));
 		if (step === 3 && !(window.qb_state && window.qb_state.items && window.qb_state.items.length)) {
@@ -312,10 +315,6 @@ function get_item_uom_label(item) {
 		return 'Nos';
 	}
 
-	if (item.category === 'Aluminium') {
-		return 'len';
-	}
-
 	if (item.category === 'Ceiling') {
 		if (item.ceiling_mode === 'bundle' || is_ceiling_board_item(item)) {
 			return item.uom || 'Square Meter';
@@ -329,6 +328,10 @@ function get_item_uom_label(item) {
 
 	if (item.category === 'Glass') {
 		return 'Square Foot';
+	}
+
+	if (item.category === 'Aluminium') {
+		return 'Nos';
 	}
 
 	return '';
@@ -388,6 +391,42 @@ function calculate_item_amount(item) {
 	}
 
 	return qty * rate;
+}
+
+// ────────────────────────────────────────────
+// Global price adjustment (+/- % over Inc.Rate, applied per row)
+// ────────────────────────────────────────────
+function price_adjustment_key(adjustment) {
+	return adjustment && adjustment.percent ? `${adjustment.type}${adjustment.percent}` : null;
+}
+
+function apply_price_adjustment_to_item(item, adjustment) {
+	if (item._base_rate === undefined || item._base_rate === null) {
+		item._base_rate = flt(item.rate || 0);
+	}
+
+	if (adjustment && adjustment.percent) {
+		let multiplier = adjustment.type === '-'
+			? (1 - adjustment.percent / 100)
+			: (1 + adjustment.percent / 100);
+		item.rate = item._base_rate * multiplier;
+	} else {
+		item.rate = item._base_rate;
+	}
+
+	item.amount = calculate_item_amount(item);
+	item._price_adj_key = price_adjustment_key(adjustment);
+}
+
+function sync_price_adjustment() {
+	let adjustment = window.qb_state.price_adjustment;
+	let key = price_adjustment_key(adjustment);
+
+	window.qb_state.items.forEach(function (item) {
+		if (item._price_adj_key !== key) {
+			apply_price_adjustment_to_item(item, adjustment);
+		}
+	});
 }
 
 function get_builder_subtotal() {
@@ -838,8 +877,8 @@ function render_review_category_section(items, category) {
 							${is_ceiling && ceiling_review.show_uom ? '<th style="text-align:center;white-space:nowrap;">UOM</th>' : ''}
 							${is_ceiling ? ceiling_review.columns.map(column => `<th style="text-align:center;white-space:nowrap;">${frappe.utils.escape_html(column.label)}</th>`).join('') : ''}
 							<th style="text-align:center;white-space:nowrap;">Price List</th>
-							<th style="text-align:right;white-space:nowrap;">Rate</th>
-							<th style="text-align:right;white-space:nowrap;">Amount</th>
+							<th style="text-align:right;white-space:nowrap;">Inc.Rate</th>
+							<th style="text-align:right;white-space:nowrap;">Exc.Amount</th>
 						</tr>
 					</thead>
 					<tbody>
@@ -984,8 +1023,8 @@ function render_review_step(page) {
 								<th style="white-space:nowrap;">Description</th>
 								<th style="text-align:center;white-space:nowrap;">Pcs</th>
 								<th style="text-align:center;white-space:nowrap;">Price List</th>
-								<th style="text-align:right;white-space:nowrap;">Rate/Piece</th>
-								<th style="text-align:right;white-space:nowrap;">Amount</th>
+								<th style="text-align:right;white-space:nowrap;">Inc.Rate/Piece</th>
+								<th style="text-align:right;white-space:nowrap;">Exc.Amount</th>
 							</tr>
 						</thead>
 						<tbody>
@@ -1014,8 +1053,8 @@ function render_review_step(page) {
 								<th style="white-space:nowrap;">Description</th>
 								<th style="text-align:center;white-space:nowrap;">Qty</th>
 								<th style="text-align:center;white-space:nowrap;">Price List</th>
-								<th style="text-align:right;white-space:nowrap;">Rate</th>
-								<th style="text-align:right;white-space:nowrap;">Amount</th>
+								<th style="text-align:right;white-space:nowrap;">Inc.Rate</th>
+								<th style="text-align:right;white-space:nowrap;">Exc.Amount</th>
 							</tr>
 						</thead>
 						<tbody>
@@ -1114,7 +1153,13 @@ function setup_customer_step(page) {
 		parent: $payment_container,
 		render_input: true
 	});
-	payment_mode_field.$input.css({ 'font-size': '15px', 'padding': '10px' });
+	payment_mode_field.$input.css({
+		'font-size': '15px',
+		'padding': '6px 32px 6px 10px',
+		'height': 'auto',
+		'line-height': 'normal',
+		'text-overflow': 'ellipsis'
+	});
 	page.qb_payment_mode_field = payment_mode_field;
 
 	let customer_field = frappe.ui.form.make_control({
@@ -1372,7 +1417,81 @@ function remove_item(page, id) {
 	render_items_table(page);
 }
 
+function render_price_adjustment_badge(page) {
+	let adjustment = window.qb_state.price_adjustment;
+	let $badge = $(page.body).find('.qb-price-adjust-badge');
+
+	if (!adjustment || !adjustment.percent) {
+		$badge.hide();
+		return;
+	}
+
+	let sign = adjustment.type === '-' ? '−' : '+';
+	let color = adjustment.type === '-' ? '#c0392b' : '#27ae60';
+	$badge.css({ color: color }).text(`${sign}${adjustment.percent}% on all rates`).show();
+}
+
+function setup_price_adjustment_controls(page) {
+	let $popover = $(page.body).find('.qb-price-adjust-popover');
+	let $input = $(page.body).find('.qb-price-adjust-input');
+	let selected_sign = '-';
+
+	function set_selected_sign(sign) {
+		selected_sign = sign;
+		$(page.body).find('.qb-price-adjust-sign').each(function () {
+			let is_active = $(this).data('sign') === sign;
+			$(this).css({
+				'background': is_active ? 'var(--primary)' : 'var(--subtle-fg)',
+				'color': is_active ? '#fff' : 'var(--text-color)'
+			});
+		});
+	}
+	set_selected_sign(selected_sign);
+
+	$(page.body).on('click.qbbuilder', '.qb-adjust-pricing-btn', function (e) {
+		e.stopPropagation();
+		let adjustment = window.qb_state.price_adjustment;
+		if (adjustment) {
+			set_selected_sign(adjustment.type);
+			$input.val(adjustment.percent);
+		}
+		$popover.toggle();
+	});
+
+	$(page.body).on('click.qbbuilder', '.qb-price-adjust-sign', function () {
+		set_selected_sign($(this).data('sign'));
+	});
+
+	$(page.body).on('click.qbbuilder', '.qb-price-adjust-apply', function () {
+		let percent = flt($input.val());
+		if (percent <= 0) {
+			frappe.msgprint('Enter a percentage greater than 0.');
+			return;
+		}
+		if (percent > 100) percent = 100;
+
+		window.qb_state.price_adjustment = { type: selected_sign, percent: percent };
+		render_items_table(page);
+		$popover.hide();
+	});
+
+	$(page.body).on('click.qbbuilder', '.qb-price-adjust-clear', function () {
+		window.qb_state.price_adjustment = null;
+		$input.val('');
+		render_items_table(page);
+		$popover.hide();
+	});
+
+	$(document).off('click.qbbuilder-price-adjust').on('click.qbbuilder-price-adjust', function (e) {
+		if (!$(e.target).closest('.qb-price-adjust-popover, .qb-adjust-pricing-btn').length) {
+			$popover.hide();
+		}
+	});
+}
+
 function render_items_table(page) {
+	sync_price_adjustment();
+
 	let $tbody = $(page.body).find('.qb-items-body');
 	$tbody.empty();
 	update_review_button_visibility(page);
@@ -1435,6 +1554,8 @@ function render_items_table(page) {
 	// Calculate grand total
 	let grand = window.qb_state.items.reduce((s, i) => s + (i.amount || 0), 0);
 	$(page.body).find('.qb-grand-total').text(format_currency(grand, 'KES'));
+
+	render_price_adjustment_badge(page);
 
 	// Bind edit/remove
 	$(page.body).find('.qb-edit-item').off('click').on('click', function () {
@@ -1515,6 +1636,11 @@ function open_item_editor(page, item, is_new = false) {
 			change: function () {
 				queue_fetch_rate(true);
 			}
+		},
+		{
+			fieldtype: 'HTML',
+			fieldname: 'stock_balance_html',
+			label: 'Stock Balance'
 		},
 		{ fieldtype: 'Column Break' },
 		{
@@ -2073,6 +2199,37 @@ function open_item_editor(page, item, is_new = false) {
 			if (!ic) {
 				ic = item.item_code;
 			}
+
+			// Fetch and render stock balance
+			if (ic && d.fields_dict.stock_balance_html) {
+				frappe.call({
+					method: 'crystal_alluminium_works.api.get_item_stock_balance',
+					args: { item_code: ic },
+					callback: function (r) {
+						let balances = r.message || [];
+						let html = `<div style="padding: 10px; background: var(--subtle-fg); border: 1px solid var(--border-color); border-radius: 6px; margin-top: 5px;">
+							<div style="font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-muted); margin-bottom: 6px; letter-spacing: 0.3px;">Current Stock Balance</div>
+						`;
+						if (balances.length > 0) {
+							html += balances.map(b => {
+								let display_name = b.warehouse.replace("Stores - CA", "").trim();
+								let label = display_name ? `<span class="text-muted">${frappe.utils.escape_html(display_name)}:</span> ` : '';
+								return `<div style="margin-bottom: 4px; font-size: 13px; display: flex; justify-content: space-between; gap: 20px;">
+									${label}
+									<strong style="color: var(--text-color);">${frappe.utils.escape_html(b.balance)}</strong>
+								</div>`;
+							}).join('');
+						} else {
+							html += `<div style="font-size: 13px; color: var(--text-muted);">No stock available in any warehouse.</div>`;
+						}
+						html += '</div>';
+						d.fields_dict.stock_balance_html.html(html);
+					}
+				});
+			} else if (d.fields_dict.stock_balance_html) {
+				d.fields_dict.stock_balance_html.html('');
+			}
+
 			let pl = d.get_value('price_list');
 			if (!pl && d.fields_dict.price_list && d.fields_dict.price_list.$input) {
 				pl = d.fields_dict.price_list.$input.val();
@@ -2401,7 +2558,9 @@ function generate_quotation(page) {
 
 	let api_args = {
 		customer: state.customer,
-		items: JSON.stringify(state.items)
+		items: JSON.stringify(state.items),
+		price_adjustment_type: state.price_adjustment ? state.price_adjustment.type : '',
+		price_adjustment_percent: state.price_adjustment ? state.price_adjustment.percent : 0
 	};
 
 	// If editing an existing quotation, pass its name so the API updates it
@@ -2636,8 +2795,8 @@ function get_builder_html() {
 							<th style="text-align:center;">Pieces</th>
 							<th style="text-align:center;">UOM Qty</th>
 							<th style="text-align:center;">UOM</th>
-							<th style="text-align:right;">Rate</th>
-							<th style="text-align:right;">Amount</th>
+							<th style="text-align:right;">Inc.Rate</th>
+							<th style="text-align:right;">Exc.Amount</th>
 							<th style="text-align:center;">Actions</th>
 						</tr>
 					</thead>
@@ -2651,6 +2810,25 @@ function get_builder_html() {
 					<div>
 						<span style="color:var(--text-muted);margin-right:8px;">Grand Total:</span>
 						<span class="qb-grand-total">KES 0.00</span>
+					</div>
+					<div style="display:flex;align-items:center;gap:10px;position:relative;">
+						<span class="qb-price-adjust-badge" style="display:none;font-size:12px;font-weight:600;padding:4px 10px;border-radius:12px;background:var(--subtle-fg);"></span>
+						<button class="qb-nav-btn secondary qb-adjust-pricing-btn" type="button">% Adjust Pricing</button>
+						<div class="qb-price-adjust-popover" style="display:none;position:absolute;bottom:calc(100% + 10px);right:0;width:240px;background:var(--card-bg);border:1px solid var(--border-color);border-radius:10px;box-shadow:var(--shadow-lg, 0 4px 16px rgba(0,0,0,0.15));padding:16px;z-index:50;">
+							<div style="font-weight:600;font-size:13px;margin-bottom:10px;">Adjust Inc.Rate for all items</div>
+							<div class="qb-price-adjust-toggle" style="display:flex;gap:6px;margin-bottom:10px;">
+								<button type="button" class="qb-price-adjust-sign" data-sign="-" style="flex:1;padding:8px;border-radius:6px;border:1px solid var(--border-color);background:var(--subtle-fg);font-weight:700;cursor:pointer;">− Discount</button>
+								<button type="button" class="qb-price-adjust-sign" data-sign="+" style="flex:1;padding:8px;border-radius:6px;border:1px solid var(--border-color);background:var(--subtle-fg);font-weight:700;cursor:pointer;">+ Markup</button>
+							</div>
+							<div style="display:flex;align-items:center;gap:6px;margin-bottom:12px;">
+								<input type="number" class="qb-price-adjust-input form-control" min="0" max="100" step="0.5" placeholder="0" style="flex:1;">
+								<span style="font-weight:600;">%</span>
+							</div>
+							<div style="display:flex;justify-content:space-between;gap:8px;">
+								<button type="button" class="qb-price-adjust-clear" style="background:none;border:none;color:var(--text-muted);font-size:12px;cursor:pointer;padding:0;">Clear</button>
+								<button type="button" class="qb-nav-btn primary qb-price-adjust-apply" style="padding:6px 16px;font-size:13px;">Apply to all</button>
+							</div>
+						</div>
 					</div>
 					<button class="qb-nav-btn primary qb-nav-step" data-step="3">Review →</button>
 				</div>

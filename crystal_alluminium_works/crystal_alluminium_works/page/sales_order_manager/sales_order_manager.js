@@ -21,10 +21,6 @@ function get_sales_order_item_uom_label(item) {
 		return item.uom;
 	}
 
-	if (item.custom_product_category === 'Aluminium') {
-		return 'Meter';
-	}
-
 	if (item.custom_product_category === 'Ceiling') {
 		return 'Square Meter';
 	}
@@ -33,12 +29,16 @@ function get_sales_order_item_uom_label(item) {
 		return 'Square Foot';
 	}
 
+	if (item.custom_product_category === 'Aluminium') {
+		return 'Nos';
+	}
+
 	return '';
 }
 
 function get_sales_order_item_uom_qty(item) {
 	if (item.custom_product_category === 'Aluminium') {
-		// Sold per piece (1 piece = 1 metre); qty is the piece count.
+		// Sold per whole piece; qty is the piece count.
 		return flt(item.qty || 0);
 	}
 

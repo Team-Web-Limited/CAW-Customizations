@@ -47,7 +47,12 @@ add_to_apps_screen = [
 
 # include js, css files in header of desk.html
 # app_include_css = "/assets/crystal_alluminium_works/css/crystal_alluminium_works.css"
-app_include_js = "/assets/crystal_alluminium_works/js/workspace_sidebar_accordion.js"
+app_include_js = [
+	"/assets/crystal_alluminium_works/js/workspace_sidebar_accordion.js",
+	# Shared category-aware "add item" modal (ported from Quotation Builder), used by the
+	# Sales Invoice Manager edit-items flow so items get quotation-builder-grade entry & pricing.
+	"/assets/crystal_alluminium_works/js/caw_item_builder.js",
+]
 
 # include js, css files in header of web template
 # web_include_css = "/assets/crystal_alluminium_works/css/crystal_alluminium_works.css"

@@ -64,10 +64,6 @@ function get_manager_item_uom_label(item) {
 		return item.uom;
 	}
 
-	if (item.custom_product_category === 'Aluminium') {
-		return 'Meter';
-	}
-
 	if (item.custom_product_category === 'Ceiling') {
 		return 'Square Meter';
 	}
@@ -76,12 +72,16 @@ function get_manager_item_uom_label(item) {
 		return 'Square Foot';
 	}
 
+	if (item.custom_product_category === 'Aluminium') {
+		return 'Nos';
+	}
+
 	return '';
 }
 
 function get_manager_item_uom_qty(item) {
 	if (item.custom_product_category === 'Aluminium') {
-		// Sold per piece (1 piece = 1 metre); qty is the piece count.
+		// Sold per whole piece; qty is the piece count.
 		return flt(item.qty || 0);
 	}
 
@@ -1312,12 +1312,17 @@ async function open_quotation_in_builder(doc) {
 		let payment_mode = customer_meta && customer_meta.message && customer_meta.message.tax_id ? 'invoice' : 'cash';
 
 		// Pre-populate the builder state from the existing quotation, then navigate
+		let price_adjustment = (doc.custom_price_adjustment_type && doc.custom_price_adjustment_percent)
+			? { type: doc.custom_price_adjustment_type, percent: flt(doc.custom_price_adjustment_percent) }
+			: null;
+
 		window.qb_state = {
 			customer: doc.party_name || doc.customer_name,
 			payment_mode: payment_mode,
 			items: [],
 			step: 2, // Go straight to items step
-			editing_quotation: doc.name // Track that we are editing an existing quotation
+			editing_quotation: doc.name, // Track that we are editing an existing quotation
+			price_adjustment: price_adjustment
 		};
 
 			let glass_type_by_item_code = {};
@@ -1430,6 +1435,21 @@ async function open_quotation_in_builder(doc) {
 				};
 				window.qb_state.items.push(builder_item);
 			}
+
+		// The rates above are the FINAL (already-adjusted) rates saved on the
+		// quotation. Reverse the stored adjustment to recover each item's
+		// pre-adjustment base rate, and mark it as already applied — otherwise
+		// the builder's sync_price_adjustment() would apply the % a second time.
+		if (price_adjustment) {
+			let multiplier = price_adjustment.type === '-'
+				? (1 - price_adjustment.percent / 100)
+				: (1 + price_adjustment.percent / 100);
+			let key = `${price_adjustment.type}${price_adjustment.percent}`;
+			window.qb_state.items.forEach(function (item) {
+				item._base_rate = multiplier ? item.rate / multiplier : item.rate;
+				item._price_adj_key = key;
+			});
+		}
 
 		frappe.set_route('quotation-builder');
 }

@@ -173,7 +173,7 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
                 {{% set uom = parent.uom or '' %}}
                 {{% if parent_category == 'Aluminium' %}}
                     {{% set qty = parent.qty or 0 %}}
-                    {{% set uom = parent.uom or 'Meter' %}}
+                    {{% set uom = parent.uom or 'Nos' %}}
                 {{% elif parent_category == 'Glass' %}}
                     {{% if parent.custom_glass_sale_mode == 'Full Sheet' %}}
                         {{% set qty = parent.qty or 0 %}}
@@ -651,7 +651,7 @@ def build_crystal_job_card_print_format_html():
                 {% set uom = parent.uom or '' %}
                 {% if parent_category == 'Aluminium' %}
                     {% set qty = parent.qty or 0 %}
-                    {% set uom = parent.uom or 'Meter' %}
+                    {% set uom = parent.uom or 'Nos' %}
                 {% elif parent_category == 'Glass' %}
                     {% if parent.custom_glass_sale_mode == 'Full Sheet' %}
                         {% set qty = parent.qty or 0 %}

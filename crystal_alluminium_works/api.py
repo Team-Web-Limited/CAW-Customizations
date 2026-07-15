@@ -999,7 +999,7 @@ def _ensure_item_has_default_uom(item, uom_name):
 def _get_category_uom(category):
     """Return the canonical UOM name used by ERPNext seed data and transactions."""
     if category == "Aluminium":
-        return "Meter"
+        return "Nos"
     if category in GLASS_CATEGORY_TO_TYPE or category == "Glass":
         return "Square Foot"
     if category == "Ceiling":
@@ -1619,7 +1619,9 @@ def create_job_card_from_quotation(quotation, customer, customer_name=None, paym
     job_card.payment_amount = paid_amount
     job_card.balance_amount = balance_amount
 
-    if job_card.get("__islocal"):
+    is_new_job_card = bool(job_card.get("__islocal"))
+
+    if is_new_job_card:
         job_card.insert(ignore_permissions=True, set_name=target_job_card_name)
     else:
         job_card.save(ignore_permissions=True)
@@ -1782,6 +1784,140 @@ def get_job_card_detail(name):
             cumulative_by_row[row_name] = cumulative_by_row.get(row_name, 0) + flt(entry.qty_released)
             entry["balance_qty"] = full_qty - cumulative_by_row[row_name]
 
+    stock_deductions = []
+    import json
+
+    # 1. Fetch "Saved" (planned but not yet deducted) sheets from job_card.custom_sheet_consumption_json
+    if job_card.custom_sheet_consumption_json:
+        try:
+            saved_data = json.loads(job_card.custom_sheet_consumption_json)
+            # Map quotation_item to item_code/uom
+            item_map = {item.name: item for item in quotation.items} if quotation else {}
+            for row_name, sheets in saved_data.items():
+                item = item_map.get(row_name)
+                if not item:
+                    continue
+                
+                is_laminated = frappe.db.get_value("Item", item.item_code, "custom_glass_type") == "Laminated"
+                repack_entry_name = ""
+                repack_posting_date = ""
+                repack_posting_time = ""
+                
+                if is_laminated:
+                    se_doc = frappe.db.get_value(
+                        "Stock Entry",
+                        {"remarks": ["like", f"%Repacked for CAW Job Card: {job_card.name} Row: {row_name}%"], "docstatus": 1},
+                        ["name", "posting_date", "posting_time"], as_dict=True
+                    )
+                else:
+                    se_doc = frappe.db.get_value(
+                        "Stock Entry",
+                        {"remarks": ["like", f"%Deducted for CAW Job Card: {job_card.name} Row: {row_name}%"], "docstatus": 1},
+                        ["name", "posting_date", "posting_time"], as_dict=True
+                    )
+                
+                if se_doc:
+                    repack_entry_name = se_doc.name
+                    repack_posting_date = str(se_doc.posting_date)
+                    repack_posting_time = str(se_doc.posting_time)
+
+                # Group sheets by item_consumed
+                sheets_by_item = {}
+                for sheet in sheets:
+                    itm = sheet.get("item_consumed") or item.item_code
+                    if itm not in sheets_by_item:
+                        sheets_by_item[itm] = []
+                    sheets_by_item[itm].append(sheet)
+
+                configs = frappe.cache().get_value("glass_sheet_configs") or []
+                if not configs:
+                    configs = get_glass_sheet_configs()
+
+                for itm, itm_sheets in sheets_by_item.items():
+                    sft_release_qty = 0
+                    sheets_str = ", ".join([f"{s.get('size')} ({frappe.utils.flt(s.get('pcs')):.0f} pcs)" for s in itm_sheets])
+                    for sheet in itm_sheets:
+                        size = sheet.get("size")
+                        pcs = frappe.utils.flt(sheet.get("pcs"))
+                        sft_per_sheet = next((frappe.utils.flt(c.get("sft")) for c in configs if c.get("size") == size), 0)
+                        sft_release_qty += sft_per_sheet * pcs
+                    
+                    stock_deductions.append({
+                        "name": repack_entry_name,
+                        "posting_date": repack_posting_date,
+                        "posting_time": repack_posting_time,
+                        "saved_on": str(job_card.modified),
+                        "quotation_item_code": item.item_code,
+                        "quotation_item_name": item.item_name or item.item_code,
+                        "item_code": itm,
+                        "qty": sft_release_qty,
+                        "sheets_consumed": sheets_str,
+                        "status": "Deducted" if repack_entry_name else "Saved"
+                    })
+        except Exception:
+            pass
+
+    # 2. Fetch "Deducted" sheets from Stock Entries
+    # Build a lookup: glass item_code → quotation item_code/name via CAW Job Card Release
+    glass_releases = frappe.get_all(
+        "CAW Job Card Release",
+        filters={"job_card": job_card.name, "category": "Glass"},
+        fields=["item_code", "item_name"],
+        limit_page_length=0,
+    )
+    # Map deducted item_code → quotation item (first match wins)
+    glass_release_map = {}
+    for gr in glass_releases:
+        if gr.item_code and gr.item_code not in glass_release_map:
+            glass_release_map[gr.item_code] = {
+                "quotation_item_code": gr.item_code,
+                "quotation_item_name": gr.item_name or gr.item_code,
+            }
+    entries = frappe.get_all(
+        "Stock Entry",
+        filters=[
+            ["remarks", "like", f"%Deducted for CAW Job Card: {name}%"],
+            ["remarks", "not like", "%Row:%"],
+            ["docstatus", "=", 1]
+        ],
+        fields=["name", "posting_date", "posting_time"]
+    )
+    for entry in entries:
+        st_items = frappe.get_all(
+            "Stock Entry Detail",
+            filters={"parent": entry.name},
+            fields=["item_code", "qty", "description"]
+        )
+        for item in st_items:
+            sheets_str = ""
+            if item.description and "Sheets Consumed: " in item.description:
+                idx = item.description.find("Sheets Consumed: ") + len("Sheets Consumed: ")
+                raw_json = item.description[idx:].strip()
+                if "\n" in raw_json:
+                    raw_json = raw_json.split("\n")[0].strip()
+                try:
+                    sheets_data = json.loads(raw_json)
+                    if isinstance(sheets_data, list):
+                        sheets_str = ", ".join([f"{s.get('size')} ({frappe.utils.flt(s.get('pcs')):.0f} pcs)" for s in sheets_data])
+                    else:
+                        sheets_str = raw_json
+                except Exception:
+                    sheets_str = raw_json
+            
+            rel = glass_release_map.get(item.item_code, {})
+            stock_deductions.append({
+                "name": entry.name,
+                "posting_date": str(entry.posting_date),
+                "posting_time": str(entry.posting_time),
+                "saved_on": "",
+                "quotation_item_code": rel.get("quotation_item_code", item.item_code),
+                "quotation_item_name": rel.get("quotation_item_name", ""),
+                "item_code": item.item_code,
+                "qty": frappe.utils.flt(item.qty),
+                "sheets_consumed": sheets_str,
+                "status": "Deducted"
+            })
+
     return {
         "job_card": {
             "name": job_card.name,
@@ -1798,6 +1934,7 @@ def get_job_card_detail(name):
             "status": job_card.status,
             "creation": job_card.creation,
             "modified": job_card.modified,
+            "custom_sheet_consumption_json": job_card.custom_sheet_consumption_json,
         },
         "quotation": {
             "name": quotation.name,
@@ -1808,26 +1945,51 @@ def get_job_card_detail(name):
             "grand_total": quotation.grand_total,
             "rounded_total": quotation.rounded_total,
             "has_releasable_items": _quotation_has_releasable_items(quotation),
+            "items": [
+                {
+                    "name": item.name,
+                    "item_code": item.item_code,
+                    "item_name": item.item_name,
+                    "qty": item.qty,
+                    "uom": item.uom,
+                    "custom_product_category": item.custom_product_category,
+                    "custom_glass_sale_mode": item.custom_glass_sale_mode,
+                    "custom_numbering": item.custom_numbering,
+                    "custom_glass_type": frappe.db.get_value("Item", item.item_code, "custom_glass_type")
+                }
+                for item in quotation.items
+            ]
         } if quotation else None,
         "history": history,
         "sales_invoices": sales_invoices,
         "released_items": released_items,
+        "stock_deductions": stock_deductions,
         "quotation_amendment_pending": _job_card_quotation_amendment_pending(job_card),
         "invoice_amendment_pending": _job_card_invoice_amendment_pending(job_card),
     }
 
 
 @frappe.whitelist()
-def create_quotation_from_builder(customer, items, quotation_name=None):
+def create_quotation_from_builder(
+    customer,
+    items,
+    quotation_name=None,
+    price_adjustment_type=None,
+    price_adjustment_percent=None,
+):
     """
     Creates or updates a Draft Quotation from the Quotation Builder payload.
     Items is a JSON string of the builder's item list.
     Each item carries its own price_list for per-item pricing.
-    The standard on_validate hook in quotation_handler.py will 
+    The standard on_validate hook in quotation_handler.py will
     auto-generate glass service rows when the quotation is saved.
 
     If quotation_name is provided, the existing quotation is updated
     instead of creating a new one (used by the "Edit in Builder" flow).
+
+    price_adjustment_type/percent record the Builder's global +/- % rate
+    adjustment so re-opening the quotation via "Edit in Builder" restores
+    the same mode and percentage instead of losing it.
     """
     items = json.loads(items) if isinstance(items, str) else items
     
@@ -1865,7 +2027,10 @@ def create_quotation_from_builder(customer, items, quotation_name=None):
             "selling_price_list": default_price_list,
             "items": []
         })
-    
+
+    quo.custom_price_adjustment_type = price_adjustment_type or ""
+    quo.custom_price_adjustment_percent = frappe.utils.flt(price_adjustment_percent or 0)
+
     for item in items:
         category = item.get("category", "")
         if category == "Ceiling":
@@ -1923,7 +2088,7 @@ def create_quotation_from_builder(customer, items, quotation_name=None):
             })
             row_data["qty"] = item.get("qty", 1.0)
         elif category == "Aluminium":
-            # Aluminium is sold per piece, where 1 piece = 1 metre. qty (pieces) is the
+            # Aluminium is sold per whole piece (stock_uom Nos). qty (pieces) is the
             # single source of truth; mirror it into custom_aluminium_metres for any
             # external consumer (no longer used for pricing/display math).
             row_data["custom_aluminium_metres"] = frappe.utils.flt(row_data.get("qty") or 0)
@@ -1989,13 +2154,122 @@ def _get_partial_row_native_full(row):
     Mirrors the JS get_job_card_row_quantities logic so the modal and server agree."""
     category = getattr(row, "custom_product_category", "") or ""
     if category == "Aluminium":
-        # Sold per piece (1 piece = 1 metre); qty is the releasable unit.
+        # Sold per whole piece; qty is the releasable unit.
         return flt(row.qty)
     if category == "Glass" and getattr(row, "custom_glass_sale_mode", "") == "Sheet":
         return flt(getattr(row, "custom_sheet_pcs", 0)) or flt(row.qty)
     if category == "Ceiling" and flt(getattr(row, "custom_ceiling_sq_m", 0)) > 0:
         return flt(getattr(row, "custom_ceiling_sq_m", 0))
     return flt(row.qty)
+
+
+def _get_glass_row_sft_qty(row):
+    """True Square Foot quantity for a Glass quotation/invoice row, regardless of
+    sale mode. Unlike _get_partial_row_native_full (which returns the *piece* count
+    for Sheet mode, since that's the unit the user releases in), this always returns
+    the SFT total, which is what stock (Repack/Material Issue) must move in."""
+    if getattr(row, "custom_glass_sale_mode", "") == "Sheet":
+        return flt(getattr(row, "custom_sheet_sft", 0)) * flt(getattr(row, "custom_sheet_pcs", 0))
+    return flt(row.qty)
+
+
+def _native_release_qty_to_sft(row, native_qty):
+    """Convert a release-event quantity (in the native unit _record_job_card_item_releases
+    receives, e.g. sheet pieces for Sheet-mode Glass) into SFT for stock deduction."""
+    sale_mode = getattr(row, "custom_glass_sale_mode", "")
+    if sale_mode == "Sheet":
+        return flt(native_qty) * flt(getattr(row, "custom_sheet_sft", 0))
+    elif sale_mode in ("Custom", "Resized"):
+        return flt(native_qty) * flt(getattr(row, "custom_area_sqft", 0))
+    return flt(native_qty)
+
+
+def _create_glass_deduction_stock_entry(glass_item, sft_qty, warehouse, company, job_card_name, sheet_remarks=None, invoice_sft=None, sales_invoice=None):
+    """Deduct Glass stock (via Material Issue) for one Job Card release event."""
+    entry = frappe.new_doc("Stock Entry")
+    entry.stock_entry_type = "Material Issue"
+    entry.company = company
+    entry.remarks = f"Deducted for CAW Job Card: {job_card_name}"
+    if sales_invoice:
+        entry.custom_sales_invoice = sales_invoice
+    item_dict = {
+        "item_code": glass_item,
+        "s_warehouse": warehouse,
+        "qty": round(flt(sft_qty), 4),
+    }
+    
+    desc_lines = []
+    if sheet_remarks:
+        desc_lines.append(f"Sheets Consumed: {sheet_remarks}")
+    if invoice_sft is not None:
+        desc_lines.append(f"Invoice SFT: {round(flt(invoice_sft), 4)}")
+        
+    if desc_lines:
+        item_dict["description"] = "\n".join(desc_lines)
+        
+    entry.append("items", item_dict)
+    entry.flags.ignore_permissions = True
+    entry.insert()
+    entry.submit()
+    return entry.name
+
+
+def _create_glass_deduction_stock_entry_for_row(glass_item, sft_qty, warehouse, company, job_card_name, row_name, sheet_remarks=None, invoice_sft=None):
+    """Deduct Glass stock (via Material Issue) immediately for a specific Job Card row."""
+    entry = frappe.new_doc("Stock Entry")
+    entry.stock_entry_type = "Material Issue"
+    entry.company = company
+    entry.remarks = f"Deducted for CAW Job Card: {job_card_name} Row: {row_name}"
+    item_dict = {
+        "item_code": glass_item,
+        "s_warehouse": warehouse,
+        "qty": round(flt(sft_qty), 4),
+    }
+    
+    desc_lines = []
+    if sheet_remarks:
+        desc_lines.append(f"Sheets Consumed: {sheet_remarks}")
+    if invoice_sft is not None:
+        desc_lines.append(f"Invoice SFT: {round(flt(invoice_sft), 4)}")
+        
+    if desc_lines:
+        item_dict["description"] = "\n".join(desc_lines)
+        
+    entry.append("items", item_dict)
+    entry.flags.ignore_permissions = True
+    entry.insert()
+    entry.submit()
+    return entry.name
+
+
+def _create_multi_item_deduction_stock_entry(items_to_deduct, company, job_card_name, sales_invoice=None):
+    """Deduct multiple stock items (via a single Material Issue Stock Entry) for a Job Card release event."""
+    entry = frappe.new_doc("Stock Entry")
+    entry.stock_entry_type = "Material Issue"
+    entry.company = company
+    entry.remarks = f"Deducted for CAW Job Card: {job_card_name}"
+    if sales_invoice:
+        entry.custom_sales_invoice = sales_invoice
+    for item in items_to_deduct:
+        entry.append("items", {
+            "item_code": item["item_code"],
+            "s_warehouse": item["s_warehouse"],
+            "qty": round(flt(item["qty"]), 4),
+        })
+    entry.flags.ignore_permissions = True
+    entry.insert()
+    entry.submit()
+    return entry.name
+
+
+def _create_non_glass_deduction_stock_entry(item_code, qty, warehouse, company, job_card_name, sales_invoice=None):
+    """Deduct stock (via Material Issue) for non-glass items (Aluminium, Fittings, Rubber, Silicone)."""
+    return _create_multi_item_deduction_stock_entry(
+        [{"item_code": item_code, "s_warehouse": warehouse, "qty": qty}],
+        company,
+        job_card_name,
+        sales_invoice=sales_invoice,
+    )
 
 
 def _quotation_has_releasable_items(quotation):
@@ -2035,7 +2309,7 @@ def _scale_partial_invoice_row(row, ratio):
 
 
 def _parse_releases(releases):
-    """Normalise the releases payload into {quotation_item_name: release_qty}."""
+    """Normalise the releases payload into {quotation_item_name: release_qty_or_dict}."""
     if not releases:
         return {}
     if isinstance(releases, str):
@@ -2045,10 +2319,15 @@ def _parse_releases(releases):
         items = releases.items()
     else:
         items = ((entry.get("row"), entry.get("qty")) for entry in releases)
-    for name, qty in items:
-        qty = flt(qty)
-        if name and qty > 0:
-            parsed[name] = qty
+    for name, value in items:
+        if isinstance(value, dict):
+            qty = flt(value.get("qty"))
+            if name and qty > 0:
+                parsed[name] = value
+        else:
+            qty = flt(value)
+            if name and qty > 0:
+                parsed[name] = qty
     return parsed
 
 
@@ -2127,6 +2406,31 @@ def make_sales_invoice_from_quotation(source_name, releases=None):
     invoice.insert()
     return invoice.name
 
+def _validate_glass_consumption(job_card):
+    if not job_card.quotation:
+        return
+    import json
+    quotation = frappe.get_doc("Quotation", job_card.quotation)
+    consumption = json.loads(job_card.custom_sheet_consumption_json or "{}")
+    
+    missing = []
+    for row in quotation.items:
+        if getattr(row, "custom_product_category", "") == "Glass":
+            glass_type = frappe.db.get_value("Item", row.item_code, "custom_glass_type")
+            sale_mode = getattr(row, "custom_glass_sale_mode", "")
+            
+            if glass_type == "Laminated" or sale_mode in ("Resized", "Custom"):
+                row_consumption = consumption.get(row.name, [])
+                valid = False
+                for sheet in row_consumption:
+                    if sheet.get("item_consumed") and sheet.get("size") and frappe.utils.flt(sheet.get("pcs")) > 0:
+                        valid = True
+                        break
+                if not valid:
+                    missing.append(row.item_code)
+                    
+    if missing:
+        frappe.throw(f"Cannot release materials. Please configure Glass Sheet Consumption via JC Operations for: {', '.join(missing)}.")
 
 @frappe.whitelist()
 def make_sales_invoice_from_job_card(job_card_name):
@@ -2134,6 +2438,8 @@ def make_sales_invoice_from_job_card(job_card_name):
         frappe.throw("Please select a valid Job Card.")
 
     job_card = frappe.get_doc("CAW Job Card", job_card_name)
+    _validate_glass_consumption(job_card)
+
     if not job_card.quotation or not frappe.db.exists("Quotation", job_card.quotation):
         frappe.throw("The selected Job Card is not linked to a valid Quotation.")
 
@@ -2178,7 +2484,12 @@ def make_sales_invoice_from_job_card(job_card_name):
 
     paid_invoice = _submit_and_settle_job_card_sales_invoice(invoice, job_card)
 
-    for name, release_qty in remaining_releases.items():
+    # Stamp collected qty for every row this invoice actually billed. On the pure
+    # full-invoice path (no prior partials) remaining_releases is empty, so iterating
+    # it here would leave custom_collected_qty at 0 and keep the Partial Invoice button
+    # alive forever — use invoice_releases, which equals remaining_releases when partials
+    # came first and holds the full per-row qty otherwise.
+    for name, release_qty in invoice_releases.items():
         row = rows_by_name[name]
         new_collected = flt(getattr(row, "custom_collected_qty", 0)) + release_qty
         frappe.db.set_value("Quotation Item", name, "custom_collected_qty", new_collected)
@@ -2226,6 +2537,32 @@ def _record_ceiling_releases(job_card, invoice, rows_by_name, released_qtys):
             "changed_by": frappe.session.user,
         }).insert(ignore_permissions=True)
 
+        # Wire stock deduction for Ceiling items
+        company = _get_default_stock_company()
+        warehouse = _get_default_receiving_warehouse(company)
+        items_to_deduct = []
+
+        # 1. Parent board item (uses_parent_item = True)
+        if release_qty > 0.0001:
+            items_to_deduct.append({
+                "item_code": row.item_code,
+                "s_warehouse": warehouse,
+                "qty": round(flt(release_qty), 4)
+            })
+
+        # 2. Components
+        for comp_item, comp_qty in pieces.items():
+            if comp_qty > 0.0001:
+                items_to_deduct.append({
+                    "item_code": comp_item,
+                    "s_warehouse": warehouse,
+                    "qty": round(flt(comp_qty), 4)
+                })
+
+        if items_to_deduct:
+            _create_multi_item_deduction_stock_entry(items_to_deduct, company, job_card.name, sales_invoice=invoice.name)
+
+
 
 def _record_job_card_item_releases(job_card, invoice, rows_by_name, released_qtys, is_partial):
     """Log one CAW Job Card Release row per item released on this visit, across every
@@ -2235,15 +2572,37 @@ def _record_job_card_item_releases(job_card, invoice, rows_by_name, released_qty
     released_qtys: {quotation_item_name: qty_released_in_native_unit} for exactly what this
     invoice releases this visit (not the cumulative total)."""
     visual_vat = _invoice_uses_visual_vat(invoice)
-    for name, qty in (released_qtys or {}).items():
+    lamination_company = None
+    lamination_warehouse = None
+    import json
+    
+    # Fetch sheets saved in JC Operations modal
+    jc_sheets = {}
+    try:
+        jc_sheet_json = frappe.db.get_value("CAW Job Card", job_card.name, "custom_sheet_consumption_json")
+        if jc_sheet_json:
+            jc_sheets = json.loads(jc_sheet_json)
+
+    except Exception:
+        pass
+
+    for name, release_data in (released_qtys or {}).items():
+        if isinstance(release_data, dict):
+            qty = flt(release_data.get("qty"))
+        else:
+            qty = flt(release_data)
+            
+        sheets = jc_sheets.get(name, [])
+
         row = rows_by_name.get(name)
-        if not row or flt(qty) <= 0:
+        if not row or qty <= 0:
             continue
         native_full = _get_partial_row_native_full(row)
         ratio = min(flt(qty) / native_full, 1.0) if native_full else 0
         row_amount = flt(row.amount) * ratio
         amount = _round_job_card_amount(row_amount * (1 + VAT_RATE)) if visual_vat else _round_job_card_amount(row_amount)
 
+        import json
         frappe.get_doc({
             "doctype": "CAW Job Card Release",
             "job_card": job_card.name,
@@ -2257,8 +2616,94 @@ def _record_job_card_item_releases(job_card, invoice, rows_by_name, released_qty
             "uom": row.uom or "",
             "amount": amount,
             "is_partial": 1 if is_partial else 0,
+            "custom_sheet_consumption_json": json.dumps(sheets) if sheets else None,
             "changed_by": frappe.session.user,
         }).insert(ignore_permissions=True)
+
+        category = getattr(row, "custom_product_category", "")
+        if category in ("Aluminium", "Fittings", "Rubber", "Silicone"):
+            if qty > 0.0001:
+                company = _get_default_stock_company()
+                warehouse = _get_default_receiving_warehouse(company)
+                _create_non_glass_deduction_stock_entry(
+                    row.item_code, qty, warehouse, company, job_card.name, sales_invoice=invoice.name
+                )
+
+        if getattr(row, "custom_product_category", "") == "Glass":
+            # Cut/custom & laminated glass is deducted up-front at JC Operations time
+            # (remark carries "Row: {quotation_item}"), before any invoice existed. Those
+            # entries can't be stamped at creation, so the FIRST invoice to release the row
+            # claims them here as the canonical value; the ledger lists every releasing
+            # invoice at read time from the CAW Job Card Release rows.
+            early_entries = frappe.get_all(
+                "Stock Entry",
+                filters={
+                    "remarks": ["like", f"%Deducted for CAW Job Card: {job_card.name} Row: {row.name}%"],
+                    "docstatus": 1,
+                },
+                fields=["name", "custom_sales_invoice"],
+            )
+            if early_entries:
+                for se in early_entries:
+                    if not se.custom_sales_invoice:
+                        frappe.db.set_value(
+                            "Stock Entry", se.name, "custom_sales_invoice", invoice.name,
+                            update_modified=False,
+                        )
+                continue
+
+            invoice_sft = _native_release_qty_to_sft(row, qty)
+            glass_type = frappe.db.get_value("Item", row.item_code, "custom_glass_type")
+            if glass_type == "Laminated":
+                sft_release_qty = invoice_sft
+                if sft_release_qty > 0.0001:
+                    company = _get_default_stock_company()
+                    warehouse = _get_default_receiving_warehouse(company)
+                    sheet_remarks = json.dumps(sheets) if sheets else None
+                    _create_glass_deduction_stock_entry(
+                        row.item_code, sft_release_qty, warehouse, company, job_card.name, sheet_remarks, invoice_sft, sales_invoice=invoice.name
+                    )
+                continue
+                
+            if sheets:
+                configs = frappe.cache().get_value("glass_sheet_configs") or []
+                if not configs:
+                    configs = get_glass_sheet_configs()
+
+                # Group sheets by item_consumed
+                sheets_by_item = {}
+                for sheet in sheets:
+                    itm = sheet.get("item_consumed") or row.item_code
+                    if itm not in sheets_by_item:
+                        sheets_by_item[itm] = []
+                    sheets_by_item[itm].append(sheet)
+
+                company = _get_default_stock_company()
+                warehouse = _get_default_receiving_warehouse(company)
+
+                for itm, itm_sheets in sheets_by_item.items():
+                    sft_release_qty = 0
+                    for sheet in itm_sheets:
+                        size = sheet.get("size")
+                        pcs = flt(sheet.get("pcs"))
+                        sft_per_sheet = next((flt(c.get("sft")) for c in configs if c.get("size") == size), 0)
+                        sft_release_qty += sft_per_sheet * pcs
+
+                    if sft_release_qty > 0.0001:
+                        _create_glass_deduction_stock_entry(
+                            itm, sft_release_qty, warehouse, company, job_card.name, json.dumps(itm_sheets) if itm_sheets else None, invoice_sft, sales_invoice=invoice.name
+                        )
+            else:
+                sft_release_qty = invoice_sft
+                if sft_release_qty > 0.0001:
+                    company = _get_default_stock_company()
+                    warehouse = _get_default_receiving_warehouse(company)
+                    sheet_remarks = None
+                    if getattr(row, "custom_glass_sale_mode", "") == "Sheet" and getattr(row, "custom_sheet_size", ""):
+                        sheet_remarks = json.dumps([{"size": row.custom_sheet_size, "pcs": qty}])
+                    _create_glass_deduction_stock_entry(
+                        row.item_code, sft_release_qty, warehouse, company, job_card.name, sheet_remarks, invoice_sft, sales_invoice=invoice.name
+                    )
 
 
 
@@ -2268,6 +2713,8 @@ def make_partial_sales_invoice_from_job_card(job_card_name, releases=None):
         frappe.throw("Please select a valid Job Card.")
 
     job_card = frappe.get_doc("CAW Job Card", job_card_name)
+    _validate_glass_consumption(job_card)
+
     if not job_card.quotation or not frappe.db.exists("Quotation", job_card.quotation):
         frappe.throw("The selected Job Card is not linked to a valid Quotation.")
     _assert_job_card_not_frozen(job_card)
@@ -2667,6 +3114,475 @@ def update_and_submit_amended_invoice(name, posting_date=None, due_date=None, po
     invoice.flags.ignore_permissions = True
     invoice.save(ignore_permissions=True)  # triggers the administrative-only validation lock
     return submit_sales_invoice(name)
+
+
+# Item-level fields a submitted-invoice edit may set. Header fields are never
+# accepted — the payload is applied row-by-row through this whitelist only.
+INVOICE_EDIT_ITEM_FIELDS = (
+    "item_code", "item_name", "qty", "rate", "uom",
+    "custom_price_list", "custom_product_category", "custom_aluminium_metres",
+    "custom_aluminium_color", "custom_ceiling_sq_m", "custom_glass_sale_mode",
+    "custom_width_mm", "custom_height_mm", "custom_base_width_ft", "custom_base_height_ft",
+    "custom_width_ft", "custom_height_ft", "custom_width_allowance", "custom_height_allowance",
+    "custom_area_sqft", "custom_perimeter_rft", "custom_polishing", "custom_holes",
+    "custom_hole_type", "custom_notches", "custom_notch_type", "custom_polish_width_sides",
+    "custom_polish_height_sides", "custom_polish_type", "custom_sandblast_type",
+    "custom_numbering", "custom_sheet_size", "custom_sheet_sft", "custom_sheet_pcs",
+)
+
+
+def _invoice_edit_block_reasons(invoice):
+    reasons = []
+    if "System Manager" not in frappe.get_roles():
+        reasons.append("Only a System Manager can edit a submitted invoice.")
+    if invoice.docstatus != 1:
+        reasons.append("Only submitted invoices can be edited this way.")
+    if invoice.get("is_return"):
+        reasons.append("Credit notes and returns cannot be edited here.")
+    if invoice.get("amended_from"):
+        reasons.append("Amended invoices are administrative-only and cannot be edited here.")
+    if frappe.db.exists("Sales Invoice", {"amended_from": invoice.name}):
+        reasons.append("This invoice has already been amended.")
+    if frappe.db.exists("Sales Invoice", {"return_against": invoice.name, "docstatus": 1}):
+        reasons.append("A credit note / return exists against this invoice.")
+    return reasons
+
+
+@frappe.whitelist()
+def get_invoice_edit_eligibility(name):
+    if not name or not frappe.db.exists("Sales Invoice", name):
+        return {"can_edit": False, "reasons": ["Sales Invoice not found."]}
+    invoice = frappe.get_doc("Sales Invoice", name)
+    reasons = _invoice_edit_block_reasons(invoice)
+    return {"can_edit": not reasons, "reasons": reasons}
+
+
+def _invoice_income_map(invoice):
+    """{income_account: total base_net_amount} across all rows, 2dp."""
+    income = {}
+    for row in invoice.items:
+        acc = row.income_account or ""
+        income[acc] = flt(income.get(acc, 0)) + flt(row.base_net_amount, 2)
+    return {acc: flt(amt, 2) for acc, amt in income.items()}
+
+
+def _invoice_edit_stock_map(rows, jc_has_sheet_consumption):
+    """Aggregate what invoice-time stock deduction the given manual rows imply:
+    {item_code: {"qty": ledger_uom_qty, "sheets": {size: pcs}}} — mirroring the
+    category logic of _record_ceiling_releases / _record_job_card_item_releases.
+    Rows whose stock moved at JC Operations time (laminated glass, and resized/custom
+    glass when the job card carries sheet-consumption JSON) are returned separately
+    as `excluded` so callers can warn instead of adjusting them."""
+    stock_map = {}
+    excluded = {}
+
+    def _add(item_code, qty, sheets=None):
+        slot = stock_map.setdefault(item_code, {"qty": 0.0, "sheets": {}})
+        slot["qty"] += flt(qty)
+        for size, pcs in (sheets or {}).items():
+            slot["sheets"][size] = flt(slot["sheets"].get(size, 0)) + flt(pcs)
+
+    for row in rows:
+        category = getattr(row, "custom_product_category", "") or ""
+        native_qty = _get_partial_row_native_full(row)
+
+        if category in ("Aluminium", "Fittings", "Rubber", "Silicone"):
+            if native_qty > 0.0001:
+                _add(row.item_code, native_qty)
+
+        elif _is_ceiling_bundle_row(row):
+            sqm = flt(getattr(row, "custom_ceiling_sq_m", 0))
+            if sqm > 0.0001:
+                _add(row.item_code, sqm)
+                for comp in CEILING_COMPONENTS:
+                    if comp.get("uses_parent_item"):
+                        continue
+                    comp_qty = get_ceiling_whole_piece_qty(sqm, comp["ratio"], comp["mode"])
+                    if comp_qty > 0.0001:
+                        _add(comp["item_code"], comp_qty)
+
+        elif category == "Glass":
+            glass_type = frappe.get_cached_value("Item", row.item_code, "custom_glass_type")
+            sale_mode = getattr(row, "custom_glass_sale_mode", "") or ""
+            if glass_type == "Laminated" or (
+                jc_has_sheet_consumption and sale_mode in ("Resized", "Custom")
+            ):
+                # Deducted via JC Operations (sheet consumption), keyed to quotation
+                # rows — not safely adjustable from invoice rows.
+                excluded[row.item_code] = flt(excluded.get(row.item_code, 0)) + native_qty
+                continue
+            sft = _native_release_qty_to_sft(row, native_qty)
+            if sft > 0.0001:
+                sheets = None
+                if sale_mode == "Sheet" and getattr(row, "custom_sheet_size", ""):
+                    sheets = {row.custom_sheet_size: native_qty}
+                _add(row.item_code, sft, sheets)
+
+    return stock_map, excluded
+
+
+def _create_invoice_edit_stock_entry(entry_type, rows, company, job_card_name, invoice_name):
+    """One corrective Stock Entry for an invoice edit. Material Issue keeps the
+    'Deducted for CAW Job Card:' remark convention so deduction reports still match;
+    Material Receipt deliberately uses 'Returned for...' so they don't double-count."""
+    entry = frappe.new_doc("Stock Entry")
+    entry.stock_entry_type = entry_type
+    entry.company = company
+    if entry_type == "Material Issue":
+        entry.remarks = f"Deducted for CAW Job Card: {job_card_name}\nInvoice Edit: {invoice_name}"
+    else:
+        entry.remarks = f"Returned for CAW Job Card: {job_card_name} (Invoice Edit: {invoice_name})"
+    if invoice_name:
+        entry.custom_sales_invoice = invoice_name
+    for r in rows:
+        item_dict = {"item_code": r["item_code"], "qty": round(flt(r["qty"]), 4)}
+        if entry_type == "Material Issue":
+            item_dict["s_warehouse"] = r["warehouse"]
+        else:
+            item_dict["t_warehouse"] = r["warehouse"]
+        if r.get("description"):
+            item_dict["description"] = r["description"]
+        entry.append("items", item_dict)
+    entry.flags.ignore_permissions = True
+    entry.insert()
+    entry.submit()
+    return entry.name
+
+
+def _apply_invoice_edit_stock_deltas(old_rows, invoice, job_card_name, warnings):
+    """Create corrective Stock Entries covering the difference between the old and
+    new manual rows (invoice-time-deducted categories only). Returns entry names."""
+    jc_sheet_json = None
+    if job_card_name:
+        jc_sheet_json = frappe.db.get_value("CAW Job Card", job_card_name, "custom_sheet_consumption_json")
+    jc_has_sheets = bool(jc_sheet_json and json.loads(jc_sheet_json or "{}"))
+
+    new_rows = [r for r in invoice.items if not getattr(r, "custom_auto_generated", 0)]
+    old_map, old_excluded = _invoice_edit_stock_map(old_rows, jc_has_sheets)
+    new_map, new_excluded = _invoice_edit_stock_map(new_rows, jc_has_sheets)
+
+    for item_code in set(old_excluded) | set(new_excluded):
+        if abs(flt(old_excluded.get(item_code, 0)) - flt(new_excluded.get(item_code, 0))) > 0.0001:
+            warnings.append(
+                f"Stock for {item_code} was deducted via JC Operations and was NOT "
+                "auto-adjusted — correct it from the Job Card's JC Operations."
+            )
+
+    company = _get_default_stock_company()
+    warehouse = _get_default_receiving_warehouse(company)
+    issues, receipts = [], []
+
+    for item_code in sorted(set(old_map) | set(new_map)):
+        old_slot = old_map.get(item_code, {"qty": 0, "sheets": {}})
+        new_slot = new_map.get(item_code, {"qty": 0, "sheets": {}})
+        delta = flt(new_slot["qty"]) - flt(old_slot["qty"])
+
+        sheet_deltas = {}
+        for size in set(old_slot["sheets"]) | set(new_slot["sheets"]):
+            d = flt(new_slot["sheets"].get(size, 0)) - flt(old_slot["sheets"].get(size, 0))
+            if abs(d) > 0.0001:
+                sheet_deltas[size] = d
+
+        if abs(delta) <= 0.0001:
+            if sheet_deltas:
+                warnings.append(
+                    f"Sheet size mix for {item_code} changed without a net SFT change — "
+                    "the derived sheet-count ledger may drift; review it manually."
+                )
+            continue
+
+        consumed = [{"size": s, "pcs": d} for s, d in sheet_deltas.items() if d > 0]
+        returned = [{"size": s, "pcs": -d} for s, d in sheet_deltas.items() if d < 0]
+        if delta > 0:
+            issues.append({
+                "item_code": item_code, "qty": delta, "warehouse": warehouse,
+                "description": f"Sheets Consumed: {json.dumps(consumed)}" if consumed else None,
+            })
+        else:
+            receipts.append({
+                "item_code": item_code, "qty": -delta, "warehouse": warehouse,
+                "description": f"Sheets Returned: {json.dumps(returned)}" if returned else None,
+            })
+
+    entries = []
+    if issues:
+        entries.append(_create_invoice_edit_stock_entry("Material Issue", issues, company, job_card_name, invoice.name))
+    if receipts:
+        entries.append(_create_invoice_edit_stock_entry("Material Receipt", receipts, company, job_card_name, invoice.name))
+    return entries
+
+
+def _sync_invoice_edit_release_records(invoice, job_card_name, warnings):
+    """Bring CAW Job Card Release / CAW Ceiling Release rows and Quotation Item
+    collected quantities in line with the invoice's new manual rows. Matching is by
+    item_code within this invoice; ambiguous duplicates are skipped with a warning."""
+    visual_vat = _invoice_uses_visual_vat(invoice)
+
+    def _release_amount(row):
+        amt = flt(row.amount)
+        return _round_job_card_amount(amt * (1 + VAT_RATE)) if visual_vat else _round_job_card_amount(amt)
+
+    new_rows = [r for r in invoice.items if not getattr(r, "custom_auto_generated", 0)]
+    new_by_item = {}
+    for r in new_rows:
+        new_by_item.setdefault(r.item_code, []).append(r)
+
+    quotation_name = invoice.get("custom_source_quotation")
+    quotation_rows_by_item = {}
+    if quotation_name and frappe.db.exists("Quotation", quotation_name):
+        for qrow in frappe.get_doc("Quotation", quotation_name).items:
+            if not getattr(qrow, "custom_auto_generated", 0):
+                quotation_rows_by_item.setdefault(qrow.item_code, []).append(qrow)
+
+    def _shift_collected_qty(quotation_item_name, delta_native):
+        if not quotation_item_name or abs(delta_native) <= 0.0001:
+            return
+        qrow = frappe.db.get_value(
+            "Quotation Item", quotation_item_name,
+            ["name", "custom_collected_qty"], as_dict=True,
+        )
+        if not qrow:
+            return
+        full = _get_partial_row_native_full(frappe.get_doc("Quotation Item", quotation_item_name))
+        new_val = min(max(flt(qrow.custom_collected_qty) + delta_native, 0), full or flt(qrow.custom_collected_qty) + delta_native)
+        frappe.db.set_value("Quotation Item", quotation_item_name, "custom_collected_qty", new_val)
+
+    release_rows = frappe.get_all(
+        "CAW Job Card Release",
+        filters={"sales_invoice": invoice.name},
+        fields=["name", "item_code", "qty_released", "quotation_item"],
+    )
+    releases_by_item = {}
+    for rel in release_rows:
+        releases_by_item.setdefault(rel.item_code, []).append(rel)
+
+    for item_code in set(releases_by_item) | set(new_by_item):
+        rels = releases_by_item.get(item_code, [])
+        rows = new_by_item.get(item_code, [])
+
+        if len(rels) > 1 or len(rows) > 1:
+            warnings.append(
+                f"Release records for {item_code} are ambiguous (duplicate rows) and were not updated."
+            )
+            continue
+
+        if rels and rows:
+            rel, row = rels[0], rows[0]
+            new_native = _get_partial_row_native_full(row)
+            delta = new_native - flt(rel.qty_released)
+            if abs(delta) > 0.0001:
+                frappe.db.set_value("CAW Job Card Release", rel.name, {
+                    "qty_released": flt(new_native),
+                    "amount": _release_amount(row),
+                })
+                _shift_collected_qty(rel.quotation_item, delta)
+        elif rels:
+            rel = rels[0]
+            _shift_collected_qty(rel.quotation_item, -flt(rel.qty_released))
+            frappe.delete_doc("CAW Job Card Release", rel.name, ignore_permissions=True, force=True)
+        else:
+            row = rows[0]
+            new_native = _get_partial_row_native_full(row)
+            qrows = quotation_rows_by_item.get(item_code, [])
+            quotation_item = qrows[0].name if len(qrows) == 1 else None
+            frappe.get_doc({
+                "doctype": "CAW Job Card Release",
+                "job_card": job_card_name,
+                "quotation": quotation_name,
+                "sales_invoice": invoice.name,
+                "quotation_item": quotation_item,
+                "item_code": row.item_code,
+                "item_name": row.item_name or row.item_code,
+                "category": getattr(row, "custom_product_category", "") or "",
+                "qty_released": flt(new_native),
+                "uom": row.uom or "",
+                "amount": _release_amount(row),
+                "is_partial": 1 if invoice.get("custom_is_partial") else 0,
+                "changed_by": frappe.session.user,
+            }).insert(ignore_permissions=True)
+            _shift_collected_qty(quotation_item, new_native)
+            if not quotation_item:
+                warnings.append(
+                    f"Added item {item_code} could not be traced to a quotation row — "
+                    "remaining-to-release tracking was not updated for it."
+                )
+
+    # Ceiling piece-breakdown audit rows.
+    ceiling_rows = frappe.get_all(
+        "CAW Ceiling Release",
+        filters={"sales_invoice": invoice.name},
+        fields=["name", "item_code"],
+    )
+    ceiling_by_item = {}
+    for rel in ceiling_rows:
+        ceiling_by_item.setdefault(rel.item_code, []).append(rel)
+    new_ceiling_by_item = {}
+    for r in new_rows:
+        if _is_ceiling_bundle_row(r):
+            new_ceiling_by_item.setdefault(r.item_code, []).append(r)
+
+    for item_code in set(ceiling_by_item) | set(new_ceiling_by_item):
+        rels = ceiling_by_item.get(item_code, [])
+        rows = new_ceiling_by_item.get(item_code, [])
+        if len(rels) > 1 or len(rows) > 1:
+            warnings.append(
+                f"Ceiling release records for {item_code} are ambiguous and were not updated."
+            )
+            continue
+        if rows:
+            row = rows[0]
+            sqm = flt(getattr(row, "custom_ceiling_sq_m", 0))
+            pieces = {
+                c["item_code"]: get_ceiling_whole_piece_qty(sqm, c["ratio"], c["mode"])
+                for c in CEILING_COMPONENTS
+                if not c.get("uses_parent_item")
+            }
+            values = {
+                "released_json": json.dumps(pieces),
+                "amount_paid": _release_amount(row),
+                "changed_by": frappe.session.user,
+            }
+            if rels:
+                frappe.db.set_value("CAW Ceiling Release", rels[0].name, values)
+            else:
+                qrows = quotation_rows_by_item.get(item_code, [])
+                frappe.get_doc({
+                    "doctype": "CAW Ceiling Release",
+                    "job_card": job_card_name,
+                    "quotation": quotation_name,
+                    "sales_invoice": invoice.name,
+                    "quotation_item": qrows[0].name if len(qrows) == 1 else None,
+                    "item_code": row.item_code,
+                    "item_name": row.item_name or row.item_code,
+                    "snapshot_json": json.dumps(_get_ceiling_snapshot(qrows[0])) if len(qrows) == 1 else "{}",
+                    **values,
+                }).insert(ignore_permissions=True)
+        elif rels:
+            frappe.delete_doc("CAW Ceiling Release", rels[0].name, ignore_permissions=True, force=True)
+
+
+def _repost_invoice_income_gl(invoice, old_income_map):
+    """If the edit shifted amounts between income accounts, rebuild just those GL
+    rows. Debtors/tax rows are untouched — the grand total is unchanged by design."""
+    new_income_map = _invoice_income_map(invoice)
+    if new_income_map == old_income_map:
+        return False
+
+    accounts = [a for a in set(old_income_map) | set(new_income_map) if a]
+    frappe.db.delete("GL Entry", {
+        "voucher_type": "Sales Invoice",
+        "voucher_no": invoice.name,
+        "account": ["in", accounts],
+    })
+    from erpnext.accounts.general_ledger import make_entry
+    for gl in invoice.get_gl_entries():
+        if gl.get("account") in accounts:
+            make_entry(gl, adv_adj=False, update_outstanding="No", from_repost=True)
+    return True
+
+
+@frappe.whitelist()
+def edit_submitted_invoice_items(name, items):
+    """Edit a SUBMITTED Sales Invoice's manual item rows in place (no cancel/amend).
+    The grand total must remain exactly the same; stock and release bookkeeping are
+    auto-corrected for categories deducted at invoice time. System Manager only."""
+    frappe.only_for("System Manager")
+    if not name or not frappe.db.exists("Sales Invoice", name):
+        frappe.throw("Please select a valid Sales Invoice.")
+
+    invoice = frappe.get_doc("Sales Invoice", name)
+    reasons = _invoice_edit_block_reasons(invoice)
+    if reasons:
+        frappe.throw("<br>".join(reasons))
+
+    if isinstance(items, str):
+        items = json.loads(items)
+    if not items:
+        frappe.throw("The invoice must keep at least one item row.")
+
+    # ── Snapshot the old state before touching anything ──────────────
+    old_grand_total = flt(invoice.grand_total, 2)
+    old_income_map = _invoice_income_map(invoice)
+    old_manual_rows = [r.as_dict() for r in invoice.items if not getattr(r, "custom_auto_generated", 0)]
+    old_rows_by_name = {r.name: r for r in invoice.items}
+
+    # ── Rebuild the manual rows from the payload ──────────────────────
+    kept_rows = []
+    for payload in items:
+        row_name = payload.get("row_name")
+        if row_name:
+            row = old_rows_by_name.get(row_name)
+            if not row or getattr(row, "custom_auto_generated", 0):
+                frappe.throw(f"Row {row_name} does not belong to this invoice.")
+        else:
+            row = invoice.append("items", {})
+        for field in INVOICE_EDIT_ITEM_FIELDS:
+            if field in payload:
+                row.set(field, payload.get(field))
+        if not row.item_code:
+            frappe.throw("Every row must have an Item Code.")
+        kept_rows.append(row)
+    invoice.items = kept_rows
+    for idx, row in enumerate(invoice.items, start=1):
+        row.idx = idx
+
+    # ── Re-run the pricing engine (regenerates auto service rows) ─────
+    from crystal_alluminium_works import sales_invoice_handler
+    sales_invoice_handler.on_validate(invoice, None)
+    # on_validate only recalculates when it generated auto rows — always recalc.
+    invoice.calculate_taxes_and_totals()
+
+    # ── Total lock (±2 tolerance for rounding/cents drift) ─────────────
+    INVOICE_EDIT_TOTAL_TOLERANCE = 2
+    if abs(flt(invoice.grand_total, 2) - old_grand_total) > INVOICE_EDIT_TOTAL_TOLERANCE:
+        frappe.throw(
+            f"The grand total must stay within {frappe.utils.fmt_money(INVOICE_EDIT_TOTAL_TOLERANCE, currency=invoice.currency)} "
+            f"of the original. Original: {frappe.utils.fmt_money(old_grand_total, currency=invoice.currency)}, "
+            f"after edit: {frappe.utils.fmt_money(flt(invoice.grand_total, 2), currency=invoice.currency)}. "
+            "Adjust quantities/rates so the totals match."
+        )
+
+    # ── Persist in place (update-after-submit path) ────────────────────
+    invoice.flags.ignore_permissions = True
+    invoice.flags.ignore_validate_update_after_submit = True
+    invoice.save()
+
+    gl_reposted = _repost_invoice_income_gl(invoice, old_income_map)
+
+    # ── Stock + release bookkeeping ────────────────────────────────────
+    warnings = []
+    job_card_name = invoice.get("custom_source_job_card")
+    if not job_card_name and invoice.get("custom_source_quotation"):
+        job_card_name = _resolve_job_card_for_quotation(invoice.custom_source_quotation)
+
+    stock_entries = []
+    if job_card_name:
+        old_row_objs = [frappe._dict(r) for r in old_manual_rows]
+        stock_entries = _apply_invoice_edit_stock_deltas(old_row_objs, invoice, job_card_name, warnings)
+        _sync_invoice_edit_release_records(invoice, job_card_name, warnings)
+    else:
+        warnings.append("No source job card found — stock and release records were not adjusted.")
+
+    # ── Audit comment ──────────────────────────────────────────────────
+    def _row_desc(r):
+        return f"{r.get('item_code')} × {flt(r.get('qty'))} @ {flt(r.get('rate'))} = {flt(r.get('amount'))}"
+    new_manual = [r.as_dict() for r in invoice.items if not getattr(r, "custom_auto_generated", 0)]
+    comment_lines = ["<b>Invoice items edited (submitted, total locked)</b>", "Before:"]
+    comment_lines += [f"• {_row_desc(r)}" for r in old_manual_rows]
+    comment_lines.append("After:")
+    comment_lines += [f"• {_row_desc(r)}" for r in new_manual]
+    if stock_entries:
+        comment_lines.append("Stock corrections: " + ", ".join(stock_entries))
+    if gl_reposted:
+        comment_lines.append("Income GL rows reposted.")
+    invoice.add_comment("Comment", "<br>".join(comment_lines))
+
+    return {
+        "name": invoice.name,
+        "grand_total": invoice.grand_total,
+        "stock_entries": stock_entries,
+        "warnings": warnings,
+    }
 
 
 def _relink_ceiling_releases(invoice):
@@ -3264,7 +4180,7 @@ def save_custom_item(data):
             "item_name": item_name,
             "item_group": storage_category,
             "stock_uom": uom,
-            "is_stock_item": 0,
+            "is_stock_item": 1,
             "standard_rate": retail_rate,
         })
         if _item_has_field("custom_glass_type"):
@@ -3290,6 +4206,7 @@ def save_custom_item(data):
         item.item_name = item_name
         item.item_group = storage_category
         item.stock_uom = uom
+        item.is_stock_item = 1
         item.standard_rate = retail_rate
         if _item_has_field("custom_glass_type"):
             item.custom_glass_type = glass_type if storage_category == "Glass" else None
@@ -4424,6 +5341,53 @@ def get_customer_outstanding(customer):
 
 
 @frappe.whitelist()
+def get_customer_outstanding_job_cards(customer):
+    """Return each non-cancelled job card that still has an outstanding balance for the
+    customer, together with its balance. Used to auto-populate the allocations table in
+    the Create Payment modal without manual row entry."""
+    if not customer:
+        return []
+
+    job_cards = frappe.get_all(
+        "CAW Job Card",
+        filters={"customer": customer, "status": ["!=", "Cancelled"]},
+        fields=["name", "payment_mode", "quotation_amount", "payment_amount"],
+        order_by="creation asc",
+    )
+
+    # Build paid_by_job_card using the same logic as get_customer_outstanding
+    payments = frappe.get_all("Payments", filters={"customer": customer}, fields=["name", "amount", "job_card"])
+    payment_names = [p.name for p in payments]
+    allocation_rows = frappe.get_all(
+        "Payment Job Card Allocation",
+        filters={"parent": ["in", payment_names], "parenttype": "Payments"},
+        fields=["parent", "job_card", "amount"],
+    ) if payment_names else []
+
+    paid_by_job_card = {}
+    parents_with_allocations = set()
+    for row in allocation_rows:
+        parents_with_allocations.add(row.parent)
+        if row.job_card:
+            paid_by_job_card[row.job_card] = paid_by_job_card.get(row.job_card, 0) + flt(row.amount)
+    for payment in payments:
+        if payment.name not in parents_with_allocations and payment.job_card:
+            paid_by_job_card[payment.job_card] = paid_by_job_card.get(payment.job_card, 0) + flt(payment.amount)
+
+    result = []
+    for jc in job_cards:
+        if (jc.payment_mode or "") == "Cash Customer":
+            paid = flt(jc.payment_amount)
+        else:
+            paid = flt(paid_by_job_card.get(jc.name, 0))
+        balance = _round_job_card_amount(max(flt(jc.quotation_amount) - paid, 0))
+        if balance > 0.0001:
+            result.append({"job_card": jc.name, "amount": balance})
+
+    return result
+
+
+@frappe.whitelist()
 def get_customer_payments(customer):
     """Return a customer's payments with their job-card allocation rows embedded, so the
     customer statement can attribute each payment (split or single) without extra round-trips."""
@@ -4466,3 +5430,831 @@ def get_customer_names(doctype, txt, searchfield, start, page_len, filters):
         ORDER BY customer_name ASC
         LIMIT %(page_len)s OFFSET %(start)s
     """, {"txt": f"%{txt}%", "start": start, "page_len": page_len})
+
+
+# ---------------------------------------------------------------------------
+# Stock Entry (Stock-In via Purchase Receipt)
+# ---------------------------------------------------------------------------
+# Glass is stocked in Square Foot, but physically received as a number of
+# sheets of a given size (e.g. 10 sheets of 1220 x 1830 = 240 SFT). The page
+# lets staff enter sheet size + pcs; we compute the SFT stock qty here so the
+# stock ledger stays in the same unit sales deduct in.
+
+STOCK_DEFAULT_WAREHOUSE = "Stores - CA"
+
+
+def _get_default_stock_company():
+    company = frappe.defaults.get_global_default("company")
+    if company:
+        return company
+    companies = frappe.get_all("Company", pluck="name", limit=1)
+    return companies[0] if companies else None
+
+
+def _get_default_receiving_warehouse(company):
+    if frappe.db.exists("Warehouse", STOCK_DEFAULT_WAREHOUSE):
+        return STOCK_DEFAULT_WAREHOUSE
+    wh = frappe.get_all(
+        "Warehouse",
+        filters={"company": company, "is_group": 0},
+        pluck="name",
+        order_by="creation asc",
+        limit=1,
+    )
+    return wh[0] if wh else None
+
+
+@frappe.whitelist()
+def get_stock_entry_options():
+    """Form data for the Stock Entry page: suppliers, receiving warehouses,
+    configured glass sheet sizes (size -> sft) and sensible defaults."""
+    company = _get_default_stock_company()
+    suppliers = frappe.get_all(
+        "Supplier",
+        fields=["name", "supplier_name"],
+        order_by="supplier_name asc",
+    )
+    warehouses = frappe.get_all(
+        "Warehouse",
+        filters={"company": company, "is_group": 0},
+        fields=["name"],
+        order_by="name asc",
+    )
+    sheet_sizes = get_glass_sheet_configs()
+    return {
+        "company": company,
+        "suppliers": suppliers,
+        "warehouses": [w["name"] for w in warehouses],
+        "default_warehouse": _get_default_receiving_warehouse(company),
+        "sheet_sizes": sheet_sizes,
+    }
+
+
+@frappe.whitelist()
+def search_stock_items(search="", category=""):
+    """Search stockable catalogue items for the Stock Entry page."""
+    filters = {"is_stock_item": 1, "disabled": 0}
+    if category and category not in ("All", ""):
+        filters["item_group"] = category
+
+    or_filters = None
+    search = (search or "").strip()
+    if search:
+        like = f"%{search}%"
+        or_filters = {
+            "item_code": ("like", like),
+            "item_name": ("like", like),
+        }
+
+    fields = ["name as item_code", "item_name", "item_group", "stock_uom"]
+    if _item_has_field("custom_glass_type"):
+        fields.append("custom_glass_type")
+    if _item_has_field("custom_product_code"):
+        fields.append("custom_product_code")
+
+    items = frappe.get_all(
+        "Item",
+        filters=filters,
+        or_filters=or_filters,
+        fields=fields,
+        order_by="item_name asc",
+        limit=50,
+    )
+    return items
+
+
+CEILING_DEFAULT_PIECE_AREA = 0.36  # sqm/piece fallback (matches the system-wide Ceiling Configuration default)
+
+
+def _get_ceiling_piece_area(item_code):
+    """Quantity of stock UOM represented by one physical piece of a ceiling item.
+    Ceiling Configuration docnames don't reliably match parent_item (some were
+    renamed), so this must filter on the parent_item field, not look up by name.
+    The 0.36 sqm/piece default only applies to area-based board items (stock UOM
+    Square Meter, e.g. AGC/AMC); count-based items (stock UOM Nos, e.g. Wall
+    angle, Sub Cross) have no such config and receive 1 piece = 1 Nos."""
+    ratio = frappe.db.get_value("Ceiling Configuration", {"parent_item": item_code}, "ratio_4")
+    if ratio:
+        return flt(ratio)
+    stock_uom = frappe.db.get_value("Item", item_code, "stock_uom")
+    return CEILING_DEFAULT_PIECE_AREA if stock_uom == "Square Meter" else 1.0
+
+
+@frappe.whitelist()
+def get_ceiling_piece_area(item_code):
+    """Whitelisted lookup for the Stock Entry page: sqm represented by one piece
+    of the given ceiling item, used to compute qty = pieces * area_per_piece."""
+    return _get_ceiling_piece_area(item_code)
+
+
+@frappe.whitelist()
+def create_stock_receipt(payload):
+    """Create and submit a Purchase Receipt from the Stock Entry page.
+
+    payload = {
+        supplier, warehouse, posting_date, remarks,
+        items: [{ item_code, category, sheet_size, sheet_sft, pcs, qty, rate }]
+    }
+    Glass is received in sheets only: the stock qty (SFT) is computed
+    server-side as sheet_sft * pcs so it cannot drift from what was entered.
+    """
+    payload = json.loads(payload) if isinstance(payload, str) else payload
+
+    supplier = (payload.get("supplier") or "").strip()
+    if not supplier:
+        frappe.throw("Supplier is required.")
+    if not frappe.db.exists("Supplier", supplier):
+        frappe.throw(f"Supplier {supplier} does not exist.")
+
+    rows = payload.get("items") or []
+    if not rows:
+        frappe.throw("Add at least one item.")
+
+    company = _get_default_stock_company()
+    warehouse = (payload.get("warehouse") or "").strip() or _get_default_receiving_warehouse(company)
+    if not warehouse:
+        frappe.throw("No receiving warehouse is configured.")
+
+    # size -> sft lookup for server-side recompute of sheet glass quantities
+    sheet_map = {
+        str(cfg.get("size") or "").strip(): flt(cfg.get("sft") or 0)
+        for cfg in get_glass_sheet_configs()
+    }
+
+    pr = frappe.new_doc("Purchase Receipt")
+    pr.supplier = supplier
+    pr.company = company
+    if payload.get("posting_date"):
+        pr.set_posting_time = 1
+        pr.posting_date = payload.get("posting_date")
+        if payload.get("posting_time"):
+            pr.posting_time = payload.get("posting_time")
+    pr.set_warehouse = warehouse
+    pr.custom_via_caw_stock_entry = 1
+
+    for row in rows:
+        item_code = (row.get("item_code") or "").strip()
+        if not item_code:
+            continue
+        if not frappe.db.exists("Item", item_code):
+            frappe.throw(f"Item {item_code} does not exist.")
+
+        category = row.get("category") or frappe.db.get_value("Item", item_code, "item_group")
+        entered_rate = flt(row.get("rate", 0))
+
+        item_data = {
+            "item_code": item_code,
+            "warehouse": warehouse,
+            "custom_product_category": category if category in (
+                "Aluminium", "Glass", "Fittings", "Ceiling", "Rubber", "Silicone"
+            ) else None,
+            "custom_remarks": (row.get("remarks") or "").strip(),
+        }
+
+        # Rate means different things depending on category: for Glass/Ceiling the
+        # receiver quotes a price per physical piece (sheet/board), not per SFT/sqm,
+        # since that's how suppliers price them. amount is computed from that, and
+        # the PR item's rate (which ERPNext values stock at per stock UOM) is then
+        # back-calculated as amount / qty so qty * rate == amount stays true.
+        if category == "Glass":
+            sheet_size = (row.get("sheet_size") or "").strip()
+            sft = sheet_map.get(sheet_size, flt(row.get("sheet_sft", 0)))
+            pcs = flt(row.get("pcs", 0))
+            qty = sft * pcs
+            if qty <= 0:
+                frappe.throw(f"Sheet size and pieces are required for glass item {item_code}.")
+            amount = pcs * entered_rate
+            item_data.update({
+                "qty": qty,
+                "rate": flt(amount / qty) if qty else 0,
+                "custom_glass_sale_mode": "Sheet",
+                "custom_sheet_size": sheet_size,
+                "custom_sheet_sft": sft,
+                "custom_sheet_pcs": pcs,
+            })
+        elif category == "Ceiling":
+            pcs = flt(row.get("pcs", 0))
+            area_per_piece = _get_ceiling_piece_area(item_code) or flt(row.get("unit_factor", 0))
+            qty = area_per_piece * pcs
+            if qty <= 0:
+                frappe.throw(f"Pieces are required for ceiling item {item_code}.")
+            amount = pcs * entered_rate
+            item_data.update({
+                "qty": qty,
+                "rate": flt(amount / qty) if qty else 0,
+                "custom_ceiling_pcs": pcs,
+            })
+        else:
+            qty = flt(row.get("qty", 0))
+            if qty <= 0:
+                frappe.throw(f"Quantity is required for item {item_code}.")
+            item_data["qty"] = qty
+            item_data["rate"] = entered_rate
+
+        pr.append("items", item_data)
+
+    pr.flags.ignore_permissions = True
+    pr.insert(ignore_permissions=True)
+    pr.submit()
+    frappe.db.commit()
+    return {"name": pr.name}
+
+
+@frappe.whitelist()
+def get_recent_stock_entries(limit=15, supplier=None, warehouse=None, from_date=None, to_date=None, item_search=None):
+    """Recent Purchase Receipts created via the CAW Stock Entry page, for the
+    page's own record-keeping panel (separate from the standard PR list)."""
+    limit = frappe.utils.cint(limit) or 15
+    filters = {"custom_via_caw_stock_entry": 1, "docstatus": 1}
+    if supplier:
+        filters["supplier"] = supplier
+    if warehouse:
+        filters["set_warehouse"] = warehouse
+    if from_date and to_date:
+        filters["posting_date"] = ["between", [from_date, to_date]]
+    elif from_date:
+        filters["posting_date"] = [">=", from_date]
+    elif to_date:
+        filters["posting_date"] = ["<=", to_date]
+
+    item_search = (item_search or "").strip()
+    if item_search:
+        matching_parents = frappe.get_all(
+            "Purchase Receipt Item",
+            filters={"item_code": ["like", f"%{item_search}%"]},
+            pluck="parent",
+        )
+        if not matching_parents:
+            return []
+        filters["name"] = ["in", list(set(matching_parents))]
+
+    receipts = frappe.get_all(
+        "Purchase Receipt",
+        filters=filters,
+        fields=["name", "supplier", "posting_date", "grand_total", "set_warehouse"],
+        order_by="creation desc",
+        limit=limit,
+    )
+    if not receipts:
+        return []
+
+    names = [r["name"] for r in receipts]
+    item_rows = frappe.get_all(
+        "Purchase Receipt Item",
+        filters={"parent": ["in", names]},
+        fields=["parent", "item_code", "qty", "stock_uom"],
+    )
+    items_by_parent = {}
+    for row in item_rows:
+        items_by_parent.setdefault(row["parent"], []).append(row)
+
+    for r in receipts:
+        rows = items_by_parent.get(r["name"], [])
+        r["item_count"] = len(rows)
+        full_list = [f"{row['item_code']} ({flt(row['qty'])} {row['stock_uom']})" for row in rows]
+        r["items_summary"] = ", ".join(full_list[:3]) + (f" +{len(rows) - 3} more" if len(rows) > 3 else "")
+        r["items_full"] = ", ".join(full_list)
+
+    return receipts
+
+
+def _attach_sales_invoices_to_entries(entries):
+    """Enrich Stock Ledger Entry dicts with `sales_invoice` (canonical, singular) and
+    `sales_invoices` (the full ordered list, for the ledger's "Date / Invoice" column).
+
+    Resolution order per Stock Entry:
+      1. Glass deducted early at JC Operations (remark carries "Row: {quotation_item}"):
+         list EVERY invoice that released that quotation row, sourced from CAW Job Card
+         Release — the single up-front deduction maps to all partial/final invoices.
+      2. Otherwise use the entry's own `custom_sales_invoice` link (stamped at creation for
+         invoice-time deductions), which is exact 1-entry-to-1-invoice.
+      3. Legacy/un-backfilled fallback: trace remarks → Job Card → its invoices and show
+         the newest (the old, approximate behaviour).
+    """
+    import re
+    se_vouchers = list(set(e.voucher_no for e in entries if e.voucher_type == "Stock Entry"))
+    if not se_vouchers:
+        for e in entries:
+            e.sales_invoice = ""
+            e.sales_invoices = []
+        return
+
+    se_rows = frappe.get_all(
+        "Stock Entry",
+        filters={"name": ["in", se_vouchers]},
+        fields=["name", "remarks", "custom_sales_invoice"],
+    )
+    se_remarks_map = {r.name: r.remarks or "" for r in se_rows}
+    se_field_invoice = {r.name: r.custom_sales_invoice or "" for r in se_rows}
+
+    # Parse Job Card name and (for early-deducted glass) the quotation row from remarks.
+    jc_name_pattern = re.compile(r"CAW Job Card:\s*(JOB-CARD-[\w-]+)")
+    row_pattern = re.compile(r"Row:\s*([\w-]+)")
+    voucher_to_jc = {}
+    voucher_to_row = {}
+    jc_names = set()
+    row_names = set()
+    for se_name, remarks in se_remarks_map.items():
+        jc_match = jc_name_pattern.search(remarks)
+        if jc_match:
+            voucher_to_jc[se_name] = jc_match.group(1)
+            jc_names.add(jc_match.group(1))
+        row_match = row_pattern.search(remarks)
+        if row_match:
+            voucher_to_row[se_name] = row_match.group(1)
+            row_names.add(row_match.group(1))
+
+    # Every invoice that released each early-deducted glass row (quotation_item is a unique
+    # child docname, so it alone keys the releases). Ordered oldest → newest, de-duplicated.
+    row_to_invoices = {}
+    if row_names:
+        releases = frappe.get_all(
+            "CAW Job Card Release",
+            filters={"quotation_item": ["in", list(row_names)], "sales_invoice": ["is", "set"]},
+            fields=["quotation_item", "sales_invoice"],
+            order_by="creation asc",
+        )
+        for rel in releases:
+            lst = row_to_invoices.setdefault(rel.quotation_item, [])
+            if rel.sales_invoice not in lst:
+                lst.append(rel.sales_invoice)
+
+    # Legacy fallback: Job Card → its invoices (newest last).
+    jc_to_invoices = {}
+    if jc_names and frappe.get_meta("Sales Invoice").has_field("custom_source_job_card"):
+        invoices = frappe.get_all(
+            "Sales Invoice",
+            filters={"custom_source_job_card": ["in", list(jc_names)], "docstatus": ["!=", 2]},
+            fields=["name", "custom_source_job_card"],
+            order_by="creation asc",
+        )
+        for inv in invoices:
+            jc_to_invoices.setdefault(inv.custom_source_job_card, []).append(inv.name)
+
+    for e in entries:
+        inv_list = []
+        if e.voucher_type == "Stock Entry":
+            row = voucher_to_row.get(e.voucher_no)
+            field_inv = se_field_invoice.get(e.voucher_no)
+            if row and row_to_invoices.get(row):
+                inv_list = list(row_to_invoices[row])
+                # Keep the stamped canonical invoice first if it isn't already covered.
+                if field_inv and field_inv not in inv_list:
+                    inv_list.insert(0, field_inv)
+            elif field_inv:
+                inv_list = [field_inv]
+            elif e.voucher_no in voucher_to_jc:
+                inv_list = list(jc_to_invoices.get(voucher_to_jc[e.voucher_no], []))
+        e.sales_invoices = inv_list
+        e.sales_invoice = inv_list[0] if inv_list else ""
+
+
+@frappe.whitelist()
+def get_glass_stock_ledger(item_code, warehouse, from_date=None, to_date=None):
+    """Reconstruct a running sheet balance alongside the standard SFT balance by parsing
+    the underlying Purchase Receipts and Stock Entries for a glass item in a warehouse."""
+    if not item_code or not warehouse:
+        return []
+        
+    # We fetch the entire history to accurately compute the running sheets balance from zero,
+    # then we slice by date before returning.
+    ledger = frappe.get_all(
+        "Stock Ledger Entry",
+        filters={
+            "item_code": item_code,
+            "warehouse": warehouse,
+            "is_cancelled": 0
+        },
+        fields=["name", "posting_date", "posting_time", "voucher_type", "voucher_no", "actual_qty", "qty_after_transaction"],
+        order_by="posting_date asc, posting_time asc, creation asc"
+    )
+    
+    pr_names = list(set([e.voucher_no for e in ledger if e.voucher_type == "Purchase Receipt"]))
+    se_names = list(set([e.voucher_no for e in ledger if e.voucher_type == "Stock Entry"]))
+    
+    pr_items = {}
+    if pr_names:
+        pr_rows = frappe.get_all(
+            "Purchase Receipt Item",
+            filters={"parent": ["in", pr_names], "item_code": item_code},
+            fields=["parent", "custom_sheet_size", "custom_sheet_pcs"]
+        )
+        for r in pr_rows:
+            pr_items.setdefault(r.parent, []).append(r)
+            
+    se_items = {}
+    if se_names:
+        se_rows = frappe.get_all(
+            "Stock Entry Detail",
+            filters={"parent": ["in", se_names], "item_code": item_code},
+            fields=["parent", "description"]
+        )
+        for r in se_rows:
+            se_items.setdefault(r.parent, []).append(r)
+            
+    sheet_balance = {}
+    result = []
+    
+    is_laminated = frappe.db.get_value("Item", item_code, "custom_glass_type") == "Laminated"
+    
+    for entry in ledger:
+        sheets_in = {}
+        sheets_out = {}
+        entry_invoice_sft = 0.0
+        
+        if entry.voucher_type == "Stock Entry":
+            rows = se_items.get(entry.voucher_no, [])
+            for r in rows:
+                desc = r.description or ""
+                import re
+                match = re.search(r"Invoice SFT:\s*([\d\.]+)", desc)
+                if match:
+                    entry_invoice_sft += frappe.utils.flt(match.group(1))
+
+        if not is_laminated:
+            if entry.voucher_type == "Purchase Receipt":
+                rows = pr_items.get(entry.voucher_no, [])
+                for r in rows:
+                    size = (r.custom_sheet_size or "").strip()
+                    pcs = frappe.utils.flt(r.custom_sheet_pcs)
+                    if size and pcs > 0:
+                        sheets_in[size] = sheets_in.get(size, 0) + pcs
+                        sheet_balance[size] = sheet_balance.get(size, 0) + pcs
+                        
+            elif entry.voucher_type == "Stock Entry":
+                rows = se_items.get(entry.voucher_no, [])
+                for r in rows:
+                    desc = r.description or ""
+                    if "Sheets Consumed: " in desc:
+                        idx = desc.find("Sheets Consumed: ") + len("Sheets Consumed: ")
+                        raw_json = desc[idx:].strip()
+                        if "\n" in raw_json:
+                            raw_json = raw_json.split("\n")[0].strip()
+                        try:
+                            import json
+                            sheets_data = json.loads(raw_json)
+                            if isinstance(sheets_data, list):
+                                for s in sheets_data:
+                                    size = str(s.get("size") or "").strip()
+                                    pcs = frappe.utils.flt(s.get("pcs"))
+                                    if size and pcs > 0:
+                                        sheets_out[size] = sheets_out.get(size, 0) + pcs
+                                        sheet_balance[size] = sheet_balance.get(size, 0) - pcs
+                        except Exception:
+                            pass
+                    if "Sheets Returned: " in desc:
+                        # Written by invoice-edit corrective Material Receipts —
+                        # symmetric to Sheets Consumed, restores the derived balance.
+                        idx = desc.find("Sheets Returned: ") + len("Sheets Returned: ")
+                        raw_json = desc[idx:].strip()
+                        if "\n" in raw_json:
+                            raw_json = raw_json.split("\n")[0].strip()
+                        try:
+                            import json
+                            sheets_data = json.loads(raw_json)
+                            if isinstance(sheets_data, list):
+                                for s in sheets_data:
+                                    size = str(s.get("size") or "").strip()
+                                    pcs = frappe.utils.flt(s.get("pcs"))
+                                    if size and pcs > 0:
+                                        sheets_in[size] = sheets_in.get(size, 0) + pcs
+                                        sheet_balance[size] = sheet_balance.get(size, 0) + pcs
+                        except Exception:
+                            pass
+        
+        sheet_balance_clean = {k: v for k, v in sheet_balance.items() if abs(v) > 0.0001}
+        
+        entry.sheets_in = sheets_in
+        entry.sheets_out = sheets_out
+        entry.sheet_balance = dict(sheet_balance_clean) # copy
+        entry.invoice_sft = entry_invoice_sft
+        
+        # Only include in result if it falls within the requested date range
+        include = True
+        if from_date and str(entry.posting_date) < from_date:
+            include = False
+        if to_date and str(entry.posting_date) > to_date:
+            include = False
+            
+        if include:
+            result.append(entry)
+            
+    total_invoice_sft = sum(e.invoice_sft for e in result)
+
+    # Enrich entries with linked Sales Invoice
+    _attach_sales_invoices_to_entries(result)
+            
+    # Also return the final sheet balance for the summary cards
+    final_balance = {k: v for k, v in sheet_balance.items() if abs(v) > 0.0001}
+    
+    return {
+        "ledger": result,
+        "final_sheet_balance": final_balance,
+        "final_sft_balance": ledger[-1].qty_after_transaction if ledger else 0,
+        "is_laminated": is_laminated,
+        "total_invoice_sft": total_invoice_sft
+    }
+
+
+@frappe.whitelist()
+def get_category_stock_balance(item_group=None, warehouse=None):
+    """Return current stock balances for all items in a given Item Group (product category).
+    If no item_group is supplied, return balances for ALL items.
+    Optionally filter by warehouse.
+    """
+    filters = {"actual_qty": ["!=", 0]}
+    if item_group:
+        items = frappe.get_all("Item", filters={"item_group": item_group}, pluck="name")
+        if not items:
+            return []
+        filters["item_code"] = ["in", items]
+    if warehouse:
+        filters["warehouse"] = warehouse
+
+    bins = frappe.get_all(
+        "Bin",
+        filters=filters,
+        fields=["item_code", "warehouse", "actual_qty", "stock_uom"],
+        order_by="item_code asc",
+        limit_page_length=0
+    )
+
+    # Enrich with item_name and item_group
+    item_codes = list(set([b.item_code for b in bins]))
+    item_map = {}
+    if item_codes:
+        item_list = frappe.get_all("Item", filters={"name": ["in", item_codes]}, fields=["name", "item_name", "item_group"])
+        item_map = {i.name: i for i in item_list}
+
+    for b in bins:
+        item = item_map.get(b.item_code, {})
+        b.item_name = item.get("item_name", b.item_code)
+        b.item_group = item.get("item_group", "")
+        if b.item_group == "Glass":
+            glass_data = get_glass_stock_ledger(b.item_code, b.warehouse)
+            b.sheet_balance = glass_data.get("final_sheet_balance", {})
+
+    return bins
+
+
+@frappe.whitelist()
+def get_standard_stock_ledger(item_code, warehouse=None, from_date=None, to_date=None):
+    """Return chronological Stock Ledger Entry records for any item (non-glass standard view).
+    Returns a list of dicts with posting_date, posting_time, voucher_type, voucher_no,
+    actual_qty, qty_after_transaction, stock_uom.
+    """
+    if not item_code:
+        return []
+
+    filters = {
+        "item_code": item_code,
+        "is_cancelled": 0
+    }
+    if warehouse:
+        filters["warehouse"] = warehouse
+    if from_date and to_date:
+        filters["posting_date"] = ["between", [from_date, to_date]]
+    elif from_date:
+        filters["posting_date"] = [">=", from_date]
+    elif to_date:
+        filters["posting_date"] = ["<=", to_date]
+
+    entries = frappe.get_all(
+        "Stock Ledger Entry",
+        filters=filters,
+        fields=[
+            "posting_date", "posting_time", "voucher_type", "voucher_no",
+            "actual_qty", "qty_after_transaction", "stock_uom",
+            "incoming_rate", "valuation_rate"
+        ],
+        order_by="posting_date asc, posting_time asc, creation asc",
+        limit_page_length=0
+    )
+
+    # Enrich entries with linked Sales Invoice
+    _attach_sales_invoices_to_entries(entries)
+
+    return entries
+
+
+@frappe.whitelist()
+def save_jc_operations_consumption(job_card_name, consumption_json):
+    """Save the sheet consumption JSON on the Job Card and automatically trigger
+    repacks in the background for any Laminated Glass rows that haven't been repacked yet.
+    """
+    import json
+    frappe.db.set_value("CAW Job Card", job_card_name, "custom_sheet_consumption_json", consumption_json)
+    
+    job_card = frappe.get_doc("CAW Job Card", job_card_name)
+    if not job_card.quotation:
+        return
+        
+    quotation_doc = frappe.get_doc("Quotation", job_card.quotation)
+    consumption = json.loads(consumption_json or "{}")
+    
+    company = _get_default_stock_company()
+    warehouse = _get_default_receiving_warehouse(company)
+    
+    for row in quotation_doc.items:
+        if getattr(row, "custom_auto_generated", 0):
+            continue
+            
+        glass_type = frappe.db.get_value("Item", row.item_code, "custom_glass_type")
+        sale_mode = getattr(row, "custom_glass_sale_mode", "")
+        
+        is_laminated = (glass_type == "Laminated")
+        is_resized_or_custom = (sale_mode in ("Resized", "Custom"))
+        
+        if not is_laminated and not is_resized_or_custom:
+            continue
+            
+        row_consumption = consumption.get(row.name, [])
+        if not row_consumption:
+            continue
+            
+        # Check if we already created a repack or deduction for this row
+        if is_laminated:
+            se_exists = frappe.db.exists(
+                "Stock Entry",
+                {
+                    "remarks": ["like", f"%Repacked for CAW Job Card: {job_card.name} Row: {row.name}%"],
+                    "docstatus": 1
+                }
+            )
+        else:
+            se_exists = frappe.db.exists(
+                "Stock Entry",
+                {
+                    "remarks": ["like", f"%Deducted for CAW Job Card: {job_card.name} Row: {row.name}%"],
+                    "docstatus": 1
+                }
+            )
+        if se_exists:
+            continue
+            
+        sft_qty = 0
+        configs = get_glass_sheet_configs()
+        for sheet in row_consumption:
+            size = sheet.get("size")
+            pcs = frappe.utils.flt(sheet.get("pcs"))
+            sft_per_sheet = next((frappe.utils.flt(c.get("sft")) for c in configs if c.get("size") == size), 0)
+            sft_qty += sft_per_sheet * pcs
+            
+        if sft_qty <= 0.0001:
+            continue
+            
+        # Check raw component stock sufficiency
+        shortfalls = []
+        for sheet in row_consumption:
+            comp_item = sheet.get("item_consumed")
+            size = sheet.get("size")
+            pcs = frappe.utils.flt(sheet.get("pcs"))
+            sft_per_sheet = next((frappe.utils.flt(c.get("sft")) for c in configs if c.get("size") == size), 0)
+            needed = round(sft_per_sheet * pcs, 4)
+            
+            available = frappe.utils.flt(frappe.db.get_value(
+                "Bin", {"item_code": comp_item, "warehouse": warehouse}, "actual_qty"
+            ) or 0)
+            if available + 0.0001 < needed:
+                shortfalls.append({
+                    "item": comp_item,
+                    "needed": needed,
+                    "available": available
+                })
+                
+        if shortfalls:
+            details = "; ".join(f"{s['item']} (need {s['needed']}, have {s['available']})" for s in shortfalls)
+            frappe.throw(f"Insufficient stock in {warehouse} to produce/deduct {row.item_code}: {details}")
+            
+        total_sft = frappe.utils.flt(row.custom_area_sqft) * frappe.utils.flt(row.qty)
+        
+        if is_laminated:
+            # Execute repack (consumes raw glass, produces laminated)
+            _create_composite_repack_entry(
+                row.item_code, row_consumption, total_sft, warehouse, company, job_card.name, row.name, configs
+            )
+            # Execute immediate stock deduction for Laminated Glass (via Material Issue)
+            # This makes it behave identically to Cut/Resized glass and appear on the ledger right away.
+            _create_glass_deduction_stock_entry_for_row(
+                row.item_code, total_sft, warehouse, company, job_card.name, row.name, None, total_sft
+            )
+        else:
+            # Execute immediate stock deduction for Resized/Cut Glass (via Material Issue)
+            # Group sheets by item_consumed
+            sheets_by_item = {}
+            for sheet in row_consumption:
+                itm = sheet.get("item_consumed") or row.item_code
+                if itm not in sheets_by_item:
+                    sheets_by_item[itm] = []
+                sheets_by_item[itm].append(sheet)
+                
+            for itm, itm_sheets in sheets_by_item.items():
+                itm_sft_release_qty = 0
+                for sheet in itm_sheets:
+                    size = sheet.get("size")
+                    pcs = frappe.utils.flt(sheet.get("pcs"))
+                    sft_per_sheet = next((frappe.utils.flt(c.get("sft")) for c in configs if c.get("size") == size), 0)
+                    itm_sft_release_qty += sft_per_sheet * pcs
+                
+                if itm_sft_release_qty > 0.0001:
+                    _create_glass_deduction_stock_entry_for_row(
+                        itm, itm_sft_release_qty, warehouse, company, job_card.name, row.name, json.dumps(itm_sheets), total_sft
+                    )
+
+def _create_composite_repack_entry(laminated_item, row_consumption, sft_qty_from_quotation, warehouse, company, job_card_name, row_name, configs):
+    import json
+    entry = frappe.new_doc("Stock Entry")
+    entry.stock_entry_type = "Repack"
+    entry.company = company
+    entry.remarks = f"Repacked for CAW Job Card: {job_card_name} Row: {row_name}"
+    
+    # Consumed items (Ordinary / Ready Laminated)
+    for sheet in row_consumption:
+        comp_item = sheet.get("item_consumed")
+        size = sheet.get("size")
+        pcs = frappe.utils.flt(sheet.get("pcs"))
+        sft_per_sheet = next((frappe.utils.flt(c.get("sft")) for c in configs if c.get("size") == size), 0)
+        needed = round(sft_per_sheet * pcs, 4)
+        
+        entry.append("items", {
+            "item_code": comp_item,
+            "s_warehouse": warehouse,
+            "qty": needed,
+            "description": f"Sheets Consumed: {json.dumps([{'size': size, 'pcs': pcs}])}"
+        })
+        
+    # Produced item (Laminated Glass) - capturing only SFT
+    entry.append("items", {
+        "item_code": laminated_item,
+        "t_warehouse": warehouse,
+        "qty": round(frappe.utils.flt(sft_qty_from_quotation), 4)
+    })
+    
+    entry.flags.ignore_permissions = True
+    entry.insert()
+    entry.submit()
+    return entry.name
+
+
+@frappe.whitelist()
+def get_item_stock_balance(item_code):
+    """Retrieve the current stock balance for an item across all warehouses.
+    For standard Glass items, return sheet balances. For others, return quantities."""
+    if not item_code:
+        return []
+        
+    # Get item group and custom glass type
+    item_info = frappe.db.get_value("Item", item_code, ["item_group", "custom_glass_type", "stock_uom"], as_dict=True)
+    if not item_info:
+        return []
+        
+    item_group = item_info.item_group
+    is_glass = (item_group == "Glass")
+    is_laminated = is_glass and (item_info.custom_glass_type == "Laminated")
+    stock_uom = item_info.stock_uom or "Nos"
+    
+    # Query tabBin for all warehouses with non-zero stock
+    bins = frappe.get_all(
+        "Bin",
+        filters={"item_code": item_code, "actual_qty": ["!=", 0]},
+        fields=["warehouse", "actual_qty"]
+    )
+    
+    balances = []
+    for b in bins:
+        warehouse = b.warehouse
+        actual_qty = frappe.utils.flt(b.actual_qty)
+        
+        if is_glass and not is_laminated:
+            # Reconstruct glass sheet balance for this warehouse
+            try:
+                ledger_data = get_glass_stock_ledger(item_code, warehouse)
+                sheet_bal = ledger_data.get("final_sheet_balance") if isinstance(ledger_data, dict) else {}
+            except Exception:
+                sheet_bal = {}
+                
+            # Format sheet balance string
+            if sheet_bal:
+                sheet_strs = [f"{size}: {int(pcs)} pcs" for size, pcs in sheet_bal.items()]
+                bal_str = ", ".join(sheet_strs)
+            else:
+                bal_str = f"0 sheets ({round(actual_qty, 2)} SFT)"
+            
+            balances.append({
+                "warehouse": warehouse,
+                "balance": bal_str,
+                "qty": actual_qty,
+                "uom": "SFT",
+                "sheet_bal": sheet_bal
+            })
+        else:
+            balances.append({
+                "warehouse": warehouse,
+                "balance": f"{round(actual_qty, 2)} {stock_uom}",
+                "qty": actual_qty,
+                "uom": stock_uom
+            })
+            
+    return balances
+
+

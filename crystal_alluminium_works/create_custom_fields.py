@@ -426,6 +426,137 @@ def add_custom_fields():
                 "hidden": 1,
             }
         ],
+        # Marks a Purchase Receipt as created through the CAW Stock Entry page,
+        # so that page's "Recent Stock Entries" panel can find its own receipts
+        # without picking up unrelated/manually created Purchase Receipts.
+        "Purchase Receipt": [
+            {
+                "fieldname": "custom_via_caw_stock_entry",
+                "label": "Created via CAW Stock Entry",
+                "fieldtype": "Check",
+                "insert_after": "remarks",
+                "hidden": 1,
+                "no_copy": 1,
+                "module": "Crystal Alluminium Works",
+            },
+        ],
+        # Links a deduction/repack Stock Entry to the Sales Invoice that released it,
+        # so the Stock Ledger's "Date / Invoice" column can show the exact invoice per
+        # movement instead of guessing the newest invoice on the job card. Populated at
+        # creation for invoice-time deductions; for glass deducted early at JC Operations
+        # it holds the first releasing invoice (the ledger lists all of them at read time).
+        "Stock Entry": [
+            {
+                "fieldname": "custom_sales_invoice",
+                "label": "Sales Invoice (CAW)",
+                "fieldtype": "Link",
+                "options": "Sales Invoice",
+                "insert_after": "remarks",
+                "read_only": 1,
+                "no_copy": 1,
+                "module": "Crystal Alluminium Works",
+            },
+        ],
+        # Purchase Receipt Item — stock-in fields mirroring the sales-side glass
+        # sheet model. For sheet-mode glass the receiver enters sheet size + pcs and
+        # qty (the SFT stock quantity) is computed as sheet_sft * sheet_pcs so the
+        # stock ledger stays in Square Foot, consistent with how sales deduct.
+        "Purchase Receipt Item": [
+            {
+                "fieldname": "custom_product_category",
+                "label": "Product Category",
+                "fieldtype": "Select",
+                "options": PRODUCT_CATEGORY_OPTIONS,
+                "insert_after": "item_name",
+                "read_only": 1,
+                "module": "Crystal Alluminium Works",
+            },
+            {
+                "fieldname": "custom_glass_sale_mode",
+                "label": "Glass Sale Mode",
+                "fieldtype": "Select",
+                "options": GLASS_SALE_MODE_OPTIONS,
+                "insert_after": "custom_product_category",
+                "depends_on": "eval:doc.custom_product_category=='Glass'",
+                "read_only": 1,
+                "module": "Crystal Alluminium Works",
+            },
+            {
+                "fieldname": "custom_sheet_size",
+                "label": "Sheet Size",
+                "fieldtype": "Data",
+                "insert_after": "custom_glass_sale_mode",
+                "depends_on": "eval:doc.custom_product_category=='Glass' && doc.custom_glass_sale_mode=='Sheet'",
+                "read_only": 1,
+                "module": "Crystal Alluminium Works",
+            },
+            {
+                "fieldname": "custom_sheet_sft",
+                "label": "SFT per Sheet",
+                "fieldtype": "Float",
+                "insert_after": "custom_sheet_size",
+                "depends_on": "eval:doc.custom_product_category=='Glass' && doc.custom_glass_sale_mode=='Sheet'",
+                "read_only": 1,
+                "module": "Crystal Alluminium Works",
+            },
+            {
+                "fieldname": "custom_sheet_pcs",
+                "label": "Sheets / Pcs",
+                "fieldtype": "Float",
+                "insert_after": "custom_sheet_sft",
+                "depends_on": "eval:doc.custom_product_category=='Glass' && doc.custom_glass_sale_mode=='Sheet'",
+                "read_only": 1,
+                "module": "Crystal Alluminium Works",
+            },
+            {
+                # Ceiling boards (AGC/AMC) are received per piece, same as glass
+                # sheets, but each item has a fixed area/piece (Ceiling
+                # Configuration.ratio_4) instead of a selectable sheet size.
+                # qty (the Square Meter stock quantity) = ratio_4 * custom_ceiling_pcs.
+                "fieldname": "custom_ceiling_pcs",
+                "label": "Pieces",
+                "fieldtype": "Float",
+                "insert_after": "custom_sheet_pcs",
+                "depends_on": "eval:doc.custom_product_category=='Ceiling'",
+                "read_only": 1,
+                "module": "Crystal Alluminium Works",
+            },
+            {
+                # Per-item remark entered in the Stock Entry page's Add Item modal
+                # (moved here from a single document-level remarks field so each
+                # line can carry its own note).
+                "fieldname": "custom_remarks",
+                "label": "Remarks",
+                "fieldtype": "Small Text",
+                "insert_after": "custom_ceiling_pcs",
+                "read_only": 1,
+                "module": "Crystal Alluminium Works",
+            },
+        ],
+        "Quotation": [
+            {
+                # Quotation Builder's global +/- % adjustment over each row's Inc.Rate.
+                # Stored so re-opening the quotation via "Edit in Builder" restores the
+                # same mode (discount/markup) and percentage instead of losing it.
+                "fieldname": "custom_price_adjustment_type",
+                "label": "Builder Price Adjustment Type",
+                "fieldtype": "Select",
+                "options": "\n-\n+",
+                "insert_after": "selling_price_list",
+                "hidden": 1,
+                "no_copy": 1,
+                "module": "Crystal Alluminium Works",
+            },
+            {
+                "fieldname": "custom_price_adjustment_percent",
+                "label": "Builder Price Adjustment Percent",
+                "fieldtype": "Float",
+                "insert_after": "custom_price_adjustment_type",
+                "hidden": 1,
+                "no_copy": 1,
+                "module": "Crystal Alluminium Works",
+            },
+        ],
     }
 
     create_custom_fields(custom_fields)

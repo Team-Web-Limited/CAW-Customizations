@@ -77,30 +77,6 @@
   {
    "child": 1,
    "collapsible": 1,
-   "icon": "box",
-   "indent": 0,
-   "keep_closed": 0,
-   "label": "Stock Ledger",
-   "link_to": "stock-ledger",
-   "link_type": "Page",
-   "show_arrow": 0,
-   "type": "Link"
-  },
-  {
-   "child": 1,
-   "collapsible": 1,
-   "icon": "box",
-   "indent": 0,
-   "keep_closed": 0,
-   "label": "Stock Adjustment",
-   "link_to": "stock_adjustment",
-   "link_type": "Page",
-   "show_arrow": 0,
-   "type": "Link"
-  },
-  {
-   "child": 1,
-   "collapsible": 1,
    "icon": "settings",
    "indent": 0,
    "keep_closed": 0,
@@ -269,7 +245,7 @@
    "type": "Link"
   }
  ],
- "modified": "2026-07-13 17:19:33.786216",
+ "modified": "2026-07-01 01:48:14.036489",
  "modified_by": "Administrator",
  "module": "Crystal Alluminium Works",
  "name": "Crystal Alluminium Works",

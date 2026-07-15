@@ -101,6 +101,12 @@
    "in_list_view": 1,
    "label": "Status",
    "options": "Draft\nIn Progress\nCompleted\nCancelled"
+  },
+  {
+   "fieldname": "custom_sheet_consumption_json",
+   "fieldtype": "Small Text",
+   "hidden": 1,
+   "label": "Sheet Consumption JSON"
   }
  ],
  "grid_page_length": 50,

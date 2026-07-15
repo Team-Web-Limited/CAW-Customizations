@@ -75,12 +75,6 @@ async function render_payments_page(page) {
 	</style>
 
 	<div class="pay-page">
-		<div class="pay-toolbar">
-			<button class="btn btn-primary" id="btn-create-payment">
-				<i class="fa fa-plus" style="margin-right:6px;"></i>Create Payment
-			</button>
-		</div>
-
 		<div class="pay-card">
 			<div class="pay-card-header">
 				<span class="pay-icon">#</span> Recent Payments
@@ -182,10 +176,6 @@ function render_payment_record_rows(records) {
 
 function bind_payments_page_events(page, $body) {
 	$body.off('.paymentsPage');
-
-	$body.on('click.paymentsPage', '#btn-create-payment', function() {
-		open_create_payment_modal(page);
-	});
 
 	$body.on('click.paymentsPage', '.pay-filter-apply', function() {
 		load_payment_records(page, 1);
@@ -313,6 +303,16 @@ function open_create_payment_modal(page) {
 		);
 	}
 
+	// When a job card row is selected/edited, drive the top-level amount to equal
+	// the sum of all allocation row amounts so the user never has to type it manually.
+	function update_amount_from_allocations() {
+		if (!d || !d.fields_dict.amount) return;
+		let total = get_allocation_total();
+		if (total > 0.0001) {
+			d.set_value('amount', total);
+		}
+	}
+
 	let d = new frappe.ui.Dialog({
 		title: __('Create Payment'),
 		fields: [
@@ -328,14 +328,48 @@ function open_create_payment_modal(page) {
 					};
 				},
 				onchange: function() {
-					// Job cards are customer-specific, so any allocation rows from a
-					// previously chosen customer must not survive a customer change.
+					// Clear prior allocation rows on customer switch
 					let grid = d.fields_dict.allocations && d.fields_dict.allocations.grid;
 					if (grid) {
 						grid.df.data = [];
 						grid.refresh();
 					}
+					d.set_value('amount', 0);
 					update_allocation_balance();
+
+					let customer = d.get_value('customer');
+					if (!customer) return;
+
+					// Auto-populate all outstanding job cards as allocation rows
+					frappe.call({
+						method: 'crystal_alluminium_works.api.get_customer_outstanding_job_cards',
+						args: { customer: customer },
+						callback: function(r) {
+							let rows = r.message || [];
+							let grid = d.fields_dict.allocations && d.fields_dict.allocations.grid;
+							if (!grid) return;
+
+							if (rows.length === 0) {
+								// Show no-outstanding message in the balance indicator area
+								if (d.fields_dict.allocation_balance) {
+									d.fields_dict.allocation_balance.$wrapper.html(
+										`<div style="padding:6px 0 8px; color:var(--text-muted); font-size:13px;">This customer has no outstanding job cards currently.</div>`
+									);
+								}
+								return;
+							}
+
+							// Populate grid with one row per outstanding job card
+							grid.df.data = rows.map(function(item) {
+								return { job_card: item.job_card, amount: item.amount };
+							});
+							grid.refresh();
+
+							// Drive top-level amount from the total of all rows
+							update_amount_from_allocations();
+							update_allocation_balance();
+						}
+					});
 				}
 			},
 			{ fieldtype: 'Column Break' },
@@ -347,8 +381,7 @@ function open_create_payment_modal(page) {
 				onchange: function() {
 					update_allocation_balance();
 				}
-			}
-			,
+			},
 			{ fieldtype: 'Section Break' },
 			{
 				fieldtype: 'HTML',
@@ -358,7 +391,7 @@ function open_create_payment_modal(page) {
 				fieldtype: 'Table',
 				fieldname: 'allocations',
 				label: 'Job Card Allocations',
-				description: 'Optional — split this payment across job cards. Anything left unallocated becomes the customer’s advance / credit.',
+				description: 'Optional — split this payment across job cards. Anything left unallocated becomes the customer\'s advance / credit.',
 				cannot_add_rows: false,
 				in_place_edit: false,
 				data: [],
@@ -385,23 +418,18 @@ function open_create_payment_modal(page) {
 							if (!row || !row.job_card) {
 								return;
 							}
-							// Pre-fill this row with the job card's current outstanding balance,
-							// capped at whatever the payment still has left to allocate (and 0 if
-							// nothing is owed). The user can edit it afterwards.
+							// Pre-fill this row's amount with the job card's outstanding balance,
+							// then drive the top-level amount to always equal the allocations total.
 							frappe.call({
 								method: 'crystal_alluminium_works.api.get_job_card_statement_balance',
 								args: { job_card: row.job_card },
 								callback: function(r) {
 									let balance = flt((r.message || {}).balance || 0);
-									let top_amount = flt(d.get_value('amount') || 0);
-									let others = (d.get_value('allocations') || []).reduce(function(sum, a) {
-										return sum + (a.name === row.name ? 0 : flt(a.amount || 0));
-									}, 0);
-									let remaining = Math.max(top_amount - others, 0);
-									row.amount = Math.max(Math.min(balance, remaining), 0);
+									row.amount = Math.max(balance, 0);
 									if (control.grid_row) {
 										control.grid_row.refresh_field('amount');
 									}
+									update_amount_from_allocations();
 									update_allocation_balance();
 								}
 							});
@@ -415,24 +443,16 @@ function open_create_payment_modal(page) {
 						reqd: 1,
 						columns: 3,
 						onchange: function() {
-							// Never let the running allocations exceed the payment amount:
-							// clamp the row just edited down to whatever balance remains.
-							let amount = flt(d.get_value('amount') || 0);
-							let total = (d.get_value('allocations') || []).reduce((sum, row) => sum + flt(row.amount || 0), 0);
-							let over = total - amount;
-							if (over > 0.0001 && this.doc) {
-								this.doc.amount = Math.max(flt(this.doc.amount || 0) - over, 0);
-								if (this.grid_row) {
-									this.grid_row.refresh_field('amount');
-								}
-							}
+							// When the user manually edits a row amount, sync the top-level amount
+							// and clamp the row if it would over-allocate.
+							update_amount_from_allocations();
 							update_allocation_balance();
 						}
 					}
 				]
 			},
-			{ fieldtype: 'Section Break' },
-			{
+		{ fieldtype: 'Section Break' },
+		{
 				fieldtype: 'Date',
 				fieldname: 'date',
 				label: 'Date',
@@ -477,7 +497,8 @@ function open_create_payment_modal(page) {
 			{
 				fieldtype: 'Data',
 				fieldname: 'reference',
-				label: 'Reference'
+				label: 'Reference',
+				reqd: 1
 			}
 		],
 		primary_action_label: __('Save Payment'),
@@ -563,10 +584,16 @@ function open_create_payment_modal(page) {
 	// allocations grid (delegated so it covers rows created after the dialog opened).
 	d.fields_dict.amount.$input.on('input', update_allocation_balance);
 	d.fields_dict.allocations.grid.wrapper.on('input', 'input', function() {
-		setTimeout(update_allocation_balance, 30);
+		setTimeout(function() {
+			update_amount_from_allocations();
+			update_allocation_balance();
+		}, 30);
 	});
 	d.fields_dict.allocations.grid.wrapper.on('click', '.grid-remove-rows, .grid-add-row', function() {
-		setTimeout(update_allocation_balance, 60);
+		setTimeout(function() {
+			update_amount_from_allocations();
+			update_allocation_balance();
+		}, 60);
 	});
 
 	update_allocation_balance();

@@ -57,7 +57,8 @@ function load_single_job_card_detail(page, job_card_name) {
 					quotation_amendment_pending: !!message.quotation_amendment_pending,
 					invoice_amendment_pending: !!message.invoice_amendment_pending
 				},
-				message.released_items || []
+				message.released_items || [],
+				message.stock_deductions || []
 			));
 			bind_single_job_card_detail_events(
 				page,
@@ -66,7 +67,8 @@ function load_single_job_card_detail(page, job_card_name) {
 				message.quotation,
 				message.history || [],
 				message.sales_invoices || [],
-				message.released_items || []
+				message.released_items || [],
+				message.stock_deductions || []
 			);
 		}
 	});
@@ -285,39 +287,294 @@ function queue_job_card_customer_defaults(dialog) {
 	}, 300);
 }
 
-function open_jc_operations_modal(job_card) {
-	let d = new frappe.ui.Dialog({
-		title: 'JC Operations',
-		fields: [
-			{
-				fieldtype: 'Select',
-				fieldname: 'sheet_size',
-				label: 'Sheet Size',
-				options: [],
-			},
-			{
-				fieldtype: 'Column Break',
-			},
-			{
-				fieldtype: 'Data',
-				fieldname: 'sheet_value',
-				label: 'Value',
-			},
-		],
-	});
 
-	frappe.call({
-		method: 'crystal_alluminium_works.api.get_glass_sheet_configs',
-		callback: function(r) {
-			let sizes = (r.message || []).map(row => row.size).filter(Boolean);
-			d.set_df_property('sheet_size', 'options', sizes);
-			if (sizes.length) {
-				d.set_value('sheet_size', sizes[0]);
+
+function open_jc_operations_modal(page, job_card, quotation) {
+	// First fetch the latest custom_sheet_consumption_json from the Job Card
+	frappe.db.get_value('CAW Job Card', job_card.name, 'custom_sheet_consumption_json')
+		.then(r => {
+			let saved_data = {};
+			try {
+				if (r.message && r.message.custom_sheet_consumption_json) {
+					saved_data = JSON.parse(r.message.custom_sheet_consumption_json);
+				}
+			} catch (e) {}
+			
+			// Get all Cut Size glass items OR Laminated glass items from quotation.items
+			let items = ((quotation || {}).items || []).filter(item => 
+				item.custom_product_category === 'Glass' && 
+				(item.custom_glass_sale_mode === 'Resized' || item.custom_glass_type === 'Laminated')
+			);
+			
+			if (items.length === 0) {
+				frappe.msgprint('No Cut Size glass items found in this Job Card.');
+				return;
 			}
-		},
-	});
 
-	d.show();
+			let d = new frappe.ui.Dialog({
+				title: 'JC Operations (Glass Sheet Consumption)',
+				size: 'extra-large',
+				fields: [
+					{
+						fieldname: 'html',
+						fieldtype: 'HTML'
+					}
+				],
+				primary_action_label: 'Save',
+				primary_action: function() {
+					let consumption = {};
+					d.$wrapper.find('.jc-glass-item-row').each(function() {
+						let row_name = $(this).attr('data-row-name');
+						let item_sheets = [];
+						$(this).find('.sheet-entry-row').each(function() {
+							let item_consumed = $(this).find('.sheet-item-consumed-input').val();
+							let size = $(this).find('.sheet-size-select').val();
+							let pcs = flt($(this).find('.sheet-pcs-input').val());
+							if (size && pcs > 0) {
+								item_sheets.push({
+									item_consumed: item_consumed,
+									size: size,
+									pcs: pcs
+								});
+							}
+						});
+						if (item_sheets.length > 0) {
+							consumption[row_name] = item_sheets;
+						}
+					});
+					d.get_primary_btn().prop('disabled', true);
+					frappe.call({
+						method: 'crystal_alluminium_works.api.save_jc_operations_consumption',
+						args: {
+							job_card_name: job_card.name,
+							consumption_json: JSON.stringify(consumption)
+						},
+						callback: function(r) {
+							d.hide();
+							frappe.show_alert({message: 'Saved successfully', indicator: 'green'});
+							load_single_job_card_detail(page, job_card.name);
+						}
+					});
+				}
+			});
+
+			frappe.call({
+				method: 'crystal_alluminium_works.api.get_glass_sheet_configs',
+				callback: function(configs_r) {
+					let configs = configs_r.message || [];
+					
+					frappe.call({
+						method: 'crystal_alluminium_works.api.get_all_glass_items',
+						callback: function(items_r) {
+							let glass_items = items_r.message || [];
+
+							let rows_html = items.map(item => {
+								let existing_sheets = saved_data[item.name] || [];
+								let show_placeholder = existing_sheets.length === 0;
+
+								let sheets_html = existing_sheets.map(sheet => {
+									let row_options = configs.map(c => `<option value="${c.size}" ${c.size === sheet.size ? 'selected' : ''}>${c.size}</option>`).join('');
+									let current_item_consumed = sheet.item_consumed || item.item_code;
+									
+									return `
+										<div class="sheet-entry-row" style="display: flex; gap: 8px; margin-bottom: 6px; align-items: center;">
+											<input type="text" class="form-control input-sm sheet-item-consumed-input" list="all-glass-items" value="${jc_escape(current_item_consumed)}" style="min-width: 180px; display: inline-block;" placeholder="Item Consumed...">
+											<select class="form-control input-sm sheet-size-select" style="min-width: 130px; display: inline-block;">
+												<option value=""></option>
+												${row_options}
+											</select>
+											<input type="number" class="form-control input-sm sheet-pcs-input" value="${sheet.pcs || ''}" min="1" step="1" style="text-align:right; width: 70px; display: inline-block;" placeholder="Pcs">
+											<span class="sheet-balance-lbl text-info" style="font-size: 11px; font-weight: bold; min-width: 45px; text-align: center;">-</span>
+											<button class="btn btn-default btn-xs add-sheet-btn" style="padding: 2px 6px;" title="Add Row"><i class="fa fa-plus text-primary"></i></button>
+											<button class="btn btn-default btn-xs remove-sheet-btn" style="padding: 2px 6px;" title="Remove Row"><i class="fa fa-trash text-danger"></i></button>
+										</div>
+									`;
+								}).join('');
+								
+								return `
+									<tr class="jc-glass-item-row" data-row-name="${jc_escape(item.name)}">
+										<td>${jc_escape(item.item_code)}</td>
+										<td>${jc_escape(item.item_name)}</td>
+										<td style="text-align:right;">${jc_number(item.custom_numbering, 0)}</td>
+										<td style="text-align:right;">${jc_number(item.qty, 3)}</td>
+										<td>${jc_escape(item.uom)}</td>
+										<td class="sheets-container-cell">
+											<div class="empty-sheets-placeholder" style="${show_placeholder ? '' : 'display: none;'} margin-bottom: 6px;">
+												<span class="text-muted small">No sheets specified. </span>
+												<button class="btn btn-default btn-xs add-sheet-btn" style="padding: 2px 6px;" title="Add Row"><i class="fa fa-plus text-primary"></i> Add Sheet</button>
+											</div>
+											<div class="sheets-list">
+												${sheets_html}
+											</div>
+										</td>
+									</tr>
+								`;
+							}).join('');
+
+							let datalist_html = `
+								<datalist id="all-glass-items">
+									${glass_items.map(i => `<option value="${jc_escape(i.item_code)}">${jc_escape(i.item_name || i.item_code)}</option>`).join('')}
+								</datalist>
+							`;
+
+							let html = `
+								<table class="table table-bordered">
+									<thead>
+										<tr>
+											<th>Item Code</th>
+											<th>Item Name</th>
+											<th style="text-align:right;">Pcs</th>
+											<th style="text-align:right;">Qty</th>
+											<th>UOM</th>
+											<th>Sheets Consumed</th>
+										</tr>
+									</thead>
+									<tbody>
+										${rows_html}
+									</tbody>
+								</table>
+								${datalist_html}
+							`;
+							
+							d.fields_dict.html.$wrapper.html(html);
+
+							// Bind event handlers inside the wrapper
+							let check_save_button_visibility = function() {
+								let has_sheets = false;
+								let is_valid = true;
+								
+								d.$wrapper.find('.sheet-entry-row').each(function() {
+									has_sheets = true;
+									let item_consumed = $(this).find('.sheet-item-consumed-input').val();
+									let size = $(this).find('.sheet-size-select').val();
+									let pcs_val = $(this).find('.sheet-pcs-input').val();
+									
+									if (!item_consumed || !size || !pcs_val) {
+										is_valid = false;
+									} else {
+										let pcs = parseFloat(pcs_val);
+										if (isNaN(pcs) || pcs <= 0 || !Number.isInteger(pcs)) {
+											is_valid = false;
+										}
+									}
+								});
+								
+								// Also check if any jc-glass-item-row has 0 sheets.
+								// If we want to force ALL glass items to be configured:
+								let all_configured = true;
+								d.$wrapper.find('.jc-glass-item-row').each(function() {
+									if ($(this).find('.sheet-entry-row').length === 0) {
+										all_configured = false;
+									}
+								});
+								
+								let $btn = d.get_primary_btn();
+								if (has_sheets && is_valid && all_configured) {
+									$btn.prop('disabled', false).attr('title', '');
+									$btn.show();
+								} else {
+									let reason = !all_configured ? 'Add sheets for all glass items' : (!is_valid ? 'Ensure all rows have Item, Size, and valid whole Pcs > 0' : 'Please add sheets consumed');
+									$btn.prop('disabled', true).attr('title', reason);
+									$btn.show();
+								}
+							};
+
+							d.$wrapper.on('click', '.add-sheet-btn', function() {
+								let $cell = $(this).closest('.sheets-container-cell');
+								let $list = $cell.find('.sheets-list');
+								let row_options = configs.map(c => `<option value="${c.size}">${c.size}</option>`).join('');
+								
+								// Find parent row to get default item code
+								let $row = $(this).closest('.jc-glass-item-row');
+								let default_item = $row.find('td:first').text().trim();
+
+								let new_row = `
+									<div class="sheet-entry-row" style="display: flex; gap: 8px; margin-bottom: 6px; align-items: center;">
+										<input type="text" class="form-control input-sm sheet-item-consumed-input" list="all-glass-items" value="${jc_escape(default_item)}" style="min-width: 180px; display: inline-block;" placeholder="Item Consumed...">
+										<select class="form-control input-sm sheet-size-select" style="min-width: 130px; display: inline-block;">
+											<option value=""></option>
+											${row_options}
+										</select>
+										<input type="number" class="form-control input-sm sheet-pcs-input" value="" min="1" step="1" style="text-align:right; width: 70px; display: inline-block;" placeholder="Pcs">
+										<span class="sheet-balance-lbl text-info" style="font-size: 11px; font-weight: bold; min-width: 45px; text-align: center;">-</span>
+										<button class="btn btn-default btn-xs add-sheet-btn" style="padding: 2px 6px;" title="Add Row"><i class="fa fa-plus text-primary"></i></button>
+										<button class="btn btn-default btn-xs remove-sheet-btn" style="padding: 2px 6px;" title="Remove Row"><i class="fa fa-trash text-danger"></i></button>
+									</div>
+								`;
+								$list.append(new_row);
+								$cell.find('.empty-sheets-placeholder').hide();
+								check_save_button_visibility();
+							});
+
+							d.$wrapper.on('click', '.remove-sheet-btn', function() {
+								let $cell = $(this).closest('.sheets-container-cell');
+								$(this).closest('.sheet-entry-row').remove();
+								
+								let $list = $cell.find('.sheets-list');
+								if ($list.children().length === 0) {
+									$cell.find('.empty-sheets-placeholder').show();
+								}
+								check_save_button_visibility();
+							});
+
+							let update_sheet_row_balance = function($row) {
+								let item_code = $row.find('.sheet-item-consumed-input').val();
+								let size = $row.find('.sheet-size-select').val();
+								let $lbl = $row.find('.sheet-balance-lbl');
+								if (!item_code || !size) {
+									$lbl.text('-');
+									return;
+								}
+								frappe.call({
+									method: 'crystal_alluminium_works.api.get_item_stock_balance',
+									args: { item_code: item_code },
+									callback: function(r) {
+										let balances = r.message || [];
+										let store_bal = balances.find(b => b.warehouse.includes('Stores')) || balances[0];
+										if (store_bal && store_bal.sheet_bal && store_bal.sheet_bal[size] !== undefined) {
+											$lbl.text(store_bal.sheet_bal[size] + 'pcs');
+										} else {
+											$lbl.text('0pcs');
+										}
+									}
+								});
+							};
+
+							d.$wrapper.on('change awesomplete-selectcomplete input', '.sheet-item-consumed-input', function() {
+								let $row = $(this).closest('.sheet-entry-row');
+								update_sheet_row_balance($row);
+								check_save_button_visibility();
+							});
+							d.$wrapper.on('change', '.sheet-size-select', function() {
+								let $row = $(this).closest('.sheet-entry-row');
+								update_sheet_row_balance($row);
+								check_save_button_visibility();
+							});
+							d.$wrapper.on('input change', '.sheet-pcs-input', function() {
+								let val = $(this).val();
+								if (val) {
+									let clean = val.replace(/[^0-9]/g, '');
+									if (clean !== val) {
+										$(this).val(clean);
+									}
+								}
+								check_save_button_visibility();
+							});
+
+							d.show();
+							check_save_button_visibility();
+
+							// On initial show, trigger update for all rows
+							setTimeout(function() {
+								d.$wrapper.find('.sheet-entry-row').each(function() {
+									update_sheet_row_balance($(this));
+								});
+							}, 200);
+						}
+					});
+				}
+			});
+		});
 }
 
 async function open_edit_job_card_modal(page, job_card, quotation) {
@@ -604,9 +861,10 @@ function get_job_card_row_quantities(row) {
 	let uom = row.uom || '';
 
 	if (category === 'Aluminium') {
-		// Sold per piece (1 piece = 1 metre); qty is the piece count.
+		// Sold per whole piece; qty is the piece count. Falls back to the row's
+		// own uom (old records may still say "Meter"/"len"; new ones say "Nos").
 		qty = flt(row.qty || 0);
-		uom = row.uom || 'Meter';
+		uom = row.uom || 'Nos';
 	} else if (category === 'Glass') {
 		if (row.custom_glass_sale_mode === 'Full Sheet') {
 			qty = flt(row.qty || 0);
@@ -672,6 +930,7 @@ function render_partial_release_cell(context, row) {
 	if (remaining < 0) remaining = 0;
 	let line_amount = partial_line_amount(context, row);
 	let disabled = remaining <= 0 ? 'disabled' : '';
+    
 	return `
 		<td class="jc-preview-center">
 			<input type="number" class="form-control input-xs jc-release-input"
@@ -1068,30 +1327,19 @@ function bind_single_job_card_detail_events(page, $body, job_card, quotation, hi
 		}
 	});
 
-	$body.on('click.job-card-detail', '[data-action="view-menu"]', function() {
-		open_job_card_view_modal(job_card, sales_invoices);
-	});
+
 
 	$body.on('click.job-card-detail', '[data-action="edit-job-card"]', function() {
 		open_edit_job_card_modal(page, job_card, quotation);
 	});
 
 	$body.on('click.job-card-detail', '[data-action="jc-operations"]', function() {
-		open_jc_operations_modal(job_card);
+		open_jc_operations_modal(page, job_card, quotation);
 	});
 
 	$body.on('click.job-card-detail', '[data-action="download-job-card-pdf"]', function() {
 		let print_url = frappe.urllib.get_full_url(
 			`/api/method/crystal_alluminium_works.api.download_crystal_job_card_pdf?name=${encodeURIComponent(job_card.name)}`
-		);
-		window.open(print_url, '_blank');
-	});
-
-	$body.on('click.job-card-detail', '[data-action="print-payment-receipt"]', function() {
-		let history_name = $(this).attr('data-history');
-		if (!history_name) return;
-		let print_url = frappe.urllib.get_full_url(
-			`/api/method/crystal_alluminium_works.api.download_crystal_payment_receipt_pdf?name=${encodeURIComponent(history_name)}`
 		);
 		window.open(print_url, '_blank');
 	});
@@ -1414,17 +1662,14 @@ function render_job_card_history_rows(history, currency, job_card) {
 	if (!history.length) {
 		return `
 			<tr>
-				<td colspan="9" style="padding:24px;text-align:center;color:var(--text-muted);">
+				<td colspan="8" style="padding:24px;text-align:center;color:var(--text-muted);">
 					No job card history yet.
 				</td>
 			</tr>
 		`;
 	}
 
-	let can_print_receipt = job_card && job_card.status !== 'Cancelled';
-
 	return history.map(function(entry) {
-		let show_receipt_btn = can_print_receipt && flt(entry.amount_paid || 0) > 0;
 		return `
 			<tr>
 				<td>${frappe.utils.escape_html(entry.change_type || '-')}</td>
@@ -1435,13 +1680,6 @@ function render_job_card_history_rows(history, currency, job_card) {
 				<td style="text-align:right;">${format_currency(entry.amount_paid || 0, currency)}</td>
 				<td style="text-align:right;">${format_currency(entry.payment_amount || 0, currency)}</td>
 				<td style="text-align:right;font-weight:600;">${format_currency(entry.balance_amount || 0, currency)}</td>
-				<td style="text-align:right;">
-					${show_receipt_btn ? `
-						<button class="btn btn-xs btn-default" data-action="print-payment-receipt" data-history="${frappe.utils.escape_html(entry.name || '')}">
-							Receipt
-						</button>
-					` : ''}
-				</td>
 			</tr>
 		`;
 	}).join('');
@@ -1512,12 +1750,13 @@ function render_job_card_released_items_rows(released_items, currency) {
 	}).join('');
 }
 
-function render_job_card_history_section(history, released_items, currency, job_card) {
+function render_job_card_history_section(history, released_items, currency, job_card, stock_deductions) {
 	return `
 		<div class="jc-detail-card jc-history-card">
 			<div class="jc-history-tabs">
 				<div class="jc-history-tab active" data-action="switch-jc-history-tab" data-tab="payments">Payment History</div>
 				<div class="jc-history-tab" data-action="switch-jc-history-tab" data-tab="released">Released Items</div>
+				<div class="jc-history-tab" data-action="switch-jc-history-tab" data-tab="deductions">Glass Stock Deduction</div>
 			</div>
 			<div class="jc-history-panel jc-history-panel-payments active">
 				<div class="jc-history-table-wrap">
@@ -1532,7 +1771,6 @@ function render_job_card_history_section(history, released_items, currency, job_
 								<th style="text-align:right;">Amount Paid</th>
 								<th style="text-align:right;">Paid To Date</th>
 								<th style="text-align:right;">Balance</th>
-								<th style="text-align:right;"></th>
 							</tr>
 						</thead>
 						<tbody>
@@ -1560,11 +1798,91 @@ function render_job_card_history_section(history, released_items, currency, job_
 					</table>
 				</div>
 			</div>
+			<div class="jc-history-panel jc-history-panel-deductions">
+				<div class="jc-history-table-wrap">
+					<table class="jc-history-table">
+						<thead>
+							<tr>
+								<th>Deducted On</th>
+								<th>Saved On</th>
+								<th>Item</th>
+								<th style="text-align:right;">Qty (SFT)</th>
+								<th>Glass Item Consumed</th>
+								<th>Sheets Consumed</th>
+								<th>Status</th>
+							</tr>
+						</thead>
+						<tbody>
+							${render_job_card_stock_deductions_rows(stock_deductions)}
+						</tbody>
+					</table>
+				</div>
+			</div>
 		</div>
 	`;
 }
 
-function render_single_job_card_detail(job_card, quotation, history, sales_invoices, flags, released_items) {
+function render_job_card_stock_deductions_rows(stock_deductions) {
+	if (!stock_deductions || stock_deductions.length === 0) {
+		return `
+			<tr>
+				<td colspan="7" style="padding:24px;text-align:center;color:var(--text-muted);">
+					No glass stock deductions recorded yet.
+				</td>
+			</tr>
+		`;
+	}
+
+	return stock_deductions.map(function(row) {
+		let date_str = row.posting_date ? frappe.datetime.str_to_user(row.posting_date || '') : '';
+		if (row.posting_time && date_str) {
+			date_str += ' ' + row.posting_time;
+		}
+
+		let saved_on_str = row.saved_on ? frappe.datetime.str_to_user(row.saved_on.split(' ')[0]) : '';
+		if (row.saved_on && row.saved_on.split(' ')[1]) {
+			saved_on_str += ' ' + row.saved_on.split(' ')[1].substring(0, 8);
+		}
+		
+		let se_link = '-';
+		if (row.name) {
+			se_link = `<a href="/desk/Form/Stock Entry/${encodeURIComponent(row.name)}" onclick="frappe.set_route('Form', 'Stock Entry', '${row.name}'); return false;">${jc_escape(row.name)}</a>`;
+		}
+
+		let status_label = '';
+		if (row.status === 'Saved') {
+			status_label = `<span class="label" style="background-color: #ff9800; color: white; font-weight: normal; padding: 3px 8px; border-radius: 4px;">Saved</span>`;
+		} else {
+			status_label = `<span class="label" style="background-color: #4caf50; color: white; font-weight: normal; padding: 3px 8px; border-radius: 4px;">Deducted</span>`;
+		}
+
+		let sheets_display = '-';
+		let sheets_title = '';
+		if (row.sheets_consumed && row.sheets_consumed !== '-') {
+			sheets_title = row.sheets_consumed;
+			let parts = row.sheets_consumed.split(', ');
+			if (parts.length > 1) {
+				sheets_display = parts[0] + '...';
+			} else {
+				sheets_display = row.sheets_consumed;
+			}
+		}
+
+		return `
+			<tr>
+				<td>${jc_escape(date_str || '-')}</td>
+				<td>${jc_escape(saved_on_str || '-')}</td>
+				<td>${jc_escape(row.quotation_item_name || row.quotation_item_code || '-')}</td>
+				<td style="text-align:right;">${jc_number(row.qty, 4)}</td>
+				<td>${jc_escape(row.item_code || '')}</td>
+				<td title="${jc_escape(sheets_title)}">${jc_escape(sheets_display)}</td>
+				<td>${status_label}</td>
+			</tr>
+		`;
+	}).join('');
+}
+
+function render_single_job_card_detail(job_card, quotation, history, sales_invoices, flags, released_items, stock_deductions) {
 	released_items = released_items || [];
 	flags = flags || {};
 	let amendment_pending = !!(flags.quotation_amendment_pending || flags.invoice_amendment_pending);
@@ -1583,9 +1901,36 @@ function render_single_job_card_detail(job_card, quotation, history, sales_invoi
 	// Invoice flow now — the Job Card tracks payment/balance either way, and the
 	// invoice itself never touches GL.
 	let can_create_partial_invoice = !amendment_pending && can_create_partial_invoice_from_job_card(job_card, quotation);
-	if (amendment_pending) {
-		can_edit_job_card = false;
+	
+	let glass_ops_rows = ((quotation || {}).items || [])
+		.filter(item => 
+			item.custom_product_category === 'Glass' && 
+			(item.custom_glass_type === 'Laminated' || 
+			 item.custom_glass_sale_mode === 'Resized' || 
+			 item.custom_glass_sale_mode === 'Custom')
+		)
+		.map(item => item.name);
+		
+	let glass_ops_configured = true;
+	if (glass_ops_rows.length > 0) {
+		let saved_consumption = {};
+		try {
+			if (job_card.custom_sheet_consumption_json) {
+				saved_consumption = JSON.parse(job_card.custom_sheet_consumption_json);
+			}
+		} catch (e) {}
+		
+		glass_ops_configured = glass_ops_rows.every(row_name => {
+			let rows = saved_consumption[row_name] || [];
+			return rows.length > 0 && rows.some(r => r.item_consumed && r.size && r.pcs > 0);
+		});
+	}
+	let glass_ops_pending = glass_ops_rows.length > 0 && !glass_ops_configured;
+
+	if (amendment_pending || glass_ops_pending) {
+		can_edit_job_card = amendment_pending ? false : can_edit_job_card;
 		can_create_invoice = false;
+		can_create_partial_invoice = false;
 	}
 	let primary_invoice_action = !has_sales_invoice && can_create_invoice
 		? '<button class="btn btn-primary" data-action="create-sales-invoice">Create Sales Invoice</button>'
@@ -1627,8 +1972,12 @@ function render_single_job_card_detail(job_card, quotation, history, sales_invoi
 		.jc-history-panel { display:none; padding:0; }
 		.jc-history-panel.active { display:block; }
 		.jc-history-table-wrap { overflow-x:auto; }
+		.jc-history-panel-deductions .jc-history-table-wrap { max-height: 350px; overflow-y: auto; overflow-x: auto; }
 		.jc-history-table { width:100%; min-width:760px; border-collapse:collapse; }
+		.jc-history-panel-deductions .jc-history-table { width: max-content; min-width: 100%; }
 		.jc-history-table th { padding:12px 18px; font-size:12px; font-weight:700; color:var(--text-muted); text-transform:uppercase; letter-spacing:.4px; background:var(--subtle-fg); border-bottom:1px solid var(--border-color); text-align:left; }
+		.jc-history-panel-deductions .jc-history-table th,
+		.jc-history-panel-deductions .jc-history-table td { white-space: nowrap; }
 		.jc-history-table td { padding:14px 18px; font-size:14px; color:var(--text-color); border-bottom:1px solid var(--border-color); vertical-align:top; }
 		.jc-history-table tbody tr:last-child td { border-bottom:0; }
 		@media (max-width: 800px) {
@@ -1665,6 +2014,13 @@ function render_single_job_card_detail(job_card, quotation, history, sales_invoi
 				${flags.quotation_amendment_pending ? 'A Quotation amendment is pending — submit or discard the amended Quotation in the Quotation Manager. ' : ''}
 				${flags.invoice_amendment_pending ? 'A cancelled Sales Invoice is awaiting its amendment — submit the amended invoice in the Sales Invoice Manager. ' : ''}
 				Payments, invoices and releases are paused until it is resolved.
+			</div>
+		` : ''}
+
+		${glass_ops_pending ? `
+			<div style="margin-bottom:18px; padding:12px 16px; border-radius:8px; background:#fff3cd; border:1px solid #ffeeba; color:#856404; font-size:13px;">
+				<strong>Glass Sheet Consumption Pending</strong><br>
+				Please configure the raw materials/sheets consumed by Cut/Resized and Laminated Glass items via <b>JC Operations</b> to enable releases and billing.
 			</div>
 		` : ''}
 
@@ -1713,7 +2069,7 @@ function render_single_job_card_detail(job_card, quotation, history, sales_invoi
 			</div>
 		</div>
 
-		${render_job_card_history_section(history, released_items, currency, job_card)}
+		${render_job_card_history_section(history, released_items, currency, job_card, stock_deductions)}
 	</div>
 	`;
 }

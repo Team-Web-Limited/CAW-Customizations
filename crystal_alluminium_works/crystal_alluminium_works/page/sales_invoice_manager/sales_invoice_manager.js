@@ -116,10 +116,6 @@ function get_sales_invoice_item_uom_label(item) {
 		return item.uom;
 	}
 
-	if (item.custom_product_category === 'Aluminium') {
-		return 'Meter';
-	}
-
 	if (item.custom_product_category === 'Ceiling') {
 		return 'Square Meter';
 	}
@@ -128,12 +124,16 @@ function get_sales_invoice_item_uom_label(item) {
 		return 'Square Foot';
 	}
 
+	if (item.custom_product_category === 'Aluminium') {
+		return 'Nos';
+	}
+
 	return '';
 }
 
 function get_sales_invoice_item_uom_qty(item) {
 	if (item.custom_product_category === 'Aluminium') {
-		// Sold per piece (1 piece = 1 metre); qty is the piece count.
+		// Sold per whole piece; qty is the piece count.
 		return flt(item.qty || 0);
 	}
 
@@ -196,6 +196,36 @@ function get_sales_invoice_polish_sides_label(item) {
 }
 
 function render_sales_invoice_glass_row(item, index) {
+	if (item.custom_glass_sale_mode === 'Sheet' || item.custom_glass_sale_mode === 'Full Sheet') {
+		let pieces = flt(item.custom_sheet_pcs || item.qty || 0);
+		let t_sft = flt(item.qty || item.custom_sheet_sft || 0);
+		if (item.custom_glass_sale_mode === 'Full Sheet') {
+			t_sft = flt(item.custom_sheet_sft || 0) * flt(item.qty || 0);
+		} else if (item.custom_product_category === 'Glass' && item.custom_glass_sale_mode === 'Sheet') {
+			t_sft = flt(item.qty || item.custom_sheet_sft || 0);
+		}
+
+		return `
+			<tr>
+				<td style="text-align:center; white-space:nowrap;">-</td>
+				<td style="text-align:center; white-space:nowrap;">-</td>
+				<td style="text-align:center; white-space:nowrap;">-</td>
+				<td style="text-align:center; white-space:nowrap;">-</td>
+				<td style="text-align:center; white-space:nowrap;">-</td>
+				<td style="text-align:center; white-space:nowrap;">-</td>
+				<td style="text-align:center; white-space:nowrap;">-</td>
+				<td style="text-align:center; white-space:nowrap;">${format_sales_invoice_review_number(t_sft)}</td>
+				<td style="white-space:nowrap;">-</td>
+				<td style="text-align:center; white-space:nowrap;">${index + 1}</td>
+				<td style="text-align:center; white-space:nowrap;">-</td>
+				<td style="text-align:center; white-space:nowrap;">-</td>
+				<td style="text-align:center; white-space:nowrap;">${pieces || '-'}</td>
+				<td style="font-weight:500; white-space:nowrap;">${frappe.utils.escape_html(item.item_name || item.item_code || '')}</td>
+				<td style="white-space:pre-wrap;">${item.description ? frappe.utils.escape_html(item.description) : '-'}</td>
+			</tr>
+		`;
+	}
+
 	let pieces = flt(item.qty || 0);
 	let pw = (flt(item.custom_width_mm || 0) / 305) * pieces;
 	let ph = (flt(item.custom_height_mm || 0) / 305) * pieces;
@@ -223,7 +253,7 @@ function render_sales_invoice_glass_row(item, index) {
 
 function render_sales_invoice_aluminium_row(item, index, doc) {
 	let price_list = doc ? doc.selling_price_list : 'Retail';
-	let rate_per_m = item.rate;  // rate is per piece (1 piece = 1 metre)
+	let rate_per_m = item.rate;  // rate is per whole piece
 	return `
 		<tr>
 			<td style="text-align:center;">${index + 1}</td>
@@ -554,9 +584,9 @@ async function render_sales_invoice_dashboard(page, invoice_name, wrapper, defau
 									<th style="text-align:center;white-space:nowrap;">Color</th>
 									<th style="white-space:nowrap;">Description</th>
 									<th style="text-align:center;white-space:nowrap;">Qty</th>
-									<th style="text-align:center;white-space:nowrap;">Metres</th>
+									<th style="text-align:center;white-space:nowrap;">Pieces</th>
 									<th style="text-align:center;white-space:nowrap;">Price List</th>
-									<th style="text-align:right;white-space:nowrap;">Rate/m</th>
+									<th style="text-align:right;white-space:nowrap;">Rate</th>
 									<th style="text-align:right;white-space:nowrap;">Amount</th>
 								</tr>
 							</thead>
@@ -725,14 +755,13 @@ async function render_sales_invoice_dashboard(page, invoice_name, wrapper, defau
 			</div>
 
 			<div class="sim-card">
-				<div class="sim-card-header" style="display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap;">Invoice Summary <span style="font-size:13px; font-weight:400; color:var(--text-muted);">Created ${frappe.datetime.prettyDate(doc.creation)}</span></div>
+				<div class="sim-card-header" style="display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap;">Invoice Summary <span style="font-size:13px; font-weight:400; color:var(--text-muted);">Created ${frappe.datetime.str_to_user(doc.creation)}</span></div>
 				<div class="sim-card-body">
 					<div class="sim-info-grid">
 						<div>
 							<div class="sim-info-label">Customer</div>
 							<div class="sim-info-val">${doc.customer || '—'}</div>
 						</div>
-
 						<div>
 							<div class="sim-info-label">Grand Total</div>
 							<div class="sim-info-val">${format_currency(get_sales_invoice_display_total(doc), doc.currency || 'KES')}</div>
@@ -862,6 +891,14 @@ function get_sales_invoice_action_buttons(doc, quotation_name) {
 				</button>
 			`;
 		}
+
+		if (frappe.user.has_role('System Manager') && !doc.is_return && !doc.amended_from) {
+			buttons += `
+				<button class="btn btn-warning" id="btn-edit-invoice-items">
+					<i class="fa fa-pencil" style="margin-right:6px;"></i>Edit Items
+				</button>
+			`;
+		}
 	} else if (doc.docstatus === 2) {
 		buttons += `
 			<button class="btn btn-primary" id="btn-amend-invoice">
@@ -950,6 +987,28 @@ function bind_sales_invoice_action_events(page, doc) {
 		);
 	});
 
+	// ── Edit Items on a submitted invoice (total locked, stock auto-adjusted) ──
+	$body.find('#btn-edit-invoice-items').on('click', () => {
+		frappe.call({
+			method: 'crystal_alluminium_works.api.get_invoice_edit_eligibility',
+			args: { name: doc.name },
+			freeze: true,
+			callback: function(r) {
+				if (r.exc) return;
+				const elig = r.message || {};
+				if (!elig.can_edit) {
+					frappe.msgprint({
+						title: 'Cannot Edit Invoice',
+						indicator: 'red',
+						message: '<ul><li>' + (elig.reasons || ['Not eligible.']).join('</li><li>') + '</li></ul>',
+					});
+					return;
+				}
+				open_edit_invoice_items_dialog(page, doc);
+			},
+		});
+	});
+
 	// ── Amend Invoice (administrative fields only) ──
 	$body.find('#btn-amend-invoice').on('click', () => {
 		frappe.call({
@@ -1023,6 +1082,267 @@ function open_amend_invoice_dialog(page, draft) {
 	d.show();
 	d.$wrapper.find('.modal-body').css({
 		height: 'min(560px, calc(100vh - 180px))',
+		overflowY: 'auto',
+	});
+}
+
+function open_edit_invoice_items_dialog(page, doc) {
+	const esc = frappe.utils.escape_html;
+	const manual_rows = (doc.items || []).filter(it => !it.custom_auto_generated);
+	const original_total = manual_rows.reduce((s, it) => s + flt(it.amount), 0);
+	const currency = doc.currency || 'KES';
+
+	// Working copy of the editable rows. Qty edits scale the row's driving
+	// quantity fields proportionally, mirroring the server's partial scaling.
+	const rows = manual_rows.map(it => ({
+		row_name: it.name,
+		item_code: it.item_code,
+		item_name: it.item_name || it.item_code,
+		category: it.custom_product_category || '',
+		orig_qty: flt(it.qty),
+		qty: flt(it.qty),
+		rate: flt(it.rate),
+		orig: it,
+	}));
+
+	// Amount shown per row: a freshly-added builder item carries builder_amount (the net
+	// composite the pricing engine will produce, incl. its glass/ceiling service rows), which
+	// qty×rate cannot represent for glass/ceiling. Once the user edits qty/rate inline we drop
+	// the override and fall back to qty×rate so their rebalancing stays truthful.
+	function row_amount(r) {
+		return (r.builder_amount != null) ? flt(r.builder_amount) : flt(r.qty) * flt(r.rate);
+	}
+
+	const ALUMINIUM_LABEL_TO_PL = {
+		'Normal Price': 'Retail', 'Mill Finished Price': 'Wholesale', 'Special Price': 'Special',
+		'Retail': 'Retail', 'Wholesale': 'Wholesale', 'Special': 'Special',
+	};
+
+	// Mirror of api.create_quotation_from_builder: turn a CAWItemBuilder item into an invoice
+	// row + the custom fields the server's edit re-prices from (INVOICE_EDIT_ITEM_FIELDS).
+	function builder_item_to_row(item) {
+		const category = item.category;
+		let backend_pl;
+		if (category === 'Ceiling') backend_pl = item.ceiling_mode === 'bundle' ? 'Wholesale' : 'Retail';
+		else if (category === 'Aluminium') backend_pl = ALUMINIUM_LABEL_TO_PL[item.price_list] || 'Retail';
+		else backend_pl = item.price_list || 'Retail';
+
+		let qty = flt(item.qty || 1);
+		let rate = flt(item.rate || 0) / 1.16;
+		const customs = { custom_price_list: backend_pl, custom_product_category: category };
+
+		if (category === 'Glass') {
+			const sale_mode = item.sale_mode || 'Resized';
+			const pws = cint(item.polish_width_sides || 0);
+			const phs = cint(item.polish_height_sides || 0);
+			const sandblast = item.sandblast_type || '';
+			Object.assign(customs, {
+				custom_glass_sale_mode: sale_mode,
+				custom_width_mm: item.width_mm || 0,
+				custom_height_mm: item.height_mm || 0,
+				custom_base_width_ft: item.base_width_ft || 0,
+				custom_base_height_ft: item.base_height_ft || 0,
+				custom_width_ft: item.width_ft || 0,
+				custom_height_ft: item.height_ft || 0,
+				custom_width_allowance: item.width_allowance || 0,
+				custom_height_allowance: item.height_allowance || 0,
+				custom_area_sqft: sale_mode === 'Sheet' ? 0 : (item.area_sqft || 0),
+				custom_perimeter_rft: item.perimeter_rft || 0,
+				custom_polishing: (item.polishing || pws > 0 || phs > 0) ? 1 : 0,
+				custom_polish_width_sides: pws,
+				custom_polish_height_sides: phs,
+				custom_polish_type: item.polish_type || '4-6',
+				custom_holes: cint(item.holes || 0),
+				custom_hole_type: item.hole_type || '5mm',
+				custom_notches: cint(item.notches || 0),
+				custom_notch_type: item.notch_type || 'Standard',
+				custom_sandblast_type: sandblast === 'None' ? '' : sandblast,
+				custom_numbering: item.numbering || '',
+				custom_sheet_size: sale_mode === 'Sheet' ? (item.sheet_size || '') : '',
+				custom_sheet_sft: sale_mode === 'Sheet' ? flt(item.sheet_sft || 0) : 0,
+				custom_sheet_pcs: sale_mode === 'Sheet' ? flt(item.pcs || 0) : 0,
+			});
+		} else if (category === 'Aluminium') {
+			customs.custom_aluminium_metres = qty;
+			customs.custom_aluminium_color = item.aluminium_color || null;
+		} else if (category === 'Ceiling') {
+			if (item.ceiling_mode === 'bundle') {
+				const sqm = flt(item.quantity || item.square_metres || 100);
+				qty = 1;
+				rate = sqm * flt(item.rate || 0);
+				customs.custom_ceiling_sq_m = sqm;
+			} else {
+				customs.custom_ceiling_sq_m = 0;
+			}
+		}
+
+		return {
+			row_name: null,
+			item_code: item.item_code,
+			item_name: item.item_name || item.item_code,
+			category: category,
+			orig_qty: 0,
+			qty: qty,
+			rate: rate,
+			orig: {},
+			customs: customs,
+			builder_amount: flt(item.amount || 0),
+		};
+	}
+
+	const d = new frappe.ui.Dialog({
+		title: `Edit Items — ${doc.name}`,
+		size: 'extra-large',
+		fields: [{ fieldtype: 'HTML', fieldname: 'items_html' }],
+		primary_action_label: 'Save Changes',
+		primary_action: function() {
+			const payload = rows.map(r => {
+				const row = { row_name: r.row_name, item_code: r.item_code, qty: r.qty, rate: r.rate };
+				if (!r.row_name) {
+					row.item_name = r.item_name;
+					row.custom_product_category = r.category;
+					// Category-specific fields the server re-prices glass/ceiling from.
+					if (r.customs) Object.assign(row, r.customs);
+				} else if (r.orig_qty > 0 && Math.abs(r.qty - r.orig_qty) > 0.0001) {
+					const ratio = r.qty / r.orig_qty;
+					['custom_aluminium_metres', 'custom_ceiling_sq_m', 'custom_sheet_pcs'].forEach(f => {
+						if (flt(r.orig[f])) row[f] = flt(r.orig[f]) * ratio;
+					});
+				}
+				return row;
+			});
+			frappe.confirm(
+				'Save these item changes? The grand total stays locked and stock will be auto-adjusted where possible.',
+				() => {
+					frappe.call({
+						method: 'crystal_alluminium_works.api.edit_submitted_invoice_items',
+						args: { name: doc.name, items: JSON.stringify(payload) },
+						freeze: true,
+						freeze_message: 'Saving invoice edits...',
+						callback: function(r) {
+							if (r.exc) return;
+							d.hide();
+							const res = r.message || {};
+							if ((res.warnings || []).length) {
+								frappe.msgprint({
+									title: 'Saved with Warnings',
+									indicator: 'orange',
+									message: '<ul><li>' + res.warnings.join('</li><li>') + '</li></ul>',
+								});
+							}
+							frappe.show_alert({ message: `Invoice ${doc.name} updated`, indicator: 'green' });
+							render_sales_invoice_dashboard(page, doc.name);
+						},
+					});
+				}
+			);
+		},
+	});
+
+	const $wrap = d.get_field('items_html').$wrapper;
+
+	function render_table() {
+		let body_html = rows.map((r, idx) => `
+			<tr data-idx="${idx}">
+				<td style="padding:6px 8px;">
+					<div style="font-weight:600;">${esc(r.item_code)}</div>
+					<div style="font-size:11px; color:var(--text-muted);">${esc(r.item_name)}${r.row_name ? '' : ' <span style="color:var(--orange-500);">(new)</span>'}</div>
+				</td>
+				<td style="padding:6px 8px;">${esc(r.category || '—')}</td>
+				<td style="padding:6px 8px;"><input type="number" step="any" min="0" class="form-control ei-qty" value="${r.qty}" style="width:90px;"></td>
+				<td style="padding:6px 8px;"><input type="number" step="any" min="0" class="form-control ei-rate" value="${r.rate}" style="width:110px;"></td>
+				<td style="padding:6px 8px; text-align:right;" class="ei-amount">${format_currency(row_amount(r), currency)}</td>
+				<td style="padding:6px 8px;"><button class="btn btn-xs btn-danger ei-remove" title="Remove row"><i class="fa fa-trash"></i></button></td>
+			</tr>
+		`).join('');
+
+		$wrap.html(`
+			<div style="font-size:12px; color:var(--text-muted); margin-bottom:10px;">
+				The grand total is <b>locked</b> — rebalance quantities and rates so the total stays within <b>±2</b> of the original.
+				Stock for aluminium, fittings, ceiling and plain glass is auto-adjusted.
+				Laminated / JC-resized glass stock must be corrected via the Job Card's JC Operations.
+				Service rows (polishing, holes, etc.) are regenerated automatically on save.
+			</div>
+			<div style="overflow-x:auto;">
+				<table class="table table-bordered" style="margin-bottom:8px;">
+					<thead><tr>
+						<th>Item</th><th>Category</th><th>Qty</th><th>Rate</th>
+						<th style="text-align:right;">Amount</th><th></th>
+					</tr></thead>
+					<tbody>${body_html}</tbody>
+				</table>
+			</div>
+			<div style="display:flex; align-items:center; gap:8px;">
+				<select class="form-control" id="ei-add-category" style="width:auto; min-width:150px;">
+					${['Aluminium', 'Glass', 'Fittings', 'Ceiling', 'Rubber', 'Silicone'].map(c => `<option value="${c}">${c}</option>`).join('')}
+				</select>
+				<select class="form-control" id="ei-add-glass-type" style="width:auto; min-width:150px; display:none;">
+					${['Ordinary', 'Laminated', 'Ready Laminated', 'Toughened'].map(t => `<option value="${t}">${t}</option>`).join('')}
+				</select>
+				<button class="btn btn-sm btn-default" id="ei-add-row"><i class="fa fa-plus" style="margin-right:4px;"></i>Add Item</button>
+			</div>
+			<div id="ei-totals" style="margin-top:12px; padding:10px 12px; border-radius:6px; background:var(--bg-light-gray, var(--fg-hover-color)); display:flex; gap:24px; flex-wrap:wrap; font-size:13px;"></div>
+		`);
+
+		$wrap.find('.ei-qty, .ei-rate').on('input', function() {
+			const idx = parseInt($(this).closest('tr').data('idx'), 10);
+			const row = rows[idx];
+			if ($(this).hasClass('ei-qty')) row.qty = flt($(this).val());
+			else row.rate = flt($(this).val());
+			// Manual qty/rate edit takes over from the builder's composite preview.
+			row.builder_amount = null;
+			$(this).closest('tr').find('.ei-amount').text(format_currency(row_amount(row), currency));
+			update_totals();
+		});
+
+		$wrap.find('.ei-remove').on('click', function() {
+			const idx = parseInt($(this).closest('tr').data('idx'), 10);
+			rows.splice(idx, 1);
+			render_table();
+		});
+
+		// Glass sub-category picker only applies to Glass.
+		$wrap.find('#ei-add-category').on('change', function() {
+			$wrap.find('#ei-add-glass-type').toggle($(this).val() === 'Glass');
+		}).trigger('change');
+
+		$wrap.find('#ei-add-row').on('click', function() {
+			const category = $wrap.find('#ei-add-category').val();
+			if (!window.CAWItemBuilder) {
+				frappe.msgprint('Item builder is still loading — please try again in a moment.');
+				return;
+			}
+			window.CAWItemBuilder.open({
+				category: category,
+				glass_type: category === 'Glass' ? $wrap.find('#ei-add-glass-type').val() : null,
+				onSave: function(item) {
+					rows.push(builder_item_to_row(item));
+					render_table();
+				},
+			});
+		});
+
+		update_totals();
+	}
+
+	function update_totals() {
+		const new_total = rows.reduce((s, r) => s + row_amount(r), 0);
+		const diff = new_total - original_total;
+		const balanced = Math.abs(diff) <= 2;
+		$wrap.find('#ei-totals').html(`
+			<div>Original items total: <b>${format_currency(original_total, currency)}</b></div>
+			<div>New items total: <b>${format_currency(new_total, currency)}</b></div>
+			<div style="color:${balanced ? 'var(--green-600, green)' : 'var(--red-500, red)'};">
+				Difference: <b>${format_currency(diff, currency)}</b> ${balanced ? '✓' : '— must stay within ±2'}
+			</div>
+		`);
+		d.get_primary_btn().prop('disabled', !balanced || !rows.length);
+	}
+
+	render_table();
+	d.show();
+	d.$wrapper.find('.modal-body').css({
+		height: 'min(640px, calc(100vh - 160px))',
 		overflowY: 'auto',
 	});
 }

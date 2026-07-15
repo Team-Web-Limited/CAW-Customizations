@@ -19,6 +19,7 @@
   "uom",
   "amount",
   "is_partial",
+  "custom_sheet_consumption_json",
   "audit_section",
   "changed_by"
  ],
@@ -95,6 +96,12 @@
    "fieldname": "is_partial",
    "fieldtype": "Check",
    "label": "Partial Invoice"
+  },
+  {
+   "fieldname": "custom_sheet_consumption_json",
+   "fieldtype": "Small Text",
+   "label": "Sheet Consumption JSON",
+   "read_only": 1
   },
   {
    "fieldname": "audit_section",
