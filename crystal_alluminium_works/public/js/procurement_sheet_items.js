@@ -1,0 +1,189 @@
+// Glass sheet / ceiling piece entry for the procurement flow.
+//
+// Loaded on Material Request, Purchase Order and Purchase Receipt (see
+// hooks.doctype_js — the same file is registered for all three, so the buyer
+// gets the identical entry experience at every step and values carry through
+// the standard MR -> PO -> PR mapping).
+//
+// Glass is stocked in Square Foot and ceiling boards in Square Meter, but both
+// are ordered per physical piece at a per-piece price. The user enters sheet
+// size + pcs (or pcs alone for ceiling) + rate per piece; qty and rate are
+// derived here for immediate feedback and re-derived server-side on save by
+// crystal_alluminium_works.purchase_handler, which is the source of truth.
+
+const CAW_PROCUREMENT_DOCTYPES = {
+	'Material Request': 'Material Request Item',
+	'Purchase Order': 'Purchase Order Item',
+	'Purchase Receipt': 'Purchase Receipt Item'
+};
+
+const CAW_STOCK_CATEGORIES = new Set(['Aluminium', 'Glass', 'Fittings', 'Ceiling', 'Rubber', 'Silicone']);
+
+// size -> sft, loaded once per desk session
+let caw_sheet_map = null;
+let caw_sheet_sizes = [];
+let caw_sheet_promise = null;
+
+function caw_load_sheet_sizes() {
+	if (caw_sheet_promise) return caw_sheet_promise;
+	caw_sheet_promise = frappe.call({
+		method: 'crystal_alluminium_works.api.get_glass_sheet_configs'
+	}).then(r => {
+		caw_sheet_map = {};
+		caw_sheet_sizes = [];
+		(r.message || []).forEach(cfg => {
+			caw_sheet_map[cfg.size] = flt(cfg.sft);
+			caw_sheet_sizes.push(cfg.size);
+		});
+	});
+	return caw_sheet_promise;
+}
+
+function caw_set_sheet_size_options(frm) {
+	// The child grid keeps its own copy of each docfield (not a live reference
+	// to frappe.meta), so mutating the meta docfield alone never reaches an
+	// already-rendered row — update_docfield_property is the API meant for
+	// exactly this (dynamic Select options on a grid column).
+	let grid = frm.get_field('items') && frm.get_field('items').grid;
+	if (!grid) return;
+	grid.update_docfield_property('custom_sheet_size', 'options', ['', ...caw_sheet_sizes].join('\n'));
+}
+
+function caw_set_item_code_query(frm, parent_doctype) {
+	frm.set_query('item_code', 'items', function(doc, cdt, cdn) {
+		let row = locals[cdt][cdn];
+		let category = row && row.custom_product_category;
+		let filters = { is_stock_item: 1, disabled: 0 };
+		if (category) {
+			filters.item_group = category;
+			if (category === 'Glass') filters.custom_glass_type = ['!=', 'Laminated'];
+		}
+		return { filters: filters };
+	});
+}
+
+function caw_recompute_row(frm, cdt, cdn) {
+	let row = locals[cdt][cdn];
+	if (!row) return;
+
+	let pcs = 0;
+	let qty = 0;
+
+	if (row.custom_product_category === 'Glass') {
+		if (!row.custom_sheet_size) return;
+		let sft = flt((caw_sheet_map || {})[row.custom_sheet_size] || row.custom_sheet_sft || 0);
+		pcs = flt(row.custom_sheet_pcs || 0);
+		if (sft <= 0 || pcs <= 0) return;
+		frappe.model.set_value(cdt, cdn, 'custom_glass_sale_mode', 'Sheet');
+		frappe.model.set_value(cdt, cdn, 'custom_sheet_sft', sft);
+		qty = flt(sft * pcs);
+	} else if (row.custom_product_category === 'Ceiling') {
+		let area = flt(row.custom_sheet_sft || 0); // reused as sqm/piece for ceiling
+		pcs = flt(row.custom_ceiling_pcs || 0);
+		if (pcs <= 0) return;
+		if (area <= 0) {
+			// Row came from a mapped document, so the per-board area was never
+			// fetched on this form. Fetch it, then run the computation again.
+			frappe.call({
+				method: 'crystal_alluminium_works.api.get_ceiling_piece_area',
+				args: { item_code: row.item_code },
+				callback: function(r) {
+					if (flt(r.message || 0) <= 0) return;
+					frappe.model.set_value(cdt, cdn, 'custom_sheet_sft', flt(r.message));
+					caw_recompute_row(frm, cdt, cdn);
+				}
+			});
+			return;
+		}
+		qty = flt(area * pcs);
+	} else {
+		return;
+	}
+
+	// Piece-driven quantities are in the item's stock UOM, so the row must not
+	// also carry a UOM conversion or the stock qty would be scaled twice.
+	if (row.stock_uom && row.uom !== row.stock_uom) {
+		frappe.model.set_value(cdt, cdn, 'uom', row.stock_uom);
+		frappe.model.set_value(cdt, cdn, 'conversion_factor', 1);
+	}
+	frappe.model.set_value(cdt, cdn, 'qty', qty);
+
+	// Supplier quotes per sheet/piece; ERPNext values stock per stock UOM.
+	let rate_per_piece = flt(row.custom_rate_per_piece || 0);
+	if (rate_per_piece > 0 && qty > 0) {
+		frappe.model.set_value(cdt, cdn, 'rate', flt(pcs * rate_per_piece) / qty);
+	}
+}
+
+function caw_on_item_selected(frm, cdt, cdn) {
+	let row = locals[cdt][cdn];
+	if (!row || !row.item_code) return;
+
+	frappe.db.get_value('Item', row.item_code, ['item_group', 'stock_uom']).then(res => {
+		let v = (res && res.message) || {};
+		let category = v.item_group;
+		if (!CAW_STOCK_CATEGORIES.has(category)) {
+			category = null;
+		}
+		frappe.model.set_value(cdt, cdn, 'custom_product_category', category);
+
+		if (category === 'Ceiling') {
+			// Fixed area per board, from Ceiling Configuration; parked in
+			// custom_sheet_sft so one field drives both piece-based categories.
+			frappe.call({
+				method: 'crystal_alluminium_works.api.get_ceiling_piece_area',
+				args: { item_code: row.item_code },
+				callback: function(r) {
+					frappe.model.set_value(cdt, cdn, 'custom_sheet_sft', flt(r.message || 0));
+					caw_recompute_row(frm, cdt, cdn);
+				}
+			});
+		}
+	});
+}
+
+Object.entries(CAW_PROCUREMENT_DOCTYPES).forEach(([parent_doctype, child_doctype]) => {
+	frappe.ui.form.on(parent_doctype, {
+		onload: function(frm) {
+			caw_set_item_code_query(frm, parent_doctype);
+			caw_load_sheet_sizes().then(() => caw_set_sheet_size_options(frm));
+		},
+		refresh: function(frm) {
+			caw_set_item_code_query(frm, parent_doctype);
+			caw_load_sheet_sizes().then(() => caw_set_sheet_size_options(frm));
+		}
+	});
+
+	frappe.ui.form.on(child_doctype, {
+		item_code: function(frm, cdt, cdn) {
+			caw_on_item_selected(frm, cdt, cdn);
+		},
+		custom_product_category: function(frm, cdt, cdn) {
+			// Category is picked before the item now; if it no longer matches
+			// whatever item was already selected, clear that item rather than
+			// leave a stale item_code / category pairing.
+			let row = locals[cdt][cdn];
+			if (row.item_code && row.custom_product_category) {
+				frappe.db.get_value('Item', row.item_code, 'item_group').then(res => {
+					let item_group = (res && res.message && res.message.item_group) || '';
+					if (item_group !== row.custom_product_category) {
+						frappe.model.set_value(cdt, cdn, 'item_code', '');
+					}
+				});
+			}
+			caw_recompute_row(frm, cdt, cdn);
+		},
+		custom_sheet_size: function(frm, cdt, cdn) {
+			caw_recompute_row(frm, cdt, cdn);
+		},
+		custom_sheet_pcs: function(frm, cdt, cdn) {
+			caw_recompute_row(frm, cdt, cdn);
+		},
+		custom_ceiling_pcs: function(frm, cdt, cdn) {
+			caw_recompute_row(frm, cdt, cdn);
+		},
+		custom_rate_per_piece: function(frm, cdt, cdn) {
+			caw_recompute_row(frm, cdt, cdn);
+		}
+	});
+});

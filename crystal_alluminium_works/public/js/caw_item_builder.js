@@ -172,6 +172,18 @@
 		const category = opts && opts.category;
 		if (!category) { frappe.msgprint('Please select a product category first.'); return; }
 
+		// Edit mode: a fully-formed item is supplied — skip the category pre-steps and open the
+		// modal pre-filled. Sheet-glass needs its sheet configs loaded before the fields build.
+		if (opts.item) {
+			let it = opts.item;
+			if (it.category === 'Glass' && (it.sale_mode === 'Sheet' || it.glass_mode === 'Sheet') && !(it.sheet_configs && it.sheet_configs.length)) {
+				ensure_sheet_configs(function (cfgs) { it.sheet_configs = cfgs; open_modal(it, opts); });
+			} else {
+				open_modal(it, opts);
+			}
+			return;
+		}
+
 		if (category === 'Glass') {
 			let glass_type = opts.glass_type || '';
 			let sheet_ok = is_sheet_glass_type(glass_type);
@@ -363,7 +375,7 @@
 		let d = new frappe.ui.Dialog({
 			title: `${item.category} Item`,
 			fields: fields,
-			primary_action_label: 'Add Item',
+			primary_action_label: opts.item ? 'Save Item' : 'Add Item',
 			primary_action: function (values) { on_save(values); },
 		});
 

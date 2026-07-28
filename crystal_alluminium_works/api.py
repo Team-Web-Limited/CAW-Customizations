@@ -5433,12 +5433,13 @@ def get_customer_names(doctype, txt, searchfield, start, page_len, filters):
 
 
 # ---------------------------------------------------------------------------
-# Stock Entry (Stock-In via Purchase Receipt)
+# Stock-in shared helpers
 # ---------------------------------------------------------------------------
-# Glass is stocked in Square Foot, but physically received as a number of
-# sheets of a given size (e.g. 10 sheets of 1220 x 1830 = 240 SFT). The page
-# lets staff enter sheet size + pcs; we compute the SFT stock qty here so the
-# stock ledger stays in the same unit sales deduct in.
+# Stock-in now goes through the standard Material Request -> Purchase Order ->
+# Purchase Receipt flow (see purchase_handler.py for the sheet/piece -> stock
+# qty math). What's left here are lookups still shared with the Stock
+# Adjustment page (get_stock_entry_options) and ceiling piece-area helpers used
+# by both purchase_handler.py and the procurement client script.
 
 STOCK_DEFAULT_WAREHOUSE = "Stores - CA"
 
@@ -5466,7 +5467,7 @@ def _get_default_receiving_warehouse(company):
 
 @frappe.whitelist()
 def get_stock_entry_options():
-    """Form data for the Stock Entry page: suppliers, receiving warehouses,
+    """Form data for the Stock Adjustment page: suppliers, receiving warehouses,
     configured glass sheet sizes (size -> sft) and sensible defaults."""
     company = _get_default_stock_company()
     suppliers = frappe.get_all(
@@ -5488,39 +5489,6 @@ def get_stock_entry_options():
         "default_warehouse": _get_default_receiving_warehouse(company),
         "sheet_sizes": sheet_sizes,
     }
-
-
-@frappe.whitelist()
-def search_stock_items(search="", category=""):
-    """Search stockable catalogue items for the Stock Entry page."""
-    filters = {"is_stock_item": 1, "disabled": 0}
-    if category and category not in ("All", ""):
-        filters["item_group"] = category
-
-    or_filters = None
-    search = (search or "").strip()
-    if search:
-        like = f"%{search}%"
-        or_filters = {
-            "item_code": ("like", like),
-            "item_name": ("like", like),
-        }
-
-    fields = ["name as item_code", "item_name", "item_group", "stock_uom"]
-    if _item_has_field("custom_glass_type"):
-        fields.append("custom_glass_type")
-    if _item_has_field("custom_product_code"):
-        fields.append("custom_product_code")
-
-    items = frappe.get_all(
-        "Item",
-        filters=filters,
-        or_filters=or_filters,
-        fields=fields,
-        order_by="item_name asc",
-        limit=50,
-    )
-    return items
 
 
 CEILING_DEFAULT_PIECE_AREA = 0.36  # sqm/piece fallback (matches the system-wide Ceiling Configuration default)
@@ -5545,177 +5513,6 @@ def get_ceiling_piece_area(item_code):
     """Whitelisted lookup for the Stock Entry page: sqm represented by one piece
     of the given ceiling item, used to compute qty = pieces * area_per_piece."""
     return _get_ceiling_piece_area(item_code)
-
-
-@frappe.whitelist()
-def create_stock_receipt(payload):
-    """Create and submit a Purchase Receipt from the Stock Entry page.
-
-    payload = {
-        supplier, warehouse, posting_date, remarks,
-        items: [{ item_code, category, sheet_size, sheet_sft, pcs, qty, rate }]
-    }
-    Glass is received in sheets only: the stock qty (SFT) is computed
-    server-side as sheet_sft * pcs so it cannot drift from what was entered.
-    """
-    payload = json.loads(payload) if isinstance(payload, str) else payload
-
-    supplier = (payload.get("supplier") or "").strip()
-    if not supplier:
-        frappe.throw("Supplier is required.")
-    if not frappe.db.exists("Supplier", supplier):
-        frappe.throw(f"Supplier {supplier} does not exist.")
-
-    rows = payload.get("items") or []
-    if not rows:
-        frappe.throw("Add at least one item.")
-
-    company = _get_default_stock_company()
-    warehouse = (payload.get("warehouse") or "").strip() or _get_default_receiving_warehouse(company)
-    if not warehouse:
-        frappe.throw("No receiving warehouse is configured.")
-
-    # size -> sft lookup for server-side recompute of sheet glass quantities
-    sheet_map = {
-        str(cfg.get("size") or "").strip(): flt(cfg.get("sft") or 0)
-        for cfg in get_glass_sheet_configs()
-    }
-
-    pr = frappe.new_doc("Purchase Receipt")
-    pr.supplier = supplier
-    pr.company = company
-    if payload.get("posting_date"):
-        pr.set_posting_time = 1
-        pr.posting_date = payload.get("posting_date")
-        if payload.get("posting_time"):
-            pr.posting_time = payload.get("posting_time")
-    pr.set_warehouse = warehouse
-    pr.custom_via_caw_stock_entry = 1
-
-    for row in rows:
-        item_code = (row.get("item_code") or "").strip()
-        if not item_code:
-            continue
-        if not frappe.db.exists("Item", item_code):
-            frappe.throw(f"Item {item_code} does not exist.")
-
-        category = row.get("category") or frappe.db.get_value("Item", item_code, "item_group")
-        entered_rate = flt(row.get("rate", 0))
-
-        item_data = {
-            "item_code": item_code,
-            "warehouse": warehouse,
-            "custom_product_category": category if category in (
-                "Aluminium", "Glass", "Fittings", "Ceiling", "Rubber", "Silicone"
-            ) else None,
-            "custom_remarks": (row.get("remarks") or "").strip(),
-        }
-
-        # Rate means different things depending on category: for Glass/Ceiling the
-        # receiver quotes a price per physical piece (sheet/board), not per SFT/sqm,
-        # since that's how suppliers price them. amount is computed from that, and
-        # the PR item's rate (which ERPNext values stock at per stock UOM) is then
-        # back-calculated as amount / qty so qty * rate == amount stays true.
-        if category == "Glass":
-            sheet_size = (row.get("sheet_size") or "").strip()
-            sft = sheet_map.get(sheet_size, flt(row.get("sheet_sft", 0)))
-            pcs = flt(row.get("pcs", 0))
-            qty = sft * pcs
-            if qty <= 0:
-                frappe.throw(f"Sheet size and pieces are required for glass item {item_code}.")
-            amount = pcs * entered_rate
-            item_data.update({
-                "qty": qty,
-                "rate": flt(amount / qty) if qty else 0,
-                "custom_glass_sale_mode": "Sheet",
-                "custom_sheet_size": sheet_size,
-                "custom_sheet_sft": sft,
-                "custom_sheet_pcs": pcs,
-            })
-        elif category == "Ceiling":
-            pcs = flt(row.get("pcs", 0))
-            area_per_piece = _get_ceiling_piece_area(item_code) or flt(row.get("unit_factor", 0))
-            qty = area_per_piece * pcs
-            if qty <= 0:
-                frappe.throw(f"Pieces are required for ceiling item {item_code}.")
-            amount = pcs * entered_rate
-            item_data.update({
-                "qty": qty,
-                "rate": flt(amount / qty) if qty else 0,
-                "custom_ceiling_pcs": pcs,
-            })
-        else:
-            qty = flt(row.get("qty", 0))
-            if qty <= 0:
-                frappe.throw(f"Quantity is required for item {item_code}.")
-            item_data["qty"] = qty
-            item_data["rate"] = entered_rate
-
-        pr.append("items", item_data)
-
-    pr.flags.ignore_permissions = True
-    pr.insert(ignore_permissions=True)
-    pr.submit()
-    frappe.db.commit()
-    return {"name": pr.name}
-
-
-@frappe.whitelist()
-def get_recent_stock_entries(limit=15, supplier=None, warehouse=None, from_date=None, to_date=None, item_search=None):
-    """Recent Purchase Receipts created via the CAW Stock Entry page, for the
-    page's own record-keeping panel (separate from the standard PR list)."""
-    limit = frappe.utils.cint(limit) or 15
-    filters = {"custom_via_caw_stock_entry": 1, "docstatus": 1}
-    if supplier:
-        filters["supplier"] = supplier
-    if warehouse:
-        filters["set_warehouse"] = warehouse
-    if from_date and to_date:
-        filters["posting_date"] = ["between", [from_date, to_date]]
-    elif from_date:
-        filters["posting_date"] = [">=", from_date]
-    elif to_date:
-        filters["posting_date"] = ["<=", to_date]
-
-    item_search = (item_search or "").strip()
-    if item_search:
-        matching_parents = frappe.get_all(
-            "Purchase Receipt Item",
-            filters={"item_code": ["like", f"%{item_search}%"]},
-            pluck="parent",
-        )
-        if not matching_parents:
-            return []
-        filters["name"] = ["in", list(set(matching_parents))]
-
-    receipts = frappe.get_all(
-        "Purchase Receipt",
-        filters=filters,
-        fields=["name", "supplier", "posting_date", "grand_total", "set_warehouse"],
-        order_by="creation desc",
-        limit=limit,
-    )
-    if not receipts:
-        return []
-
-    names = [r["name"] for r in receipts]
-    item_rows = frappe.get_all(
-        "Purchase Receipt Item",
-        filters={"parent": ["in", names]},
-        fields=["parent", "item_code", "qty", "stock_uom"],
-    )
-    items_by_parent = {}
-    for row in item_rows:
-        items_by_parent.setdefault(row["parent"], []).append(row)
-
-    for r in receipts:
-        rows = items_by_parent.get(r["name"], [])
-        r["item_count"] = len(rows)
-        full_list = [f"{row['item_code']} ({flt(row['qty'])} {row['stock_uom']})" for row in rows]
-        r["items_summary"] = ", ".join(full_list[:3]) + (f" +{len(rows) - 3} more" if len(rows) > 3 else "")
-        r["items_full"] = ", ".join(full_list)
-
-    return receipts
 
 
 def _attach_sales_invoices_to_entries(entries):

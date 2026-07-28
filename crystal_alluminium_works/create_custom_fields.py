@@ -1,3 +1,5 @@
+import json
+
 import frappe
 from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 
@@ -306,6 +308,182 @@ def _get_crystal_item_fields(read_only=False):
     ]
 
 
+def _get_procurement_item_fields(include_rate=True):
+    """Sheet/piece based stock-in fields, shared by Material Request Item,
+    Purchase Order Item and Purchase Receipt Item.
+
+    Glass is stocked in Square Foot and ceiling boards in Square Meter, but both
+    are ordered and received as a count of physical pieces (sheets / boards) and
+    priced per piece by the supplier. These fields hold what the buyer actually
+    enters (size + pcs + rate per piece); qty and rate are derived from them in
+    crystal_alluminium_works.purchase_handler so the stock ledger stays in the
+    same unit sales deduct in.
+
+    custom_product_category has no insert_after: that puts it at position 0,
+    ahead of the standard item_code field. Property setters (see
+    reorder_procurement_standard_fields below) then splice item_code and
+    item_name in right after it, so the visible order is: category, item code,
+    item name, sheet size, sheets/pcs — the buyer picks a category first and
+    the item_code lookup can then be filtered to that category (see
+    public/js/procurement_sheet_items.js) instead of listing every item.
+
+    custom_glass_sale_mode and custom_sheet_sft are derived, not entered —
+    Sale Mode is always "Sheet" here and SFT/sheet comes from the Glass Sheet
+    Config lookup for whatever size was picked — so both are hidden rather
+    than shown as extra steps in that visible order.
+
+    The same fieldnames are used on all three doctypes so ERPNext's standard
+    Material Request -> Purchase Order -> Purchase Receipt mapping carries them
+    through without any custom mapper. Material Request has no pricing at the
+    request stage, so include_rate=False drops custom_rate_per_piece there.
+    """
+    fields = [
+        {
+            "fieldname": "custom_product_category",
+            "label": "Product Category",
+            "fieldtype": "Select",
+            "options": PRODUCT_CATEGORY_OPTIONS,
+            "insert_after": "",
+            "read_only": 0,
+            "module": "Crystal Alluminium Works",
+        },
+        {
+            "fieldname": "custom_sheet_size",
+            "label": "Sheet Size",
+            "fieldtype": "Select",
+            "options": "",  # filled at runtime from Glass Sheet Config
+            "insert_after": "item_name",
+            "depends_on": "eval:doc.custom_product_category=='Glass'",
+            "read_only": 0,
+            "module": "Crystal Alluminium Works",
+        },
+        {
+            "fieldname": "custom_sheet_pcs",
+            "label": "Sheets / Pcs",
+            "fieldtype": "Float",
+            "insert_after": "custom_sheet_size",
+            "depends_on": "eval:doc.custom_product_category=='Glass'",
+            "read_only": 0,
+            "module": "Crystal Alluminium Works",
+        },
+        {
+            # Ceiling boards (AGC/AMC) are ordered per piece, same as glass
+            # sheets, but each item has a fixed area/piece (Ceiling
+            # Configuration.ratio_4) instead of a selectable sheet size.
+            # qty (the Square Meter stock quantity) = ratio_4 * custom_ceiling_pcs.
+            "fieldname": "custom_ceiling_pcs",
+            "label": "Pieces",
+            "fieldtype": "Float",
+            "insert_after": "custom_sheet_pcs",
+            "depends_on": "eval:doc.custom_product_category=='Ceiling'",
+            "read_only": 0,
+            "module": "Crystal Alluminium Works",
+        },
+        {
+            "fieldname": "custom_glass_sale_mode",
+            "label": "Glass Sale Mode",
+            "fieldtype": "Select",
+            "options": GLASS_SALE_MODE_OPTIONS,
+            "insert_after": "custom_ceiling_pcs",
+            "hidden": 1,
+            "read_only": 1,
+            "module": "Crystal Alluminium Works",
+        },
+        {
+            "fieldname": "custom_sheet_sft",
+            "label": "SFT per Sheet",
+            "fieldtype": "Float",
+            "insert_after": "custom_glass_sale_mode",
+            "hidden": 1,
+            "read_only": 1,
+            "module": "Crystal Alluminium Works",
+        },
+    ]
+
+    last_fieldname = "custom_sheet_sft"
+    if include_rate:
+        fields.append({
+            # Suppliers quote glass and ceiling per physical piece, not per
+            # SFT/sqm. The row's standard `rate` (which ERPNext values stock at,
+            # per stock UOM) is back-calculated from this as
+            # (pcs * rate_per_piece) / qty so qty * rate == amount stays true.
+            "fieldname": "custom_rate_per_piece",
+            "label": "Rate per Sheet / Piece",
+            "fieldtype": "Currency",
+            "insert_after": last_fieldname,
+            "depends_on": "eval:doc.custom_product_category=='Glass' || doc.custom_product_category=='Ceiling'",
+            "read_only": 0,
+            "module": "Crystal Alluminium Works",
+        })
+        last_fieldname = "custom_rate_per_piece"
+
+    fields.append({
+        # Per-item remark (originally entered in the Stock Entry page's Add
+        # Item modal; now also enterable from MR/PO and carried downstream).
+        "fieldname": "custom_remarks",
+        "label": "Remarks",
+        "fieldtype": "Small Text",
+        "insert_after": last_fieldname,
+        "read_only": 0,
+        "module": "Crystal Alluminium Works",
+    })
+
+    return fields
+
+
+def _set_property(doctype, fieldname, prop, value, property_type):
+    """frappe.make_property_setter() deletes any existing Property Setter for
+    the same (doctype, fieldname, property) before inserting — safe to call on
+    every add_custom_fields() run without piling up stale records."""
+    frappe.make_property_setter(
+        {
+            "doctype": doctype,
+            "fieldname": fieldname,
+            "property": prop,
+            "value": value,
+            "property_type": property_type,
+        }
+    )
+
+
+def reorder_procurement_standard_fields():
+    """Splice the standard item_code / item_name fields in right after
+    custom_product_category, and force item_name read-only.
+
+    A per-field "insert_after" property setter is silently ignored for a
+    *standard* field: Frappe's field-order algorithm only consults insert_after
+    for custom fields, standard fields keep whatever slot the doctype's base
+    field_order already gives them (see frappe.model.meta.Meta.sort_fields).
+    So on Purchase Order / Purchase Receipt — where item_code and item_name
+    aren't adjacent in the base layout (barcode scan / supplier part fields
+    sit between them) — moving them takes a full field_order override: read
+    the doctype's current effective order, pull item_code/item_name out, and
+    reinsert both right after custom_product_category. Every other field's
+    relative order is left untouched.
+    """
+    for doctype in ("Material Request Item", "Purchase Order Item", "Purchase Receipt Item"):
+        _set_property(doctype, "item_name", "read_only", 1, "Check")
+
+        order = [f.fieldname for f in frappe.get_meta(doctype, cached=False).fields]
+        for fieldname in ("item_code", "item_name"):
+            if fieldname in order:
+                order.remove(fieldname)
+        cat_idx = order.index("custom_product_category")
+        order[cat_idx + 1 : cat_idx + 1] = ["item_code", "item_name"]
+
+        frappe.make_property_setter(
+            {
+                "doctype": doctype,
+                "doctype_or_field": "DocType",
+                "fieldname": None,
+                "property": "field_order",
+                "value": json.dumps(order),
+                "property_type": "Text",
+            }
+        )
+        frappe.clear_cache(doctype=doctype)
+
+
 def add_custom_fields():
     custom_fields = {
         "Customer": [
@@ -457,82 +635,15 @@ def add_custom_fields():
                 "module": "Crystal Alluminium Works",
             },
         ],
-        # Purchase Receipt Item — stock-in fields mirroring the sales-side glass
-        # sheet model. For sheet-mode glass the receiver enters sheet size + pcs and
-        # qty (the SFT stock quantity) is computed as sheet_sft * sheet_pcs so the
-        # stock ledger stays in Square Foot, consistent with how sales deduct.
-        "Purchase Receipt Item": [
-            {
-                "fieldname": "custom_product_category",
-                "label": "Product Category",
-                "fieldtype": "Select",
-                "options": PRODUCT_CATEGORY_OPTIONS,
-                "insert_after": "item_name",
-                "read_only": 1,
-                "module": "Crystal Alluminium Works",
-            },
-            {
-                "fieldname": "custom_glass_sale_mode",
-                "label": "Glass Sale Mode",
-                "fieldtype": "Select",
-                "options": GLASS_SALE_MODE_OPTIONS,
-                "insert_after": "custom_product_category",
-                "depends_on": "eval:doc.custom_product_category=='Glass'",
-                "read_only": 1,
-                "module": "Crystal Alluminium Works",
-            },
-            {
-                "fieldname": "custom_sheet_size",
-                "label": "Sheet Size",
-                "fieldtype": "Data",
-                "insert_after": "custom_glass_sale_mode",
-                "depends_on": "eval:doc.custom_product_category=='Glass' && doc.custom_glass_sale_mode=='Sheet'",
-                "read_only": 1,
-                "module": "Crystal Alluminium Works",
-            },
-            {
-                "fieldname": "custom_sheet_sft",
-                "label": "SFT per Sheet",
-                "fieldtype": "Float",
-                "insert_after": "custom_sheet_size",
-                "depends_on": "eval:doc.custom_product_category=='Glass' && doc.custom_glass_sale_mode=='Sheet'",
-                "read_only": 1,
-                "module": "Crystal Alluminium Works",
-            },
-            {
-                "fieldname": "custom_sheet_pcs",
-                "label": "Sheets / Pcs",
-                "fieldtype": "Float",
-                "insert_after": "custom_sheet_sft",
-                "depends_on": "eval:doc.custom_product_category=='Glass' && doc.custom_glass_sale_mode=='Sheet'",
-                "read_only": 1,
-                "module": "Crystal Alluminium Works",
-            },
-            {
-                # Ceiling boards (AGC/AMC) are received per piece, same as glass
-                # sheets, but each item has a fixed area/piece (Ceiling
-                # Configuration.ratio_4) instead of a selectable sheet size.
-                # qty (the Square Meter stock quantity) = ratio_4 * custom_ceiling_pcs.
-                "fieldname": "custom_ceiling_pcs",
-                "label": "Pieces",
-                "fieldtype": "Float",
-                "insert_after": "custom_sheet_pcs",
-                "depends_on": "eval:doc.custom_product_category=='Ceiling'",
-                "read_only": 1,
-                "module": "Crystal Alluminium Works",
-            },
-            {
-                # Per-item remark entered in the Stock Entry page's Add Item modal
-                # (moved here from a single document-level remarks field so each
-                # line can carry its own note).
-                "fieldname": "custom_remarks",
-                "label": "Remarks",
-                "fieldtype": "Small Text",
-                "insert_after": "custom_ceiling_pcs",
-                "read_only": 1,
-                "module": "Crystal Alluminium Works",
-            },
-        ],
+        # Procurement item tables — stock-in fields mirroring the sales-side glass
+        # sheet model. For sheet-mode glass the buyer/receiver enters sheet size +
+        # pcs and qty (the SFT stock quantity) is computed as sheet_sft * sheet_pcs
+        # so the stock ledger stays in Square Foot, consistent with how sales
+        # deduct. Identical on all three so the standard MR -> PO -> PR mapping
+        # carries the values through untouched.
+        "Material Request Item": _get_procurement_item_fields(include_rate=False),
+        "Purchase Order Item": _get_procurement_item_fields(),
+        "Purchase Receipt Item": _get_procurement_item_fields(),
         "Quotation": [
             {
                 # Quotation Builder's global +/- % adjustment over each row's Inc.Rate.
@@ -560,6 +671,7 @@ def add_custom_fields():
     }
 
     create_custom_fields(custom_fields)
+    reorder_procurement_standard_fields()
     print("Custom fields added to Customer, Quotation Item, Sales Order Item, Sales Invoice Item, and Sales Invoice")
 
 

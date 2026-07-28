@@ -868,22 +868,8 @@ function get_sales_invoice_action_buttons(doc, quotation_name) {
 		const outstanding = flt(doc.outstanding_amount || 0);
 		const is_job_card_invoice = !!doc.custom_source_job_card;
 
-		if (is_job_card_invoice || paid_amount <= 0) {
-			// Job-card invoices (incl. fully-paid POS-settled ones) can be cancelled —
-			// cancel_sales_invoice reverses the GL and the job-card payment impact.
-			buttons += `
-				<button class="btn btn-danger" id="btn-cancel-invoice">
-					<i class="fa fa-ban" style="margin-right:6px;"></i>Cancel Invoice
-				</button>
-			`;
-		} else if (outstanding > 0) {
-			buttons += `
-				<button class="btn btn-danger" id="btn-cancel-blocked" title="Cancel linked payments before cancelling this invoice.">
-					<i class="fa fa-ban" style="margin-right:6px;"></i>Cancel Invoice
-				</button>
-			`;
-		}
-
+		// Credit Note / Return button hidden by user request
+		/*
 		if (!doc.is_return) {
 			buttons += `
 				<button class="btn btn-default" id="btn-credit-note">
@@ -891,11 +877,28 @@ function get_sales_invoice_action_buttons(doc, quotation_name) {
 				</button>
 			`;
 		}
+		*/
 
 		if (frappe.user.has_role('System Manager') && !doc.is_return && !doc.amended_from) {
 			buttons += `
-				<button class="btn btn-warning" id="btn-edit-invoice-items">
+				<button class="btn btn-default" id="btn-edit-invoice-items">
 					<i class="fa fa-pencil" style="margin-right:6px;"></i>Edit Items
+				</button>
+			`;
+		}
+
+		if (is_job_card_invoice || paid_amount <= 0) {
+			// Job-card invoices (incl. fully-paid POS-settled ones) can be cancelled —
+			// cancel_sales_invoice reverses the GL and the job-card payment impact.
+			buttons += `
+				<button class="btn btn-danger" id="btn-cancel-invoice" style="margin-left: auto;">
+					<i class="fa fa-ban" style="margin-right:6px;"></i>Cancel Invoice
+				</button>
+			`;
+		} else if (outstanding > 0) {
+			buttons += `
+				<button class="btn btn-danger" id="btn-cancel-blocked" title="Cancel linked payments before cancelling this invoice." style="margin-left: auto;">
+					<i class="fa fa-ban" style="margin-right:6px;"></i>Cancel Invoice
 				</button>
 			`;
 		}
@@ -966,7 +969,8 @@ function bind_sales_invoice_action_events(page, doc) {
 		});
 	});
 
-	// ── Credit Note / Sales Return (monetary corrections) ──
+	// ── Credit Note / Sales Return (monetary corrections) [Disabled] ──
+	/*
 	$body.find('#btn-credit-note').on('click', () => {
 		frappe.confirm(
 			'Create a Credit Note / Sales Return against this invoice?<br><br>Use this to correct <b>rates</b> (keep quantities) or to reverse <b>returned goods</b>. Adjust the return, then submit it.',
@@ -986,6 +990,7 @@ function bind_sales_invoice_action_events(page, doc) {
 			}
 		);
 	});
+	*/
 
 	// ── Edit Items on a submitted invoice (total locked, stock auto-adjusted) ──
 	$body.find('#btn-edit-invoice-items').on('click', () => {
@@ -1094,16 +1099,22 @@ function open_edit_invoice_items_dialog(page, doc) {
 
 	// Working copy of the editable rows. Qty edits scale the row's driving
 	// quantity fields proportionally, mirroring the server's partial scaling.
-	const rows = manual_rows.map(it => ({
-		row_name: it.name,
-		item_code: it.item_code,
-		item_name: it.item_name || it.item_code,
-		category: it.custom_product_category || '',
-		orig_qty: flt(it.qty),
-		qty: flt(it.qty),
-		rate: flt(it.rate),
-		orig: it,
-	}));
+	// Pristine row built straight from the invoice item — also used by the per-row "Clear"
+	// button to discard any edits and restore the original values.
+	function make_row(it) {
+		return {
+			row_name: it.name,
+			item_code: it.item_code,
+			item_name: it.item_name || it.item_code,
+			category: it.custom_product_category || '',
+			orig_qty: flt(it.qty),
+			qty: flt(it.qty),
+			rate: flt(it.rate),
+			orig: it,
+		};
+	}
+
+	const rows = manual_rows.map(make_row);
 
 	// Amount shown per row: a freshly-added builder item carries builder_amount (the net
 	// composite the pricing engine will produce, incl. its glass/ceiling service rows), which
@@ -1117,6 +1128,8 @@ function open_edit_invoice_items_dialog(page, doc) {
 		'Normal Price': 'Retail', 'Mill Finished Price': 'Wholesale', 'Special Price': 'Special',
 		'Retail': 'Retail', 'Wholesale': 'Wholesale', 'Special': 'Special',
 	};
+
+	const BUILDER_CATEGORIES = ['Aluminium', 'Glass', 'Fittings', 'Ceiling', 'Rubber', 'Silicone'];
 
 	// Mirror of api.create_quotation_from_builder: turn a CAWItemBuilder item into an invoice
 	// row + the custom fields the server's edit re-prices from (INVOICE_EDIT_ITEM_FIELDS).
@@ -1187,7 +1200,64 @@ function open_edit_invoice_items_dialog(page, doc) {
 			orig: {},
 			customs: customs,
 			builder_amount: flt(item.amount || 0),
+			builder_item: item,
 		};
+	}
+
+	const ALUMINIUM_PL_TO_LABEL = {
+		'Retail': 'Normal Price', 'Wholesale': 'Mill Finished Price', 'Special': 'Special Price',
+	};
+
+	// Reverse of builder_item_to_row: reconstruct a CAWItemBuilder item from a table row so the
+	// builder modal can reopen pre-filled. Session-added rows keep their exact builder_item;
+	// pre-existing invoice rows are rebuilt from their stored custom fields (r.orig).
+	function row_to_builder_item(r) {
+		if (r.builder_item) return r.builder_item;
+		const o = r.orig || {};
+		const category = r.category;
+		const item = {
+			id: 'caw-edit-' + (r.row_name || Math.random().toString(36).slice(2, 8)),
+			category: category,
+			item_code: r.item_code,
+			item_name: r.item_name || r.item_code,
+			description: o.description || '',
+			qty: flt(r.qty) || 1,
+			rate: flt(r.rate) * 1.16, // invoice stores net; the modal shows/uses gross
+			amount: 0,
+			dimension_uom: 'mm', // width/height are stored in mm
+			price_list: o.custom_price_list || 'Retail',
+		};
+
+		if (category === 'Glass') {
+			const sale_mode = o.custom_glass_sale_mode || 'Resized';
+			Object.assign(item, {
+				sale_mode: sale_mode,
+				glass_mode: sale_mode === 'Sheet' ? 'Sheet' : 'Cut Size',
+				glass_type: '', glass_type_filter: '',
+				width_mm: flt(o.custom_width_mm), height_mm: flt(o.custom_height_mm),
+				base_width_ft: flt(o.custom_base_width_ft), base_height_ft: flt(o.custom_base_height_ft),
+				width_ft: flt(o.custom_width_ft), height_ft: flt(o.custom_height_ft),
+				width_allowance: flt(o.custom_width_allowance), height_allowance: flt(o.custom_height_allowance),
+				area_sqft: flt(o.custom_area_sqft), perimeter_rft: flt(o.custom_perimeter_rft),
+				polishing: cint(o.custom_polishing), polish_width_sides: cint(o.custom_polish_width_sides),
+				polish_height_sides: cint(o.custom_polish_height_sides), polish_type: o.custom_polish_type || '4-6',
+				holes: cint(o.custom_holes), hole_type: o.custom_hole_type || '5mm',
+				notches: cint(o.custom_notches), notch_type: o.custom_notch_type || 'Standard',
+				sandblast_type: o.custom_sandblast_type || 'None', numbering: o.custom_numbering || '',
+				sheet_size: o.custom_sheet_size || '', sheet_sft: flt(o.custom_sheet_sft), pcs: flt(o.custom_sheet_pcs),
+			});
+			if (sale_mode === 'Sheet') item.price_list = 'Wholesale';
+		} else if (category === 'Aluminium') {
+			item.price_list = ALUMINIUM_PL_TO_LABEL[o.custom_price_list] || 'Normal Price';
+			item.aluminium_color = o.custom_aluminium_color || '';
+			item.metres = 1;
+		} else if (category === 'Ceiling') {
+			const sqm = flt(o.custom_ceiling_sq_m);
+			item.ceiling_mode = sqm > 0 ? 'bundle' : 'single';
+			item.quantity = sqm || 0;
+			item.square_metres = sqm || 0;
+		}
+		return item;
 	}
 
 	const d = new frappe.ui.Dialog({
@@ -1198,11 +1268,16 @@ function open_edit_invoice_items_dialog(page, doc) {
 		primary_action: function() {
 			const payload = rows.map(r => {
 				const row = { row_name: r.row_name, item_code: r.item_code, qty: r.qty, rate: r.rate };
-				if (!r.row_name) {
+				if (r.customs) {
+					// Added or edited via the builder — carry item identity + all the category
+					// fields the server re-prices glass/ceiling from. Works for both new rows
+					// (row_name null) and edited existing rows (row_name preserved).
 					row.item_name = r.item_name;
 					row.custom_product_category = r.category;
-					// Category-specific fields the server re-prices glass/ceiling from.
-					if (r.customs) Object.assign(row, r.customs);
+					Object.assign(row, r.customs);
+				} else if (!r.row_name) {
+					row.item_name = r.item_name;
+					row.custom_product_category = r.category;
 				} else if (r.orig_qty > 0 && Math.abs(r.qty - r.orig_qty) > 0.0001) {
 					const ratio = r.qty / r.orig_qty;
 					['custom_aluminium_metres', 'custom_ceiling_sq_m', 'custom_sheet_pcs'].forEach(f => {
@@ -1252,7 +1327,11 @@ function open_edit_invoice_items_dialog(page, doc) {
 				<td style="padding:6px 8px;"><input type="number" step="any" min="0" class="form-control ei-qty" value="${r.qty}" style="width:90px;"></td>
 				<td style="padding:6px 8px;"><input type="number" step="any" min="0" class="form-control ei-rate" value="${r.rate}" style="width:110px;"></td>
 				<td style="padding:6px 8px; text-align:right;" class="ei-amount">${format_currency(row_amount(r), currency)}</td>
-				<td style="padding:6px 8px;"><button class="btn btn-xs btn-danger ei-remove" title="Remove row"><i class="fa fa-trash"></i></button></td>
+				<td style="padding:6px 8px; white-space:nowrap;">
+					${BUILDER_CATEGORIES.includes(r.category) ? '<button class="btn btn-xs btn-default ei-edit" title="Edit item" style="margin-right:4px;"><i class="fa fa-pencil"></i></button>' : ''}
+					${r.row_name ? '<button class="btn btn-xs btn-default ei-clear" title="Clear changes (restore original)" style="margin-right:4px;"><i class="fa fa-undo"></i></button>' : ''}
+					<button class="btn btn-xs btn-danger ei-remove" title="Remove row"><i class="fa fa-trash"></i></button>
+				</td>
 			</tr>
 		`).join('');
 
@@ -1293,6 +1372,38 @@ function open_edit_invoice_items_dialog(page, doc) {
 			row.builder_amount = null;
 			$(this).closest('tr').find('.ei-amount').text(format_currency(row_amount(row), currency));
 			update_totals();
+		});
+
+		$wrap.find('.ei-edit').on('click', function() {
+			const idx = parseInt($(this).closest('tr').data('idx'), 10);
+			const r = rows[idx];
+			if (!window.CAWItemBuilder) {
+				frappe.msgprint('Item builder is still loading — please try again in a moment.');
+				return;
+			}
+			window.CAWItemBuilder.open({
+				category: r.category,
+				item: row_to_builder_item(r),
+				onSave: function(item) {
+					const mapped = builder_item_to_row(item);
+					// Preserve this row's identity (row_name/orig) so the server updates it in
+					// place; only refresh item, pricing and the category fields.
+					rows[idx] = Object.assign({}, r, {
+						item_code: mapped.item_code, item_name: mapped.item_name, category: mapped.category,
+						qty: mapped.qty, rate: mapped.rate, customs: mapped.customs,
+						builder_amount: mapped.builder_amount, builder_item: item,
+					});
+					render_table();
+				},
+			});
+		});
+
+		$wrap.find('.ei-clear').on('click', function() {
+			const idx = parseInt($(this).closest('tr').data('idx'), 10);
+			// Restore the row to its original invoice values, discarding any qty/rate or
+			// builder edits (customs, builder_item, builder_amount all drop away).
+			rows[idx] = make_row(rows[idx].orig);
+			render_table();
 		});
 
 		$wrap.find('.ei-remove').on('click', function() {

@@ -72,7 +72,13 @@ app_include_js = [
 doctype_js = {
 	"Quotation" : "public/js/quotation.js",
 	"Sales Order" : "public/js/sales_order.js",
-	"Sales Invoice" : "public/js/sales_invoice.js"
+	"Sales Invoice" : "public/js/sales_invoice.js",
+	# Same file on all three procurement doctypes — glass sheet / ceiling piece
+	# entry behaves identically whether you start at the request, the order or
+	# the receipt.
+	"Material Request" : "public/js/procurement_sheet_items.js",
+	"Purchase Order" : "public/js/procurement_sheet_items.js",
+	"Purchase Receipt" : "public/js/procurement_sheet_items.js"
 }
 # doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
@@ -182,6 +188,18 @@ doc_events = {
 	},
 	"Payments": {
 		"on_trash": "crystal_alluminium_works.api.on_payments_trash"
+	},
+	# Glass sheet / ceiling piece quantities are derived server-side at every
+	# procurement step so they cannot drift from what was entered, whichever
+	# document the flow starts at.
+	"Material Request": {
+		"validate": "crystal_alluminium_works.purchase_handler.recompute_sheet_quantities"
+	},
+	"Purchase Order": {
+		"validate": "crystal_alluminium_works.purchase_handler.recompute_sheet_quantities"
+	},
+	"Purchase Receipt": {
+		"validate": "crystal_alluminium_works.purchase_handler.recompute_sheet_quantities"
 	}
 }
 
