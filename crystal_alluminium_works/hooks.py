@@ -73,12 +73,13 @@ doctype_js = {
 	"Quotation" : "public/js/quotation.js",
 	"Sales Order" : "public/js/sales_order.js",
 	"Sales Invoice" : "public/js/sales_invoice.js",
-	# Same file on all three procurement doctypes — glass sheet / ceiling piece
-	# entry behaves identically whether you start at the request, the order or
-	# the receipt.
+	# Same file on all four procurement doctypes — glass sheet / ceiling piece
+	# entry behaves identically whether you start at the request, the order, the
+	# receipt, or a stock-updating purchase invoice.
 	"Material Request" : "public/js/procurement_sheet_items.js",
 	"Purchase Order" : "public/js/procurement_sheet_items.js",
-	"Purchase Receipt" : "public/js/procurement_sheet_items.js"
+	"Purchase Receipt" : "public/js/procurement_sheet_items.js",
+	"Purchase Invoice" : "public/js/procurement_sheet_items.js"
 }
 # doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
@@ -199,6 +200,12 @@ doc_events = {
 		"validate": "crystal_alluminium_works.purchase_handler.recompute_sheet_quantities"
 	},
 	"Purchase Receipt": {
+		"validate": "crystal_alluminium_works.purchase_handler.recompute_sheet_quantities"
+	},
+	# A Purchase Invoice with "Update Stock" ticked takes stock in without a
+	# receipt, so it needs the same derivation. The handler only touches
+	# received/rejected quantities when that flag is set.
+	"Purchase Invoice": {
 		"validate": "crystal_alluminium_works.purchase_handler.recompute_sheet_quantities"
 	}
 }

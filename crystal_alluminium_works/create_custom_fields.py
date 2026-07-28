@@ -308,9 +308,9 @@ def _get_crystal_item_fields(read_only=False):
     ]
 
 
-def _get_procurement_item_fields(include_rate=True):
+def _get_procurement_item_fields(include_rate=True, include_rejected=False):
     """Sheet/piece based stock-in fields, shared by Material Request Item,
-    Purchase Order Item and Purchase Receipt Item.
+    Purchase Order Item, Purchase Receipt Item and Purchase Invoice Item.
 
     Glass is stocked in Square Foot and ceiling boards in Square Meter, but both
     are ordered and received as a count of physical pieces (sheets / boards) and
@@ -332,10 +332,16 @@ def _get_procurement_item_fields(include_rate=True):
     Config lookup for whatever size was picked — so both are hidden rather
     than shown as extra steps in that visible order.
 
-    The same fieldnames are used on all three doctypes so ERPNext's standard
-    Material Request -> Purchase Order -> Purchase Receipt mapping carries them
-    through without any custom mapper. Material Request has no pricing at the
-    request stage, so include_rate=False drops custom_rate_per_piece there.
+    The same fieldnames are used on every one of those doctypes so ERPNext's
+    standard Material Request -> Purchase Order -> Purchase Receipt / Purchase
+    Invoice mapping carries them through without any custom mapper. Material
+    Request has no pricing at the request stage, so include_rate=False drops
+    custom_rate_per_piece there.
+
+    include_rejected adds custom_rejected_pcs, the piece-denominated counterpart
+    of the standard rejected_qty. Only Purchase Receipt Item and Purchase Invoice
+    Item have rejected_qty at all — nothing can be rejected before it is
+    physically received — so the request and order stages leave it off.
     """
     fields = [
         {
@@ -379,26 +385,47 @@ def _get_procurement_item_fields(include_rate=True):
             "read_only": 0,
             "module": "Crystal Alluminium Works",
         },
-        {
-            "fieldname": "custom_glass_sale_mode",
-            "label": "Glass Sale Mode",
-            "fieldtype": "Select",
-            "options": GLASS_SALE_MODE_OPTIONS,
-            "insert_after": "custom_ceiling_pcs",
-            "hidden": 1,
-            "read_only": 1,
-            "module": "Crystal Alluminium Works",
-        },
-        {
-            "fieldname": "custom_sheet_sft",
-            "label": "SFT per Sheet",
-            "fieldtype": "Float",
-            "insert_after": "custom_glass_sale_mode",
-            "hidden": 1,
-            "read_only": 1,
-            "module": "Crystal Alluminium Works",
-        },
     ]
+
+    last_fieldname = "custom_ceiling_pcs"
+    if include_rejected:
+        fields.append({
+            # Piece-denominated counterpart of the standard rejected_qty, which
+            # is in stock UOM: rejecting one 1220x1830 sheet means typing 24
+            # (SFT) there, while every other quantity on the row is entered as a
+            # count of sheets/boards. The handler derives rejected_qty from this
+            # the same way qty is derived from custom_sheet_pcs, so the whole row
+            # stays piece-denominated. Sheets/Pcs remains the *accepted* count,
+            # matching ERPNext's received = accepted + rejected model.
+            "fieldname": "custom_rejected_pcs",
+            "label": "Rejected Sheets / Pcs",
+            "fieldtype": "Float",
+            "insert_after": last_fieldname,
+            "depends_on": "eval:doc.custom_product_category=='Glass' || doc.custom_product_category=='Ceiling'",
+            "read_only": 0,
+            "module": "Crystal Alluminium Works",
+        })
+        last_fieldname = "custom_rejected_pcs"
+
+    fields.append({
+        "fieldname": "custom_glass_sale_mode",
+        "label": "Glass Sale Mode",
+        "fieldtype": "Select",
+        "options": GLASS_SALE_MODE_OPTIONS,
+        "insert_after": last_fieldname,
+        "hidden": 1,
+        "read_only": 1,
+        "module": "Crystal Alluminium Works",
+    })
+    fields.append({
+        "fieldname": "custom_sheet_sft",
+        "label": "SFT per Sheet",
+        "fieldtype": "Float",
+        "insert_after": "custom_glass_sale_mode",
+        "hidden": 1,
+        "read_only": 1,
+        "module": "Crystal Alluminium Works",
+    })
 
     last_fieldname = "custom_sheet_sft"
     if include_rate:
@@ -454,14 +481,20 @@ def reorder_procurement_standard_fields():
     *standard* field: Frappe's field-order algorithm only consults insert_after
     for custom fields, standard fields keep whatever slot the doctype's base
     field_order already gives them (see frappe.model.meta.Meta.sort_fields).
-    So on Purchase Order / Purchase Receipt — where item_code and item_name
-    aren't adjacent in the base layout (barcode scan / supplier part fields
-    sit between them) — moving them takes a full field_order override: read
+    So on Purchase Order / Purchase Receipt / Purchase Invoice — where item_code
+    and item_name aren't adjacent in the base layout (barcode scan / supplier
+    part fields sit between them) — moving them takes a full field_order
+    override: read
     the doctype's current effective order, pull item_code/item_name out, and
     reinsert both right after custom_product_category. Every other field's
     relative order is left untouched.
     """
-    for doctype in ("Material Request Item", "Purchase Order Item", "Purchase Receipt Item"):
+    for doctype in (
+        "Material Request Item",
+        "Purchase Order Item",
+        "Purchase Receipt Item",
+        "Purchase Invoice Item",
+    ):
         _set_property(doctype, "item_name", "read_only", 1, "Check")
 
         order = [f.fieldname for f in frappe.get_meta(doctype, cached=False).fields]
@@ -643,7 +676,12 @@ def add_custom_fields():
         # carries the values through untouched.
         "Material Request Item": _get_procurement_item_fields(include_rate=False),
         "Purchase Order Item": _get_procurement_item_fields(),
-        "Purchase Receipt Item": _get_procurement_item_fields(),
+        # Receipt and invoice are the two points where goods physically arrive,
+        # so they are also the only two that can reject any of them. A Purchase
+        # Invoice with "Update Stock" ticked takes stock in on its own, without
+        # a receipt, which is why it carries the same entry fields.
+        "Purchase Receipt Item": _get_procurement_item_fields(include_rejected=True),
+        "Purchase Invoice Item": _get_procurement_item_fields(include_rejected=True),
         "Quotation": [
             {
                 # Quotation Builder's global +/- % adjustment over each row's Inc.Rate.

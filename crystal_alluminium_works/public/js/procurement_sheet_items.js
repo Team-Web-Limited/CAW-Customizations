@@ -1,9 +1,11 @@
 // Glass sheet / ceiling piece entry for the procurement flow.
 //
-// Loaded on Material Request, Purchase Order and Purchase Receipt (see
-// hooks.doctype_js — the same file is registered for all three, so the buyer
-// gets the identical entry experience at every step and values carry through
-// the standard MR -> PO -> PR mapping).
+// Loaded on Material Request, Purchase Order, Purchase Receipt and Purchase
+// Invoice (see hooks.doctype_js — the same file is registered for all four, so
+// the buyer gets the identical entry experience at every step and values carry
+// through the standard MR -> PO -> PR / PI mapping). A Purchase Invoice with
+// "Update Stock" ticked takes stock in without a receipt, which is why it is a
+// full entry point here and not just a billing document.
 //
 // Glass is stocked in Square Foot and ceiling boards in Square Meter, but both
 // are ordered per physical piece at a per-piece price. The user enters sheet
@@ -14,7 +16,8 @@
 const CAW_PROCUREMENT_DOCTYPES = {
 	'Material Request': 'Material Request Item',
 	'Purchase Order': 'Purchase Order Item',
-	'Purchase Receipt': 'Purchase Receipt Item'
+	'Purchase Receipt': 'Purchase Receipt Item',
+	'Purchase Invoice': 'Purchase Invoice Item'
 };
 
 const CAW_STOCK_CATEGORIES = new Set(['Aluminium', 'Glass', 'Fittings', 'Ceiling', 'Rubber', 'Silicone']);
@@ -86,6 +89,7 @@ function caw_recompute_row(frm, cdt, cdn) {
 
 	let pcs = 0;
 	let qty = 0;
+	let per_piece = 0;
 
 	if (row.custom_product_category === 'Glass') {
 		if (!row.custom_sheet_size) return;
@@ -94,6 +98,7 @@ function caw_recompute_row(frm, cdt, cdn) {
 		if (sft <= 0 || pcs <= 0) return;
 		frappe.model.set_value(cdt, cdn, 'custom_glass_sale_mode', 'Sheet');
 		frappe.model.set_value(cdt, cdn, 'custom_sheet_sft', sft);
+		per_piece = sft;
 		qty = flt(sft * pcs);
 	} else if (row.custom_product_category === 'Ceiling') {
 		let area = flt(row.custom_sheet_sft || 0); // reused as sqm/piece for ceiling
@@ -113,6 +118,7 @@ function caw_recompute_row(frm, cdt, cdn) {
 			});
 			return;
 		}
+		per_piece = area;
 		qty = flt(area * pcs);
 	} else {
 		return;
@@ -125,6 +131,15 @@ function caw_recompute_row(frm, cdt, cdn) {
 		frappe.model.set_value(cdt, cdn, 'conversion_factor', 1);
 	}
 	frappe.model.set_value(cdt, cdn, 'qty', qty);
+
+	// Damaged sheets/boards are counted in pieces like everything else on the
+	// row; standard rejected_qty is in stock UOM. Only the receipt and the
+	// invoice can reject, so the field is absent on request/order rows.
+	if (frappe.meta.has_field(cdt, 'custom_rejected_pcs') && per_piece > 0) {
+		frappe.model.set_value(
+			cdt, cdn, 'rejected_qty', flt(per_piece * flt(row.custom_rejected_pcs || 0))
+		);
+	}
 
 	// Supplier quotes per sheet/piece; ERPNext values stock per stock UOM.
 	let rate_per_piece = flt(row.custom_rate_per_piece || 0);
@@ -210,6 +225,9 @@ Object.entries(CAW_PROCUREMENT_DOCTYPES).forEach(([parent_doctype, child_doctype
 			caw_recompute_row(frm, cdt, cdn);
 		},
 		custom_ceiling_pcs: function(frm, cdt, cdn) {
+			caw_recompute_row(frm, cdt, cdn);
+		},
+		custom_rejected_pcs: function(frm, cdt, cdn) {
 			caw_recompute_row(frm, cdt, cdn);
 		},
 		custom_rate_per_piece: function(frm, cdt, cdn) {
