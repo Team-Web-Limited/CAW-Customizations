@@ -49,16 +49,34 @@ function caw_set_sheet_size_options(frm) {
 	grid.update_docfield_property('custom_sheet_size', 'options', ['', ...caw_sheet_sizes].join('\n'));
 }
 
-function caw_set_item_code_query(frm, parent_doctype) {
+// Narrow the Item Code lookup to the row's chosen category, so picking
+// "Aluminium" lists only aluminium items instead of the whole catalogue.
+//
+// This must be re-asserted rather than set once: ERPNext's own class-based
+// controllers (MaterialRequestController.onload, BuyingController.setup_queries)
+// set their own item_code query, and those run as "old style" cscript handlers,
+// which frappe's script_manager always queues AFTER every frappe.ui.form.on
+// handler. Worse, form.js fires trigger("onload") without awaiting it before
+// calling render_form(), so onload's controller tasks and our refresh handler
+// interleave unpredictably — whoever writes get_query last wins by luck.
+// Re-asserting on category change (the action immediately preceding the item
+// lookup) makes us the last writer at the only moment that matters.
+function caw_set_item_code_query(frm) {
+	if (!frm.fields_dict || !frm.fields_dict.items) return;
 	frm.set_query('item_code', 'items', function(doc, cdt, cdn) {
-		let row = locals[cdt][cdn];
-		let category = row && row.custom_product_category;
-		let filters = { is_stock_item: 1, disabled: 0 };
-		if (category) {
-			filters.item_group = category;
-			if (category === 'Glass') filters.custom_glass_type = ['!=', 'Laminated'];
+		let row = locals[cdt][cdn] || {};
+		// Keep routing through ERPNext's item_query: it applies the Party
+		// Specific Item restrictions for the supplier and excludes disabled /
+		// template items, which a bare filters dict would silently drop.
+		let filters = { is_stock_item: 1 };
+		if (doc.supplier) filters.supplier = doc.supplier;
+		if (row.custom_product_category) {
+			filters.item_group = row.custom_product_category;
+			if (row.custom_product_category === 'Glass') {
+				filters.custom_glass_type = ['!=', 'Laminated'];
+			}
 		}
-		return { filters: filters };
+		return { query: 'erpnext.controllers.queries.item_query', filters: filters };
 	});
 }
 
@@ -145,20 +163,32 @@ function caw_on_item_selected(frm, cdt, cdn) {
 Object.entries(CAW_PROCUREMENT_DOCTYPES).forEach(([parent_doctype, child_doctype]) => {
 	frappe.ui.form.on(parent_doctype, {
 		onload: function(frm) {
-			caw_set_item_code_query(frm, parent_doctype);
+			caw_set_item_code_query(frm);
 			caw_load_sheet_sizes().then(() => caw_set_sheet_size_options(frm));
 		},
 		refresh: function(frm) {
-			caw_set_item_code_query(frm, parent_doctype);
+			caw_set_item_code_query(frm);
 			caw_load_sheet_sizes().then(() => caw_set_sheet_size_options(frm));
+		},
+		// Fires after refresh, so it reclaims get_query from any controller
+		// onload task that resolved late (see caw_set_item_code_query).
+		onload_post_render: function(frm) {
+			caw_set_item_code_query(frm);
 		}
 	});
 
 	frappe.ui.form.on(child_doctype, {
+		items_add: function(frm) {
+			caw_set_item_code_query(frm);
+		},
 		item_code: function(frm, cdt, cdn) {
 			caw_on_item_selected(frm, cdt, cdn);
 		},
 		custom_product_category: function(frm, cdt, cdn) {
+			// Re-assert here above all: this fires the instant the user picks a
+			// category, i.e. immediately before they open the Item Code lookup.
+			caw_set_item_code_query(frm);
+
 			// Category is picked before the item now; if it no longer matches
 			// whatever item was already selected, clear that item rather than
 			// leave a stale item_code / category pairing.
