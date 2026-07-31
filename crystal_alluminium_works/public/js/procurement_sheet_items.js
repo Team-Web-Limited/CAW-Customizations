@@ -175,6 +175,74 @@ function caw_on_item_selected(frm, cdt, cdn) {
 	});
 }
 
+// Purchase Invoice / Purchase Receipt only: buyers sometimes know the total
+// billed/received amount for a line before they know the per-unit rate (e.g.
+// a supplier invoice quotes a lump sum for the accepted quantity). Amount is
+// read-only by default in ERPNext (it's derived as qty * rate); here we flip
+// that and derive rate from amount / accepted qty instead.
+//
+// Deriving rate on the 'amount' event alone isn't enough: entering the
+// accepted qty on a fresh row kicks off transaction.js's own qty handler,
+// which asynchronously refetches the price-list rate / pricing rule and
+// re-applies it via set_value *after* our handler has already run, silently
+// overwriting the rate (and, through the standard qty*rate recompute, the
+// amount) the user just typed. That's the "have to touch rate again" bug.
+// __caw_locked_amount records the amount the user actually wants for the
+// row; the rate/qty handlers below re-derive rate from it every time
+// anything nudges rate, so any later async price-list write gets corrected
+// back rather than winning the race.
+const CAW_AMOUNT_DRIVEN_DOCTYPES = {
+	'Purchase Invoice': 'Purchase Invoice Item',
+	'Purchase Receipt': 'Purchase Receipt Item'
+};
+
+function caw_enforce_amount_driven_rate(cdt, cdn) {
+	let row = locals[cdt][cdn];
+	if (row?.__caw_locked_amount === undefined) return;
+
+	let qty = flt(row.qty);
+	if (qty <= 0) return;
+
+	let derived_rate = flt(row.__caw_locked_amount) / qty;
+	if (Math.abs(flt(row.rate) - derived_rate) > 0.0001) {
+		frappe.model.set_value(cdt, cdn, 'rate', derived_rate);
+	}
+}
+
+Object.entries(CAW_AMOUNT_DRIVEN_DOCTYPES).forEach(([parent_doctype, child_doctype]) => {
+	frappe.ui.form.on(parent_doctype, {
+		refresh: function(frm) {
+			let grid = frm.get_field('items')?.grid;
+			if (!grid) return;
+			grid.update_docfield_property('amount', 'read_only', 0);
+		}
+	});
+
+	frappe.ui.form.on(child_doctype, {
+		item_code: function(frm, cdt, cdn) {
+			// New item on the row means whatever amount lock existed belonged
+			// to the previous item; let standard price-list/pricing-rule logic
+			// set the rate fresh until the user re-enters an amount.
+			delete locals[cdt][cdn].__caw_locked_amount;
+		},
+		amount: function(frm, cdt, cdn) {
+			let row = locals[cdt][cdn];
+			if (flt(row.amount) <= 0) {
+				delete row.__caw_locked_amount;
+				return;
+			}
+			row.__caw_locked_amount = flt(row.amount);
+			caw_enforce_amount_driven_rate(cdt, cdn);
+		},
+		qty: function(frm, cdt, cdn) {
+			caw_enforce_amount_driven_rate(cdt, cdn);
+		},
+		rate: function(frm, cdt, cdn) {
+			caw_enforce_amount_driven_rate(cdt, cdn);
+		}
+	});
+});
+
 Object.entries(CAW_PROCUREMENT_DOCTYPES).forEach(([parent_doctype, child_doctype]) => {
 	frappe.ui.form.on(parent_doctype, {
 		onload: function(frm) {

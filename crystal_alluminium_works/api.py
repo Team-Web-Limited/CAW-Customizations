@@ -4264,7 +4264,6 @@ def save_custom_item(data):
         item.item_code = item_code
         item.item_name = item_name
         item.item_group = storage_category
-        item.stock_uom = uom
         item.is_stock_item = 1
         item.standard_rate = retail_rate
         if _item_has_field("custom_glass_type"):
@@ -4277,7 +4276,10 @@ def save_custom_item(data):
             item.custom_aluminium_weight_per_length = aluminium_weight_per_length if storage_category == "Aluminium" else 0
         if _item_has_field("custom_product_code"):
             item.custom_product_code = product_code
-        _ensure_item_has_default_uom(item, uom)
+        # Existing items keep their current stock UOM; changing it is blocked
+        # by ERPNext once transactions exist, and this page never intends to
+        # change UOM — only prices.
+        _ensure_item_has_default_uom(item, item.stock_uom)
         item.save(ignore_permissions=True)
         
     # Save Item Prices
