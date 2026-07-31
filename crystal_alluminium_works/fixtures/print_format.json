@@ -154,6 +154,7 @@
   "margin_left": 15.0,
   "margin_right": 15.0,
   "margin_top": 15.0,
+  "modified": "2026-07-30 23:58:35.117697",
   "module": "Accounts",
   "name": "Crystal Statement of Accounts",
   "page_number": "Hide",
@@ -166,6 +167,6 @@
   "raw_printing": 0,
   "report": "General Ledger",
   "show_section_headings": 0,
-  "standard": "Yes"
+  "standard": "No"
  }
 ]
