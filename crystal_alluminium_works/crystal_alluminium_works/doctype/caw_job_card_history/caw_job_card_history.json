@@ -128,7 +128,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Change Type",
-   "options": "Created\nUpdated\nQuotation Amended\nInvoice Cancelled\nInvoice Amended",
+   "options": "Created\nUpdated\nQuotation Amended\nInvoice Cancelled\nInvoice Amended\nRefunded\nCancelled",
    "read_only": 1
   },
   {

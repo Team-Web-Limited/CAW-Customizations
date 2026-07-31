@@ -317,6 +317,15 @@ function open_create_payment_modal(page) {
 		title: __('Create Payment'),
 		fields: [
 			{
+				fieldtype: 'Select',
+				fieldname: 'payment_type',
+				label: 'Payment Type',
+				options: 'General Payment\nRefund',
+				default: 'General Payment',
+				reqd: 1
+			},
+			{ fieldtype: 'Column Break' },
+			{
 				fieldtype: 'Link',
 				fieldname: 'customer',
 				label: 'Customer',
@@ -531,6 +540,7 @@ function open_create_payment_modal(page) {
 					method: 'crystal_alluminium_works.api.record_customer_payment',
 					args: {
 						customer: values.customer,
+						payment_type: values.payment_type,
 						amount: values.amount,
 						date: values.date,
 						payment_method: values.payment_method,

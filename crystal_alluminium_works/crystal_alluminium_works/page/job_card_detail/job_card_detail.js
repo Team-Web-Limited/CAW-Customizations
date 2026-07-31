@@ -759,6 +759,110 @@ async function open_edit_job_card_modal(page, job_card, quotation) {
 	});
 }
 
+// Refunds the full amount already paid on this Job Card, then immediately completes the
+// cancellation — the only way to cancel a Job Card that has a recorded payment against it.
+function open_job_card_refund_modal(page, job_card, refund_amount) {
+	let d = new frappe.ui.Dialog({
+		title: 'Refund & Cancel Job Card',
+		fields: [
+			{
+				fieldtype: 'Currency',
+				fieldname: 'amount',
+				label: 'Refund Amount',
+				default: refund_amount,
+				read_only: 1
+			},
+			{ fieldtype: 'Column Break' },
+			{
+				fieldtype: 'Date',
+				fieldname: 'date',
+				label: 'Date',
+				reqd: 1,
+				default: frappe.datetime.get_today()
+			},
+			{ fieldtype: 'Section Break' },
+			{
+				fieldtype: 'Link',
+				fieldname: 'payment_method',
+				label: 'Payment Method',
+				options: 'Mode of Payment',
+				reqd: 1,
+				onchange: function() {
+					let payment_method = d.get_value('payment_method');
+					if (!payment_method) {
+						d._mode_of_payment_type = null;
+						d.set_value('deposit_to', '');
+						return;
+					}
+					frappe.call({
+						method: 'crystal_alluminium_works.api.get_mode_of_payment_account_info',
+						args: { payment_method: payment_method },
+						callback: function(r) {
+							let info = (r && r.message) || {};
+							d._mode_of_payment_type = info.mode_of_payment_type || null;
+							d.set_value('deposit_to', info.default_account || '');
+							d.set_df_property('reference', 'reqd', (d._mode_of_payment_type || '').toLowerCase() === 'bank' ? 1 : 0);
+						}
+					});
+				}
+			},
+			{ fieldtype: 'Column Break' },
+			{
+				fieldtype: 'Link',
+				fieldname: 'deposit_to',
+				label: 'Deposit To',
+				options: 'Account',
+				read_only: 1,
+				description: 'Auto-derived from the selected payment method.'
+			},
+			{ fieldtype: 'Section Break' },
+			{
+				fieldtype: 'Data',
+				fieldname: 'reference',
+				label: 'Reference'
+			}
+		],
+		primary_action_label: 'Refund & Cancel',
+		primary_action: function(values) {
+			frappe.call({
+				method: 'crystal_alluminium_works.api.record_customer_payment',
+				args: {
+					customer: job_card.customer,
+					payment_type: 'Refund',
+					amount: refund_amount,
+					date: values.date,
+					payment_method: values.payment_method,
+					deposit_to: values.deposit_to,
+					reference: values.reference,
+					allocations: JSON.stringify([{ job_card: job_card.name, amount: refund_amount }])
+				},
+				freeze: true,
+				freeze_message: 'Recording Refund...',
+				callback: function(r) {
+					if (r.exc || !r.message) {
+						return;
+					}
+					frappe.call({
+						method: 'crystal_alluminium_works.api.cancel_job_card',
+						args: { job_card_name: job_card.name },
+						freeze: true,
+						freeze_message: 'Cancelling Job Card...',
+						callback: function(cancel_r) {
+							if (!cancel_r.exc && cancel_r.message) {
+								d.hide();
+								frappe.show_alert({ message: 'Job Card Refunded and Cancelled', indicator: 'green' });
+								load_single_job_card_detail(page, job_card.name);
+							}
+						}
+					});
+				}
+			});
+		}
+	});
+
+	d.show();
+}
+
 function can_create_invoice_from_job_card(job_card, quotation, history, sales_invoices) {
 	let has_sales_invoice = !!((sales_invoices || []).length);
 	let quotation_amount = flt(job_card.quotation_amount || (quotation && quotation.grand_total) || 0);
@@ -1367,6 +1471,44 @@ function bind_single_job_card_detail_events(page, $body, job_card, quotation, hi
 		);
 	});
 
+	$body.on('click.job-card-detail', '[data-action="cancel-job-card"]', function() {
+		frappe.call({
+			method: 'crystal_alluminium_works.api.get_job_card_cancel_eligibility',
+			args: { job_card_name: job_card.name },
+			freeze: true,
+			callback: function(r) {
+				let eligibility = r.message || {};
+				if ((eligibility.reasons || []).length) {
+					frappe.msgprint(eligibility.reasons.join('<br>'));
+					return;
+				}
+
+				if (eligibility.needs_refund) {
+					open_job_card_refund_modal(page, job_card, eligibility.refund_amount);
+					return;
+				}
+
+				frappe.confirm(
+					`<b>Cancel Job Card ${frappe.utils.escape_html(job_card.name)}?</b><br><br>This cannot be undone.`,
+					() => {
+						frappe.call({
+							method: 'crystal_alluminium_works.api.cancel_job_card',
+							args: { job_card_name: job_card.name },
+							freeze: true,
+							freeze_message: 'Cancelling Job Card...',
+							callback: function(r) {
+								if (!r.exc && r.message) {
+									frappe.show_alert({ message: 'Job Card Cancelled', indicator: 'green' });
+									load_single_job_card_detail(page, job_card.name);
+								}
+							}
+						});
+					}
+				);
+			}
+		});
+	});
+
 	$body.on('click.job-card-detail', '[data-action="create-partial-invoice"]', function() {
 		open_partial_invoice_modal(job_card);
 	});
@@ -1756,7 +1898,7 @@ function render_job_card_history_section(history, released_items, currency, job_
 			<div class="jc-history-tabs">
 				<div class="jc-history-tab active" data-action="switch-jc-history-tab" data-tab="payments">Payment History</div>
 				<div class="jc-history-tab" data-action="switch-jc-history-tab" data-tab="released">Released Items</div>
-				<div class="jc-history-tab" data-action="switch-jc-history-tab" data-tab="deductions">Glass Stock Deduction</div>
+				<div class="jc-history-tab" data-action="switch-jc-history-tab" data-tab="deductions">Stock Deducted</div>
 			</div>
 			<div class="jc-history-panel jc-history-panel-payments active">
 				<div class="jc-history-table-wrap">
@@ -1799,87 +1941,143 @@ function render_job_card_history_section(history, released_items, currency, job_
 				</div>
 			</div>
 			<div class="jc-history-panel jc-history-panel-deductions">
-				<div class="jc-history-table-wrap">
-					<table class="jc-history-table">
-						<thead>
-							<tr>
-								<th>Deducted On</th>
-								<th>Saved On</th>
-								<th>Item</th>
-								<th style="text-align:right;">Qty (SFT)</th>
-								<th>Glass Item Consumed</th>
-								<th>Sheets Consumed</th>
-								<th>Status</th>
-							</tr>
-						</thead>
-						<tbody>
-							${render_job_card_stock_deductions_rows(stock_deductions)}
-						</tbody>
-					</table>
+				<div class="jc-history-deductions-scroll">
+					${(function() {
+						let glass_html = render_job_card_stock_deduction_group('Glass', stock_deductions, 'Glass', [
+							{ label: 'Deducted On', align: 'left' },
+							{ label: 'Saved On', align: 'left' },
+							{ label: 'Item', align: 'left' },
+							{ label: 'Qty (SFT)', align: 'right' },
+							{ label: 'Glass Item Consumed', align: 'left' },
+							{ label: 'Sheets Consumed', align: 'left' },
+							{ label: 'Status', align: 'left' },
+						], render_job_card_glass_deduction_row);
+						let ceiling_html = render_job_card_stock_deduction_group('Ceiling', stock_deductions, 'Ceiling', [
+							{ label: 'Deducted On', align: 'left' },
+							{ label: 'Ceiling Product', align: 'left' },
+							{ label: 'Item Consumed', align: 'left' },
+							{ label: 'Qty', align: 'right' },
+							{ label: 'UOM', align: 'left' },
+							{ label: 'Status', align: 'left' },
+						], render_job_card_generic_deduction_row);
+						let other_html = render_job_card_stock_deduction_group('Other', stock_deductions, 'Other', [
+							{ label: 'Deducted On', align: 'left' },
+							{ label: 'Quotation Item', align: 'left' },
+							{ label: 'Item Consumed', align: 'left' },
+							{ label: 'Qty', align: 'right' },
+							{ label: 'UOM', align: 'left' },
+							{ label: 'Status', align: 'left' },
+						], render_job_card_generic_deduction_row);
+
+						let combined = glass_html + ceiling_html + other_html;
+						if (!combined.trim()) {
+							return `<div style="padding:24px;text-align:center;color:var(--text-muted);">No stock deductions recorded yet.</div>`;
+						}
+						return combined;
+					})()}
 				</div>
 			</div>
 		</div>
 	`;
 }
 
-function render_job_card_stock_deductions_rows(stock_deductions) {
-	if (!stock_deductions || stock_deductions.length === 0) {
-		return `
-			<tr>
-				<td colspan="7" style="padding:24px;text-align:center;color:var(--text-muted);">
-					No glass stock deductions recorded yet.
-				</td>
-			</tr>
-		`;
+const JC_STOCK_DEDUCTION_BUCKETS = {
+	Glass: ['Glass'],
+	Ceiling: ['Ceiling'],
+	Other: ['Aluminium', 'Fittings', 'Rubber', 'Silicone', ''],
+};
+
+function render_job_card_stock_deduction_group(title, stock_deductions, bucket, columns, row_renderer) {
+	let categories = JC_STOCK_DEDUCTION_BUCKETS[bucket] || [];
+	let rows = (stock_deductions || []).filter(function(row) {
+		return categories.indexOf(row.category || '') !== -1;
+	});
+
+	if (!rows.length) {
+		return '';
 	}
 
-	return stock_deductions.map(function(row) {
-		let date_str = row.posting_date ? frappe.datetime.str_to_user(row.posting_date || '') : '';
-		if (row.posting_time && date_str) {
-			date_str += ' ' + row.posting_time;
-		}
+	return `
+		<div class="jc-history-deduction-group">
+			<div class="jc-history-table-wrap">
+				<table class="jc-history-table">
+					<thead>
+						<tr>
+							${columns.map(function(col) {
+								return `<th${col.align === 'right' ? ' style="text-align:right;"' : ''}>${jc_escape(col.label)}</th>`;
+							}).join('')}
+						</tr>
+					</thead>
+					<tbody>
+						${rows.map(row_renderer).join('')}
+					</tbody>
+				</table>
+			</div>
+		</div>
+	`;
+}
 
-		let saved_on_str = row.saved_on ? frappe.datetime.str_to_user(row.saved_on.split(' ')[0]) : '';
-		if (row.saved_on && row.saved_on.split(' ')[1]) {
-			saved_on_str += ' ' + row.saved_on.split(' ')[1].substring(0, 8);
-		}
-		
-		let se_link = '-';
-		if (row.name) {
-			se_link = `<a href="/desk/Form/Stock Entry/${encodeURIComponent(row.name)}" onclick="frappe.set_route('Form', 'Stock Entry', '${row.name}'); return false;">${jc_escape(row.name)}</a>`;
-		}
+function jc_stock_deduction_status_label(row) {
+	if (row.status === 'Saved') {
+		return `<span class="label" style="background-color: #ff9800; color: white; font-weight: normal; padding: 3px 8px; border-radius: 4px;">Saved</span>`;
+	}
+	return `<span class="label" style="background-color: #4caf50; color: white; font-weight: normal; padding: 3px 8px; border-radius: 4px;">Deducted</span>`;
+}
 
-		let status_label = '';
-		if (row.status === 'Saved') {
-			status_label = `<span class="label" style="background-color: #ff9800; color: white; font-weight: normal; padding: 3px 8px; border-radius: 4px;">Saved</span>`;
+function jc_stock_deduction_date_str(row) {
+	let date_str = row.posting_date ? frappe.datetime.str_to_user(row.posting_date || '') : '';
+	if (row.posting_time && date_str) {
+		date_str += ' ' + row.posting_time;
+	}
+	return date_str;
+}
+
+function render_job_card_glass_deduction_row(row) {
+	let date_str = jc_stock_deduction_date_str(row);
+
+	let saved_on_str = row.saved_on ? frappe.datetime.str_to_user(row.saved_on.split(' ')[0]) : '';
+	if (row.saved_on && row.saved_on.split(' ')[1]) {
+		saved_on_str += ' ' + row.saved_on.split(' ')[1].substring(0, 8);
+	}
+
+	let sheets_display = '-';
+	let sheets_title = '';
+	if (row.sheets_consumed && row.sheets_consumed !== '-') {
+		sheets_title = row.sheets_consumed;
+		let parts = row.sheets_consumed.split(', ');
+		if (parts.length > 1) {
+			sheets_display = parts[0] + '...';
 		} else {
-			status_label = `<span class="label" style="background-color: #4caf50; color: white; font-weight: normal; padding: 3px 8px; border-radius: 4px;">Deducted</span>`;
+			sheets_display = row.sheets_consumed;
 		}
+	}
 
-		let sheets_display = '-';
-		let sheets_title = '';
-		if (row.sheets_consumed && row.sheets_consumed !== '-') {
-			sheets_title = row.sheets_consumed;
-			let parts = row.sheets_consumed.split(', ');
-			if (parts.length > 1) {
-				sheets_display = parts[0] + '...';
-			} else {
-				sheets_display = row.sheets_consumed;
-			}
-		}
+	return `
+		<tr>
+			<td>${jc_escape(date_str || '-')}</td>
+			<td>${jc_escape(saved_on_str || '-')}</td>
+			<td>${jc_escape(row.quotation_item_name || row.quotation_item_code || '-')}</td>
+			<td style="text-align:right;">${jc_number(row.qty, 4)}</td>
+			<td>${jc_escape(row.item_code || '')}</td>
+			<td title="${jc_escape(sheets_title)}">${jc_escape(sheets_display)}</td>
+			<td>${jc_stock_deduction_status_label(row)}</td>
+		</tr>
+	`;
+}
 
-		return `
-			<tr>
-				<td>${jc_escape(date_str || '-')}</td>
-				<td>${jc_escape(saved_on_str || '-')}</td>
-				<td>${jc_escape(row.quotation_item_name || row.quotation_item_code || '-')}</td>
-				<td style="text-align:right;">${jc_number(row.qty, 4)}</td>
-				<td>${jc_escape(row.item_code || '')}</td>
-				<td title="${jc_escape(sheets_title)}">${jc_escape(sheets_display)}</td>
-				<td>${status_label}</td>
-			</tr>
-		`;
-	}).join('');
+function render_job_card_generic_deduction_row(row) {
+	let date_str = jc_stock_deduction_date_str(row);
+
+	return `
+		<tr>
+			<td>${jc_escape(date_str || '-')}</td>
+			<td>${jc_escape(row.quotation_item_name || row.quotation_item_code || '-')}</td>
+			<td>${jc_escape(row.item_code || '')}</td>
+			<td style="text-align:right;">${jc_number(row.qty, 4)}</td>
+			<td>${jc_escape(row.uom || '-')}</td>
+			<td>${jc_stock_deduction_status_label(row)}</td>
+		</tr>
+	`;
 }
 
 function render_single_job_card_detail(job_card, quotation, history, sales_invoices, flags, released_items, stock_deductions) {
@@ -1935,6 +2133,18 @@ function render_single_job_card_detail(job_card, quotation, history, sales_invoi
 	let primary_invoice_action = !has_sales_invoice && can_create_invoice
 		? '<button class="btn btn-primary" data-action="create-sales-invoice">Create Sales Invoice</button>'
 		: '';
+
+	// Best-effort visibility check — cancel_job_card re-verifies all of this server-side
+	// via get_job_card_cancel_eligibility before actually cancelling.
+	let has_submitted_invoice = (sales_invoices || []).some(inv => cint(inv.docstatus) === 1);
+	let has_released_items = !!((released_items || []).length);
+	let has_deducted_stock = (stock_deductions || []).some(d => d.status === 'Deducted');
+	// A recorded payment no longer hard-blocks cancel — clicking Cancel routes through a
+	// refund step first (see cancel-job-card handler). Only invoice/release/stock block here.
+	let can_cancel_job_card = job_card.status !== 'Cancelled'
+		&& !has_submitted_invoice
+		&& !has_released_items
+		&& !has_deducted_stock;
 	let status_color = {
 		'Draft': 'orange',
 		'In Progress': 'blue',
@@ -1972,7 +2182,9 @@ function render_single_job_card_detail(job_card, quotation, history, sales_invoi
 		.jc-history-panel { display:none; padding:0; }
 		.jc-history-panel.active { display:block; }
 		.jc-history-table-wrap { overflow-x:auto; }
-		.jc-history-panel-deductions .jc-history-table-wrap { max-height: 350px; overflow-y: auto; overflow-x: auto; }
+		.jc-history-deduction-group { margin-bottom:20px; }
+		.jc-history-deduction-group:last-child { margin-bottom:0; }
+		.jc-history-deductions-scroll { max-height: 420px; overflow-y: auto; padding-bottom:4px; }
 		.jc-history-table { width:100%; min-width:760px; border-collapse:collapse; }
 		.jc-history-panel-deductions .jc-history-table { width: max-content; min-width: 100%; }
 		.jc-history-table th { padding:12px 18px; font-size:12px; font-weight:700; color:var(--text-muted); text-transform:uppercase; letter-spacing:.4px; background:var(--subtle-fg); border-bottom:1px solid var(--border-color); text-align:left; }
@@ -2005,6 +2217,7 @@ function render_single_job_card_detail(job_card, quotation, history, sales_invoi
 				</select>
 				<button class="btn btn-default" data-action="jc-operations">JC Operations</button>
 				${can_edit_job_card ? '<button class="btn btn-primary" data-action="edit-job-card">Edit Job Card</button>' : ''}
+				${can_cancel_job_card ? '<button class="btn btn-danger" data-action="cancel-job-card">Cancel Job Card</button>' : ''}
 			</div>
 		</div>
 

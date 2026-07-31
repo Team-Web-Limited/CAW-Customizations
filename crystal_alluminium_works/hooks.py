@@ -26,6 +26,7 @@ fixtures = [
 					"Crystal Sales Invoice",
 					"Crystal Sales Order",
 					"Crystal Job Card",
+					"Crystal Statement of Accounts",
 				],
 			]
 		],
@@ -249,9 +250,13 @@ after_migrate = "crystal_alluminium_works.patches.refresh_workspace_sidebar_link
 # Overriding Methods
 # ------------------------------
 #
-# override_whitelisted_methods = {
-# 	"frappe.desk.doctype.event.event.get_events": "crystal_alluminium_works.event.get_events"
-# }
+# Redirect the Process Statement Of Accounts "Download"/"Send Emails" buttons
+# through our ageing patch (see process_statement_of_accounts_override.py) so
+# statements get a genuine not-yet-due "current" bucket.
+override_whitelisted_methods = {
+	"erpnext.accounts.doctype.process_statement_of_accounts.process_statement_of_accounts.download_statements": "crystal_alluminium_works.process_statement_of_accounts_override.download_statements",
+	"erpnext.accounts.doctype.process_statement_of_accounts.process_statement_of_accounts.send_emails": "crystal_alluminium_works.process_statement_of_accounts_override.send_emails",
+}
 #
 # each overriding function accepts a `data` argument;
 # generated from the base implementation of the doctype dashboard,

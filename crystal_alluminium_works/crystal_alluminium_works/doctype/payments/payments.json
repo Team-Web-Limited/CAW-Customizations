@@ -8,6 +8,7 @@
  "engine": "InnoDB",
  "field_order": [
   "customer",
+  "payment_type",
   "job_card",
   "amount",
   "date",
@@ -23,6 +24,15 @@
    "in_list_view": 1,
    "label": "Customer",
    "options": "Customer",
+   "reqd": 1
+  },
+  {
+   "default": "General Payment",
+   "fieldname": "payment_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Payment Type",
+   "options": "General Payment\nRefund",
    "reqd": 1
   },
   {

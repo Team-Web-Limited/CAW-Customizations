@@ -1717,7 +1717,7 @@ def get_job_card_detail(name):
         filters={"job_card": job_card.name},
         or_filters=[
             ["amount_paid", ">", 0],
-            ["change_type", "in", ["Quotation Amended", "Invoice Cancelled", "Invoice Amended"]],
+            ["change_type", "in", ["Quotation Amended", "Invoice Cancelled", "Invoice Amended", "Refunded", "Cancelled"]],
         ],
         fields=[
             "name",
@@ -1851,27 +1851,30 @@ def get_job_card_detail(name):
                         "quotation_item_name": item.item_name or item.item_code,
                         "item_code": itm,
                         "qty": sft_release_qty,
+                        "uom": "SFT",
                         "sheets_consumed": sheets_str,
-                        "status": "Deducted" if repack_entry_name else "Saved"
+                        "status": "Deducted" if repack_entry_name else "Saved",
+                        "category": "Glass",
                     })
         except Exception:
             pass
 
-    # 2. Fetch "Deducted" sheets from Stock Entries
-    # Build a lookup: glass item_code → quotation item_code/name via CAW Job Card Release
-    glass_releases = frappe.get_all(
+    # 2. Fetch "Deducted" items from Stock Entries, across every product category
+    # Build a lookup: deducted item_code → quotation item_code/name/category via CAW Job Card Release
+    job_card_releases = frappe.get_all(
         "CAW Job Card Release",
-        filters={"job_card": job_card.name, "category": "Glass"},
-        fields=["item_code", "item_name"],
+        filters={"job_card": job_card.name},
+        fields=["item_code", "item_name", "category"],
         limit_page_length=0,
     )
     # Map deducted item_code → quotation item (first match wins)
-    glass_release_map = {}
-    for gr in glass_releases:
-        if gr.item_code and gr.item_code not in glass_release_map:
-            glass_release_map[gr.item_code] = {
-                "quotation_item_code": gr.item_code,
-                "quotation_item_name": gr.item_name or gr.item_code,
+    release_map = {}
+    for rel_row in job_card_releases:
+        if rel_row.item_code and rel_row.item_code not in release_map:
+            release_map[rel_row.item_code] = {
+                "quotation_item_code": rel_row.item_code,
+                "quotation_item_name": rel_row.item_name or rel_row.item_code,
+                "category": rel_row.category or "",
             }
     entries = frappe.get_all(
         "Stock Entry",
@@ -1886,7 +1889,7 @@ def get_job_card_detail(name):
         st_items = frappe.get_all(
             "Stock Entry Detail",
             filters={"parent": entry.name},
-            fields=["item_code", "qty", "description"]
+            fields=["item_code", "qty", "uom", "description"]
         )
         for item in st_items:
             sheets_str = ""
@@ -1903,8 +1906,8 @@ def get_job_card_detail(name):
                         sheets_str = raw_json
                 except Exception:
                     sheets_str = raw_json
-            
-            rel = glass_release_map.get(item.item_code, {})
+
+            rel = release_map.get(item.item_code, {})
             stock_deductions.append({
                 "name": entry.name,
                 "posting_date": str(entry.posting_date),
@@ -1914,8 +1917,10 @@ def get_job_card_detail(name):
                 "quotation_item_name": rel.get("quotation_item_name", ""),
                 "item_code": item.item_code,
                 "qty": frappe.utils.flt(item.qty),
+                "uom": item.uom or "",
                 "sheets_consumed": sheets_str,
-                "status": "Deducted"
+                "status": "Deducted",
+                "category": rel.get("category", ""),
             })
 
     return {
@@ -1967,6 +1972,60 @@ def get_job_card_detail(name):
         "quotation_amendment_pending": _job_card_quotation_amendment_pending(job_card),
         "invoice_amendment_pending": _job_card_invoice_amendment_pending(job_card),
     }
+
+
+@frappe.whitelist()
+def get_job_card_cancel_eligibility(job_card_name):
+    if not job_card_name or not frappe.db.exists("CAW Job Card", job_card_name):
+        return {"can_cancel": False, "reasons": ["Job Card not found."], "needs_refund": False, "refund_amount": 0}
+
+    job_card = frappe.get_doc("CAW Job Card", job_card_name)
+    reasons = []
+
+    if job_card.status == "Cancelled":
+        reasons.append("This Job Card is already cancelled.")
+
+    if job_card.quotation:
+        quotation_chain = _resolve_quotation_chain(job_card.quotation) or [job_card.quotation]
+        if frappe.db.exists(
+            "Sales Invoice", {"custom_source_quotation": ["in", quotation_chain], "docstatus": 1}
+        ):
+            reasons.append("A Sales Invoice has already been raised from this Job Card.")
+
+    if frappe.db.exists("CAW Job Card Release", {"job_card": job_card.name}):
+        reasons.append("Items have already been released against this Job Card.")
+
+    if frappe.db.exists(
+        "Stock Entry",
+        [["remarks", "like", f"%for CAW Job Card: {job_card.name}%"], ["docstatus", "=", 1]],
+    ):
+        reasons.append("Stock has already been deducted for this Job Card.")
+
+    reasons = list(dict.fromkeys(reasons))
+    refund_amount = _round_job_card_amount(job_card.payment_amount)
+    needs_refund = refund_amount > 0
+    return {
+        "can_cancel": not reasons and not needs_refund,
+        "reasons": reasons,
+        "needs_refund": needs_refund,
+        "refund_amount": refund_amount,
+    }
+
+
+@frappe.whitelist()
+def cancel_job_card(job_card_name):
+    eligibility = get_job_card_cancel_eligibility(job_card_name)
+    if eligibility["reasons"]:
+        frappe.throw("Cannot cancel this Job Card: " + " ".join(eligibility["reasons"]))
+    if eligibility["needs_refund"]:
+        frappe.throw("Refund the recorded payment before cancelling this Job Card.")
+
+    job_card = frappe.get_doc("CAW Job Card", job_card_name)
+    job_card.status = "Cancelled"
+    job_card.flags.ignore_permissions = True
+    job_card.save(ignore_permissions=True)
+    _write_job_card_amendment_event(job_card, "Cancelled")
+    return job_card.name
 
 
 @frappe.whitelist()
@@ -5089,7 +5148,7 @@ def _normalize_payment_allocations(allocations, customer, payment_amount):
 
 
 @frappe.whitelist()
-def record_customer_payment(customer, amount, date, payment_method, deposit_to, reference=None, job_card=None, allocations=None):
+def record_customer_payment(customer, amount, date, payment_method, deposit_to, reference=None, job_card=None, allocations=None, payment_type="General Payment"):
     if not customer:
         frappe.throw("Customer is required.")
     if not amount or flt(amount) <= 0:
@@ -5101,6 +5160,7 @@ def record_customer_payment(customer, amount, date, payment_method, deposit_to, 
     if not deposit_to:
         frappe.throw("Deposit To account is required.")
 
+    payment_type = payment_type or "General Payment"
     cleaned_allocations = _normalize_payment_allocations(allocations, customer, amount)
 
     # Backward-compatible single job_card argument: treat it as one full allocation.
@@ -5109,6 +5169,15 @@ def record_customer_payment(customer, amount, date, payment_method, deposit_to, 
             [{"job_card": job_card, "amount": amount}], customer, amount
         )
 
+    if payment_type == "Refund":
+        for row in cleaned_allocations:
+            paid_so_far = flt(frappe.db.get_value("CAW Job Card", row["job_card"], "payment_amount") or 0)
+            if row["amount"] - paid_so_far > 0.0001:
+                frappe.throw(
+                    f"Cannot refund {frappe.utils.fmt_money(row['amount'])} against Job Card "
+                    f"{row['job_card']} — only {frappe.utils.fmt_money(paid_so_far)} has been paid."
+                )
+
     mode_of_payment_type = frappe.db.get_value("Mode of Payment", payment_method, "type")
     if mode_of_payment_type == "Bank" and not (reference or "").strip():
         frappe.throw("Reference is required for Bank payment methods.")
@@ -5116,6 +5185,7 @@ def record_customer_payment(customer, amount, date, payment_method, deposit_to, 
     doc = frappe.get_doc({
         "doctype": "Payments",
         "customer": customer,
+        "payment_type": payment_type,
         # Mirror a single allocation into the legacy field so the Payments list view / search
         # still surfaces the job card; splits leave it blank (the allocations table is truth).
         "job_card": cleaned_allocations[0]["job_card"] if len(cleaned_allocations) == 1 else None,
@@ -5128,12 +5198,31 @@ def record_customer_payment(customer, amount, date, payment_method, deposit_to, 
     })
     doc.insert(ignore_permissions=True)
 
-    # Invoice customers' real outstanding balance lives on the job card, kept in sync from
-    # Payments — this is the only place that updates for them now that invoices don't.
-    for row in cleaned_allocations:
-        _sync_job_card_balance_from_payments(row["job_card"])
+    if payment_type == "Refund":
+        # Refunds adjust the Job Card's paid/balance amounts directly for every customer
+        # type — _sync_job_card_balance_from_payments is a no-op for Cash Customers, which
+        # would silently swallow a cash-customer refund.
+        for row in cleaned_allocations:
+            _apply_job_card_refund(row["job_card"], row["amount"], doc.name)
+    else:
+        # Invoice customers' real outstanding balance lives on the job card, kept in sync from
+        # Payments — this is the only place that updates for them now that invoices don't.
+        for row in cleaned_allocations:
+            _sync_job_card_balance_from_payments(row["job_card"])
 
     return doc.name
+
+
+def _apply_job_card_refund(job_card_name, amount, payment_name):
+    job_card = frappe.get_doc("CAW Job Card", job_card_name)
+    new_payment = _round_job_card_amount(max(flt(job_card.payment_amount) - flt(amount), 0))
+    job_card.payment_amount = new_payment
+    job_card.balance_amount = _round_job_card_amount(max(flt(job_card.quotation_amount) - new_payment, 0))
+    job_card.flags.ignore_permissions = True
+    job_card.save(ignore_permissions=True)
+    _write_job_card_amendment_event(
+        job_card, "Refunded", amount_paid=-flt(amount), note=f"Refund via Payments {payment_name}"
+    )
 
 
 @frappe.whitelist()
