@@ -2560,7 +2560,7 @@ def make_sales_invoice_from_job_card(job_card_name):
 
     # Generic per-item release log across every category — the invoice has been created
     # and submitted successfully by this point.
-    _record_job_card_item_releases(job_card, paid_invoice, rows_by_name, invoice_releases, is_partial=False)
+    _record_job_card_item_releases(job_card, paid_invoice, rows_by_name, invoice_releases, is_partial=False, quotation_items=quotation.items)
 
     return paid_invoice.name
 
@@ -2623,13 +2623,23 @@ def _record_ceiling_releases(job_card, invoice, rows_by_name, released_qtys):
 
 
 
-def _record_job_card_item_releases(job_card, invoice, rows_by_name, released_qtys, is_partial):
+def _record_job_card_item_releases(job_card, invoice, rows_by_name, released_qtys, is_partial, quotation_items=None):
     """Log one CAW Job Card Release row per item released on this visit, across every
     product category (not just Ceiling) — only called once the invoice has actually been
     created and submitted, so a release is only ever logged on successful invoice generation.
 
     released_qtys: {quotation_item_name: qty_released_in_native_unit} for exactly what this
-    invoice releases this visit (not the cumulative total)."""
+    invoice releases this visit (not the cumulative total).
+
+    quotation_items: full unfiltered quotation.items (including auto-generated processing
+    rows), used to fold each material row's Polishing/Drilling/Sandblasting/Notching charges
+    into its release amount so the logged total reconciles with what the invoice actually
+    bills for that row."""
+    processing_by_parent_idx = {}
+    for r in (quotation_items or []):
+        if getattr(r, "custom_auto_generated", 0):
+            processing_by_parent_idx.setdefault(r.custom_parent_row_idx, []).append(r)
+
     visual_vat = _invoice_uses_visual_vat(invoice)
     lamination_company = None
     lamination_warehouse = None
@@ -2658,7 +2668,8 @@ def _record_job_card_item_releases(job_card, invoice, rows_by_name, released_qty
             continue
         native_full = _get_partial_row_native_full(row)
         ratio = min(flt(qty) / native_full, 1.0) if native_full else 0
-        row_amount = flt(row.amount) * ratio
+        processing_amount = sum(flt(p.amount) for p in processing_by_parent_idx.get(row.idx, []))
+        row_amount = (flt(row.amount) + processing_amount) * ratio
         amount = _round_job_card_amount(row_amount * (1 + VAT_RATE)) if visual_vat else _round_job_card_amount(row_amount)
 
         import json
@@ -2831,7 +2842,7 @@ def make_partial_sales_invoice_from_job_card(job_card_name, releases=None):
     # _sync_job_card_balance_from_payments). The release guard above already read
     # job_card.balance_amount before any of this ran, so it reflects real money, not what's
     # being invoiced this visit.
-    _record_job_card_item_releases(job_card, paid_invoice, rows_by_name, capped, is_partial=True)
+    _record_job_card_item_releases(job_card, paid_invoice, rows_by_name, capped, is_partial=True, quotation_items=quotation.items)
 
     return paid_invoice.name
 
