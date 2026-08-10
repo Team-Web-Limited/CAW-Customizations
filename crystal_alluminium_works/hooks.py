@@ -84,7 +84,10 @@ doctype_js = {
 	"Purchase Invoice" : "public/js/procurement_sheet_items.js",
 	# FIFO cost basis of the USD bank accounts, shown on the entry that moved
 	# the currency rather than only in a report.
-	"Payment Entry" : "public/js/payment_entry_forex_fifo.js"
+	"Payment Entry" : "public/js/payment_entry_forex_fifo.js",
+	# Crystal Statement of Accounts print format is portrait; default the
+	# Orientation field to match instead of erpnext's unset (Landscape) default.
+	"Process Statement Of Accounts" : "public/js/process_statement_of_accounts.js"
 }
 # doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}

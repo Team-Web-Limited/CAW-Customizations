@@ -281,26 +281,35 @@ def _load_psoa():
 # here rather than depend on someone remembering to pick it in the UI.
 CRYSTAL_STATEMENT_PRINT_FORMAT = "Crystal Statement of Accounts"
 
+# The statement layout is sized for a portrait page. erpnext's Orientation field has no
+# default and frappe fills an empty Select with its first option ("Landscape"), so any
+# document saved before the client script landed - and anything created over the API or
+# by the statement scheduler - still carries Landscape. Force it alongside the format.
+CRYSTAL_STATEMENT_ORIENTATION = "Portrait"
 
-def _ensure_print_format(document_name):
-	if (
-		frappe.db.get_value("Process Statement Of Accounts", document_name, "print_format")
-		!= CRYSTAL_STATEMENT_PRINT_FORMAT
-	):
-		frappe.db.set_value(
-			"Process Statement Of Accounts", document_name, "print_format", CRYSTAL_STATEMENT_PRINT_FORMAT
-		)
+
+def _ensure_print_settings(document_name):
+	updates = {
+		"print_format": CRYSTAL_STATEMENT_PRINT_FORMAT,
+		"orientation": CRYSTAL_STATEMENT_ORIENTATION,
+	}
+	current = frappe.db.get_value(
+		"Process Statement Of Accounts", document_name, list(updates), as_dict=True
+	)
+	stale = {field: value for field, value in updates.items() if current.get(field) != value}
+	if stale:
+		frappe.db.set_value("Process Statement Of Accounts", document_name, stale)
 
 
 @frappe.whitelist()
 def download_statements(document_name):
-	_ensure_print_format(document_name)
+	_ensure_print_settings(document_name)
 	psoa = _load_psoa()
 	return psoa.download_statements(document_name)
 
 
 @frappe.whitelist()
 def send_emails(document_name, from_scheduler=False, posting_date=None):
-	_ensure_print_format(document_name)
+	_ensure_print_settings(document_name)
 	psoa = _load_psoa()
 	return psoa.send_emails(document_name, from_scheduler=from_scheduler, posting_date=posting_date)
