@@ -59,6 +59,11 @@ ALUMINIUM_BUILDER_PRICE_LIST_MAP = {
 STANDARD_GLASS_INTERVAL_SET = "Standard Glass"
 TOUGHENED_GLASS_INTERVAL_SET = "Toughened Glass"
 VAT_RATE = 0.16
+# Real tax template applied to every Sales Invoice created going forward (see
+# _apply_vat_template). Item rates are ex-VAT, so this grosses grand_total up to what
+# the Job Card and Payments already track, and books the 16% to VAT - CA instead of
+# leaving it as the purely visual print-format markup older invoices rely on.
+SALES_VAT_TEMPLATE = "Kenya Tax - CAW"
 ALUMINIUM_PRICE_FACTOR = 1.07
 SHARED_GLASS_SHEET_CONFIG_TYPE = "Ordinary"
 JOB_CARD_CURRENCY_PRECISION = 2
@@ -768,6 +773,19 @@ def _is_glass_service_item(item_name):
 
 def _invoice_uses_visual_vat(doc):
     return flt(getattr(doc, "total_taxes_and_charges", 0) or 0) == 0
+
+
+def _apply_vat_template(invoice):
+    """Attach the real Kenya VAT template to a new Sales Invoice before insert(), so its
+    own validate() calculates and books the 16% instead of it staying a print-format-only
+    markup. Every other place that treats total_taxes_and_charges == 0 as "gross this up
+    visually" (_invoice_uses_visual_vat, get_customer_outstanding, the PSOA statement)
+    already falls back to the document's real total once this is set — no other code
+    needs to change for a newly-created invoice to read correctly everywhere."""
+    from erpnext.controllers.accounts_controller import get_taxes_and_charges
+
+    invoice.taxes_and_charges = SALES_VAT_TEMPLATE
+    invoice.set("taxes", get_taxes_and_charges("Sales Taxes and Charges Template", SALES_VAT_TEMPLATE))
 
 
 def _get_invoice_display_amount(amount, doc):
@@ -2460,6 +2478,7 @@ def make_sales_invoice_from_quotation(source_name, releases=None):
     invoice.set_missing_item_details(for_validate=True)
     from crystal_alluminium_works.sales_invoice_handler import _reset_auto_generated_ceiling_component_pricing
     _reset_auto_generated_ceiling_component_pricing(invoice)
+    _apply_vat_template(invoice)
     invoice.flags.ignore_permissions = True
     invoice.flags.ignore_mandatory = True
     invoice.insert()
@@ -2953,6 +2972,7 @@ def make_sales_invoice_from_sales_order(source_name):
     invoice.set_missing_item_details(for_validate=True)
     from crystal_alluminium_works.sales_invoice_handler import _reset_auto_generated_ceiling_component_pricing
     _reset_auto_generated_ceiling_component_pricing(invoice)
+    _apply_vat_template(invoice)
     invoice.flags.ignore_permissions = True
     invoice.flags.ignore_mandatory = True
     invoice.insert()

@@ -15,6 +15,7 @@ fixtures = [
 	{"dt": "Desktop Icon", "filters": [["name", "in", ["Crystal Alluminium Works"]]]},
 	{"dt": "Custom Field", "filters": [["module", "in", ["Crystal Alluminium Works"]]]},
 	{"dt": "Letter Head", "filters": [["name", "in", ["Company Letterhead"]]]},
+	{"dt": "Sales Taxes and Charges Template", "filters": [["name", "in", ["Kenya Tax - CAW"]]]},
 	{
 		"dt": "Print Format",
 		"filters": [
@@ -80,7 +81,10 @@ doctype_js = {
 	"Material Request" : "public/js/procurement_sheet_items.js",
 	"Purchase Order" : "public/js/procurement_sheet_items.js",
 	"Purchase Receipt" : "public/js/procurement_sheet_items.js",
-	"Purchase Invoice" : "public/js/procurement_sheet_items.js"
+	"Purchase Invoice" : "public/js/procurement_sheet_items.js",
+	# FIFO cost basis of the USD bank accounts, shown on the entry that moved
+	# the currency rather than only in a report.
+	"Payment Entry" : "public/js/payment_entry_forex_fifo.js"
 }
 # doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}

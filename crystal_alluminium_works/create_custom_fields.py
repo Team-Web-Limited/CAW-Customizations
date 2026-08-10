@@ -706,6 +706,36 @@ def add_custom_fields():
                 "module": "Crystal Alluminium Works",
             },
         ],
+        # Read-only view of what this entry did to the foreign-currency lot
+        # ledger. Nothing is stored on the document — the panel calls
+        # forex_fifo.get_payment_entry_detail(), which replays the whole
+        # history — so the figures cannot go stale when an earlier, backdated
+        # entry changes which lots this one consumed.
+        "Payment Entry": [
+            {
+                "fieldname": "custom_forex_fifo_section",
+                "label": "Foreign Currency FIFO",
+                "fieldtype": "Section Break",
+                "insert_after": "remarks",
+                "collapsible": 1,
+                # Irrelevant noise on the KES-only entries that are the bulk of
+                # the day's work; the panel itself stays empty unless the entry
+                # actually touched a tracked account.
+                "depends_on": (
+                    "eval:doc.docstatus===1 && ("
+                    "doc.paid_from_account_currency!==frappe.boot.sysdefaults.currency"
+                    " || doc.paid_to_account_currency!==frappe.boot.sysdefaults.currency)"
+                ),
+                "module": "Crystal Alluminium Works",
+            },
+            {
+                "fieldname": "custom_forex_fifo_html",
+                "label": "Forex FIFO",
+                "fieldtype": "HTML",
+                "insert_after": "custom_forex_fifo_section",
+                "module": "Crystal Alluminium Works",
+            },
+        ],
     }
 
     create_custom_fields(custom_fields)
