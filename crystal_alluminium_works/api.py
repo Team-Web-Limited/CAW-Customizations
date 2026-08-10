@@ -4,6 +4,7 @@ import os
 from frappe.model.rename_doc import rename_doc
 from frappe.utils.file_manager import save_file
 from frappe.utils import flt
+from erpnext.accounts.party import get_party_account
 from crystal_alluminium_works.pricing_engine import (
     CEILING_COMPONENTS,
     DEFAULT_GLASS_HOLE_TYPE,
@@ -269,81 +270,6 @@ def _write_job_card_amendment_event(job_card, change_type, amount_paid=0, note=N
     history.insert(ignore_permissions=True)
 
 
-def _get_job_card_mode_of_payment(job_card, company=None):
-    candidates = []
-    payment_option = (job_card.payment_option or "").strip()
-    if payment_option:
-        # payment_option now holds the actual Mode of Payment name, so it matches directly.
-        candidates.append(payment_option)
-        if payment_option.lower() == "bank":  # legacy coarse value
-            candidates.append("Bank Transfer i.e RTGS, TT")
-
-    payment_mode = (job_card.payment_mode or "").strip().lower()
-    candidates.append("Cash" if payment_mode == "cash customer" else "Cheque")
-
-    existing_candidate = None
-    for candidate in dict.fromkeys(candidates):
-        if not candidate or not frappe.db.exists("Mode of Payment", candidate):
-            continue
-
-        if not existing_candidate:
-            existing_candidate = candidate
-
-        if company and frappe.db.get_value(
-            "Mode of Payment Account",
-            {"parent": candidate, "company": company},
-            "default_account",
-        ):
-            return candidate
-
-    if existing_candidate:
-        return existing_candidate
-
-    # No Mode of Payment is literally named "Cash"/"Bank"/etc in this company's setup
-    # (e.g. only "Petty Cash" exists). Fall back to any enabled Mode of Payment whose
-    # own `type` matches the job card's payment option/mode.
-    payment_option_lower = payment_option.lower()
-    if payment_option_lower == "paybill":
-        fallback_type = "Phone"
-    elif payment_option_lower == "bank" or payment_mode != "cash customer":
-        fallback_type = "Bank"
-    else:
-        fallback_type = "Cash"
-
-    return frappe.db.get_value("Mode of Payment", {"type": fallback_type, "enabled": 1}, "name", order_by="name asc")
-
-
-def _get_job_card_payment_account(company, job_card, mode_of_payment=None):
-    if mode_of_payment:
-        default_account = frappe.db.get_value(
-            "Mode of Payment Account",
-            {"parent": mode_of_payment, "company": company},
-            "default_account",
-        )
-        if default_account:
-            return default_account
-
-    payment_option = (job_card.payment_option or "").strip().lower()
-    preferred_types = ["Cash"] if payment_option == "cash" else ["Bank"]
-    fallback_types = preferred_types + [account_type for account_type in ["Bank", "Cash"] if account_type not in preferred_types]
-
-    for account_type in fallback_types:
-        account = frappe.db.get_value(
-            "Account",
-            {
-                "company": company,
-                "is_group": 0,
-                "account_type": account_type,
-            },
-            "name",
-            order_by="name asc",
-        )
-        if account:
-            return account
-
-    frappe.throw(f"Please configure a Cash or Bank account for company {company} before creating paid Sales Invoices.")
-
-
 @frappe.whitelist()
 def get_mode_of_payment_account_info(payment_method, company=None):
     if not payment_method or not frappe.db.exists("Mode of Payment", payment_method):
@@ -369,28 +295,6 @@ def get_mode_of_payment_account_info(payment_method, company=None):
     }
 
 
-def _apply_job_card_pos_settlement(invoice, job_card):
-    """Settle a fully-paid cash Job Card's draft invoice by embedding the payment
-    directly on the invoice itself (POS-style), instead of creating a separate
-    Payment Entry against it. The cash was already captured against the Job Card
-    via the Payments doctype when it was received — no further payment should be
-    recorded against the invoice."""
-    outstanding_amount = flt(invoice.outstanding_amount or invoice.grand_total or 0, invoice.precision("outstanding_amount"))
-    if outstanding_amount <= 0:
-        return
-
-    mode_of_payment = _get_job_card_mode_of_payment(job_card, invoice.company)
-    payment_account = _get_job_card_payment_account(invoice.company, job_card, mode_of_payment)
-
-    invoice.is_pos = 1
-    invoice.set("payments", [])
-    invoice.append("payments", {
-        "mode_of_payment": mode_of_payment,
-        "account": payment_account,
-        "amount": outstanding_amount,
-    })
-
-
 def _force_invoice_paid_display(invoice):
     """Force a partial/full job-card invoice's paid/outstanding/status fields to read
     as fully settled, without creating a Payment Entry or POS payment row — so this
@@ -411,31 +315,33 @@ def _force_invoice_paid_display(invoice):
 
 
 def _submit_and_settle_job_card_sales_invoice(invoice, job_card, preserve_payment=False, skip_payment_settlement=False):
-    """preserve_payment=True is for amended invoices: the `payments` row (mode of
-    payment + account) was already copied verbatim from the cancelled original via
-    frappe.copy_doc, and amendment is administrative-only, so it must NOT be
-    re-derived from job_card.payment_option here — that field is a coarse category
-    (Cash/Paybill/Cheque/Bank) and can silently swap out the specific Mode of
-    Payment that was actually used (e.g. a named bank-transfer mode), which then
-    fails ERPNext's own account lookup if that specific mode has no Mode of
-    Payment Account configured.
+    """Every payment against this Job Card — deposit at creation, top-up on edit, or via
+    the Payments page — already posts its own real, submitted Payment Entry at the
+    moment it's collected (see record_customer_payment / _post_customer_payment_entry).
+    So this invoice must never embed a POS payment or post any GL beyond its own
+    Sales/Debtors/VAT lines; doing so would double-book cash that already hit Cash/Bank
+    at collection time. Every fresh job-card invoice, full or partial, is instead
+    cosmetically forced to read as settled via _force_invoice_paid_display once
+    submitted — a display-only field write with zero further GL impact. The Job Card,
+    not this invoice, is this app's real record of what's been collected.
 
-    skip_payment_settlement=True is for partial invoices: the invoice itself is never
-    POS-settled (no cash/bank payment embedded, no payment GL posted) — the Job Card
-    is the single source of truth for what's actually been paid. The invoice's own
-    paid/outstanding fields are then force-displayed as fully settled via
-    _force_invoice_paid_display so it doesn't read as an unpaid receivable; that's a
-    display-only field write, not a real payment, so it adds no GL entries."""
+    preserve_payment=True is for amended invoices: whatever `payments` row (mode of
+    payment + account) frappe.copy_doc carried over verbatim from the cancelled
+    original — which, for an old pre-this-fix invoice, may be a real POS-embedded
+    payment — is left untouched and simply resubmitted; it must NOT be re-derived from
+    job_card.payment_option here, since that field is a coarse category (Cash/Paybill/
+    Cheque/Bank) that can silently swap out the specific Mode of Payment actually used.
+
+    skip_payment_settlement is accepted for call-site compatibility but no longer
+    changes behaviour — every non-amendment path now force-displays paid regardless."""
     invoice.update_stock = 0
     invoice.set_posting_time = 1
     invoice.flags.ignore_permissions = True
     invoice.flags.ignore_mandatory = True
 
     if invoice.docstatus == 0:
-        if not preserve_payment and not skip_payment_settlement:
-            _apply_job_card_pos_settlement(invoice, job_card)
         invoice.submit()
-        if skip_payment_settlement:
+        if not preserve_payment:
             _force_invoice_paid_display(invoice)
 
     invoice.reload()
@@ -5241,6 +5147,49 @@ def _normalize_payment_allocations(allocations, customer, payment_amount):
     return cleaned
 
 
+def _post_customer_payment_entry(customer, amount, date, payment_method, deposit_to, reference, is_refund, payments_doc_name):
+    """Submit a real Payment Entry mirroring a Payments row, so the receipt/refund this
+    app already captures in full detail (method, account, reference, date) actually
+    posts to Cash/Bank and Debtors instead of stopping at the Payments doctype, which
+    is non-submittable and has zero GL impact on its own.
+
+    No allocation against any invoice is attempted — the Job Card, not invoice-level
+    allocation, is this app's source of truth for what a customer has paid (see
+    process_statement_of_accounts_override.py), so every Payment Entry here is left as
+    an unallocated advance on the customer. Debtors nets correctly in aggregate because
+    what's invoiced and what's collected both flow through the same customer; only
+    ERPNext's own stock Accounts Receivable/Advance reports will still show these as
+    outstanding advances even once the matching Job Card reads fully paid."""
+    company = _get_default_company()
+    if not company:
+        frappe.throw("No default company is configured; cannot post a Payment Entry.")
+
+    party_account = get_party_account("Customer", customer, company)
+
+    pe = frappe.get_doc({
+        "doctype": "Payment Entry",
+        "payment_type": "Pay" if is_refund else "Receive",
+        "party_type": "Customer",
+        "party": customer,
+        "company": company,
+        "posting_date": date,
+        "mode_of_payment": payment_method,
+        "reference_no": (reference or "").strip() or payments_doc_name,
+        "reference_date": date,
+        "paid_amount": flt(amount),
+        "received_amount": flt(amount),
+        # Receive: cash/bank in, Debtors credited. Pay (refund): cash/bank out, Debtors debited.
+        "paid_from": deposit_to if is_refund else party_account,
+        "paid_to": party_account if is_refund else deposit_to,
+        "reference_doctype": "Payments",
+        "reference_name": payments_doc_name,
+    })
+    pe.flags.ignore_permissions = True
+    pe.insert(ignore_permissions=True)
+    pe.submit()
+    return pe.name
+
+
 @frappe.whitelist()
 def record_customer_payment(customer, amount, date, payment_method, deposit_to, reference=None, job_card=None, allocations=None, payment_type="General Payment"):
     if not customer:
@@ -5291,6 +5240,12 @@ def record_customer_payment(customer, amount, date, payment_method, deposit_to, 
         "allocations": cleaned_allocations,
     })
     doc.insert(ignore_permissions=True)
+
+    payment_entry_name = _post_customer_payment_entry(
+        customer, amount, date, payment_method, deposit_to, reference,
+        is_refund=(payment_type == "Refund"), payments_doc_name=doc.name,
+    )
+    frappe.db.set_value("Payments", doc.name, "payment_entry", payment_entry_name, update_modified=False)
 
     if payment_type == "Refund":
         # Refunds adjust the Job Card's paid/balance amounts directly for every customer
@@ -5423,7 +5378,16 @@ def on_payments_trash(doc, method=None):
     """Doctype hook (see hooks.py doc_events): when a Payments document is deleted via any
     path (desk Form, bulk delete, etc.), resync every Invoice Customer job card it was
     funding — otherwise that job card would be left understating its real balance until
-    something else happened to touch it."""
+    something else happened to touch it. Also cancel the Payment Entry this receipt/
+    refund posted, so deleting the Payments row doesn't leave an orphaned GL entry
+    behind — Payments is the record a user deletes; Payment Entry is the ledger truth
+    that must go with it."""
+    if doc.payment_entry and frappe.db.exists("Payment Entry", doc.payment_entry):
+        pe = frappe.get_doc("Payment Entry", doc.payment_entry)
+        if pe.docstatus == 1:
+            pe.flags.ignore_permissions = True
+            pe.cancel()
+
     job_cards = {row.job_card for row in (doc.allocations or []) if row.job_card}
     if doc.job_card:
         job_cards.add(doc.job_card)
