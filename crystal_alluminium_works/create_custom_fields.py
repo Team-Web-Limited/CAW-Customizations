@@ -705,6 +705,28 @@ def add_custom_fields():
                 "no_copy": 1,
                 "module": "Crystal Alluminium Works",
             },
+            {
+                # The walk-in's own phone number, captured directly in Quotation
+                # Builder's cash-mode step. All cash quotations share the same
+                # singleton "Cash Customer" party (see get_or_create_shared_cash_customer
+                # in api.py), so the phone number is what actually distinguishes one
+                # walk-in's transaction from another's.
+                "fieldname": "custom_customer_phone",
+                "label": "Customer Phone Number",
+                "fieldtype": "Data",
+                "options": "Phone",
+                "insert_after": "party_name",
+                "no_copy": 1,
+                "module": "Crystal Alluminium Works",
+            },
+            {
+                "fieldname": "custom_customer_pin",
+                "label": "Customer KRA PIN",
+                "fieldtype": "Data",
+                "insert_after": "custom_customer_phone",
+                "no_copy": 1,
+                "module": "Crystal Alluminium Works",
+            },
         ],
         # Read-only view of what this entry did to the foreign-currency lot
         # ledger. Nothing is stored on the document — the panel calls

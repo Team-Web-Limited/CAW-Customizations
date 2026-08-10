@@ -1116,8 +1116,21 @@ async function apply_job_card_customer_defaults(dialog) {
 	if (!customer) return;
 	let customer_defaults = await get_job_card_customer_defaults(customer);
 	await dialog.set_value('customer_name', customer_defaults.customer_name || '');
-	await dialog.set_value('customer_pin', customer_defaults.customer_pin || '');
-	await dialog.set_value('phone_number', customer_defaults.phone_number || '');
+
+	let phone = customer_defaults.phone_number || '';
+	let pin = customer_defaults.customer_pin || '';
+	// Cash quotations all share the same walk-in Customer record (so the Customer
+	// doctype itself carries no phone/PIN) — as long as the Customer field still
+	// points at the customer the quotation was created for, prefer the specific
+	// phone/PIN captured on that quotation instead of the (blank) Customer record.
+	// This handler is also what fires when the dialog sets its initial default
+	// value, so without this guard it silently wipes out the quotation's values.
+	if (customer === dialog._quotation_customer) {
+		phone = dialog._quotation_customer_phone || phone;
+		pin = dialog._quotation_customer_pin || pin;
+	}
+	await dialog.set_value('customer_pin', pin);
+	await dialog.set_value('phone_number', phone);
 }
 
 function queue_job_card_customer_defaults(dialog) {
@@ -1130,6 +1143,15 @@ function queue_job_card_customer_defaults(dialog) {
 async function open_job_card_modal(page, doc) {
 	let quotation_customer = get_quotation_customer_reference(doc);
 	let defaults = await get_job_card_customer_defaults(quotation_customer);
+	// Cash quotations all share the same walk-in Customer record, so the Customer
+	// doctype itself carries no phone/PIN — prefer the specific values captured on
+	// this quotation (Quotation Builder's cash-mode step) when present.
+	if (doc.custom_customer_phone) {
+		defaults.phone_number = doc.custom_customer_phone;
+	}
+	if (doc.custom_customer_pin) {
+		defaults.customer_pin = doc.custom_customer_pin;
+	}
 	let existing_job_card = await get_existing_job_card_for_quotation(doc.name);
 	let quotation_total = get_manager_quotation_total(doc);
 	let payment_limit = get_job_card_outstanding_balance(existing_job_card, quotation_total);
@@ -1274,6 +1296,12 @@ async function open_job_card_modal(page, doc) {
 	});
 
 	d._payment_limit = payment_limit;
+	// See apply_job_card_customer_defaults: lets it tell "still the quotation's own
+	// customer" apart from "user picked a different customer", so it knows when to
+	// keep this quotation's captured phone/PIN instead of the customer record's.
+	d._quotation_customer = defaults.customer || quotation_customer;
+	d._quotation_customer_phone = doc.custom_customer_phone || '';
+	d._quotation_customer_pin = doc.custom_customer_pin || '';
 	d.show();
 	refresh_job_card_payment_options(d);
 	if (defaults.customer || quotation_customer) {
@@ -1318,6 +1346,8 @@ async function open_quotation_in_builder(doc) {
 
 		window.qb_state = {
 			customer: doc.party_name || doc.customer_name,
+			customer_phone: doc.custom_customer_phone || '',
+			customer_pin: doc.custom_customer_pin || '',
 			payment_mode: payment_mode,
 			items: [],
 			step: 2, // Go straight to items step

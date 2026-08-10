@@ -1206,6 +1206,10 @@ def get_quotations_page(search=None, status=None, customer=None, from_date=None,
                 ["Quotation", "party_name", "like", like],
                 ["Quotation", "customer_name", "like", like],
                 ["Quotation", "order_type", "like", like],
+                # Cash quotations all share the same party (Cash Customer), so
+                # phone number is what actually lets staff find a walk-in's past
+                # quotations again.
+                ["Quotation", "custom_customer_phone", "like", like],
             ]
 
     fields = [
@@ -1504,6 +1508,41 @@ def register_customer(
         "customer_name": doc.customer_name,
         "customer_billing_type": doc.custom_customer_billing_type,
     }
+
+
+SHARED_CASH_CUSTOMER_NAME = "Cash Customer"
+
+
+def get_or_create_shared_cash_customer():
+    """Return the single shared walk-in Cash Customer record, creating it on first use.
+
+    Quotation Builder's cash-mode flow no longer creates a new Customer per walk-in
+    sale — every cash quotation is billed against this one record, and the specific
+    customer's phone number / KRA PIN are captured on the Quotation itself instead
+    (see create_quotation_from_builder)."""
+    if frappe.db.exists("Customer", SHARED_CASH_CUSTOMER_NAME):
+        return frappe.get_doc("Customer", SHARED_CASH_CUSTOMER_NAME)
+
+    defaults = get_customer_registration_defaults()
+    doc = frappe.get_doc(
+        {
+            "doctype": "Customer",
+            "customer_name": SHARED_CASH_CUSTOMER_NAME,
+            "customer_type": "Individual",
+            "custom_customer_billing_type": "Cash Customer",
+            "customer_group": defaults.get("customer_group"),
+            "territory": defaults.get("territory"),
+        }
+    )
+    doc.flags.ignore_mandatory = True
+    doc.insert(ignore_permissions=True)
+    return doc
+
+
+@frappe.whitelist()
+def get_shared_cash_customer():
+    doc = get_or_create_shared_cash_customer()
+    return {"name": doc.name, "customer_name": doc.customer_name}
 
 
 @frappe.whitelist()
@@ -2053,6 +2092,9 @@ def create_quotation_from_builder(
     quotation_name=None,
     price_adjustment_type=None,
     price_adjustment_percent=None,
+    payment_mode=None,
+    customer_phone=None,
+    customer_pin=None,
 ):
     """
     Creates or updates a Draft Quotation from the Quotation Builder payload.
@@ -2067,11 +2109,27 @@ def create_quotation_from_builder(
     price_adjustment_type/percent record the Builder's global +/- % rate
     adjustment so re-opening the quotation via "Edit in Builder" restores
     the same mode and percentage instead of losing it.
+
+    payment_mode is the Builder's normalized 'cash' / 'invoice' selection.
+    For cash sales the customer picker is skipped entirely — every cash
+    quotation is billed against the single shared Cash Customer record, and
+    customer_phone (mandatory) / customer_pin (optional) are stamped on the
+    quotation itself so the specific walk-in can still be identified.
     """
     items = json.loads(items) if isinstance(items, str) else items
-    
+
     if not items:
         frappe.throw("Please add at least one item.")
+
+    is_cash = str(payment_mode or "").strip().lower() == "cash"
+    customer_phone = (customer_phone or "").strip()
+    customer_pin = (customer_pin or "").strip()
+    if is_cash:
+        if not customer_phone:
+            frappe.throw("Phone Number is required for Cash Customer quotations.")
+        # Resolve server-side rather than trusting the client's customer value —
+        # every cash quotation belongs to the one shared walk-in Customer record.
+        customer = get_or_create_shared_cash_customer().name
 
     if any(item.get("category") == "Aluminium" for item in items):
         _ensure_aluminium_color_storage()
@@ -2107,6 +2165,9 @@ def create_quotation_from_builder(
 
     quo.custom_price_adjustment_type = price_adjustment_type or ""
     quo.custom_price_adjustment_percent = frappe.utils.flt(price_adjustment_percent or 0)
+    if is_cash:
+        quo.custom_customer_phone = customer_phone
+        quo.custom_customer_pin = customer_pin
 
     for item in items:
         category = item.get("category", "")

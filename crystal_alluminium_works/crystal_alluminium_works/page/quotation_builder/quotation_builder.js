@@ -10,6 +10,8 @@ frappe.pages['quotation-builder'].on_page_load = function (wrapper) {
 	if (!window.qb_state) {
 		window.qb_state = {
 			customer: '',
+			customer_phone: '',
+			customer_pin: '',
 			payment_mode: 'invoice',
 			items: [],
 			step: 1,
@@ -53,6 +55,17 @@ const QB_SHEET_GLASS_TYPES = new Set(['Ordinary', 'Ready Laminated']);
 const QB_SHARED_GLASS_SHEET_CONFIG_KEY = 'Shared';
 const QB_CUSTOMER_PAYMENT_MODE_OPTIONS = 'Cash Customer\nInvoice Customer';
 const QB_DEFAULT_CUSTOMER_PAYMENT_MODE = 'invoice';
+// Every cash sale is billed against this one shared walk-in Customer record —
+// fetched (and created server-side on first use) once per page load, then cached.
+let qb_shared_cash_customer_promise = null;
+function get_shared_cash_customer() {
+	if (!qb_shared_cash_customer_promise) {
+		qb_shared_cash_customer_promise = frappe.call({
+			method: 'crystal_alluminium_works.api.get_shared_cash_customer'
+		}).then(r => r.message || {});
+	}
+	return qb_shared_cash_customer_promise;
+}
 const QB_VAT_RATE = 0.16;
 const QB_POLISH_TYPE_OPTIONS = '4-6\n8-10\n14-35';
 const QB_DEFAULT_POLISH_TYPE = '4-6';
@@ -920,14 +933,22 @@ function update_review_button_visibility(page) {
 }
 
 function update_customer_next_button_visibility(page, selected_customer = null) {
-	let customer = selected_customer;
-	if (customer === null && page.qb_customer_field) {
-		customer = page.qb_customer_field.get_value();
+	let is_cash = normalize_customer_payment_mode(window.qb_state && window.qb_state.payment_mode) === 'cash';
+	let ready;
+	if (is_cash) {
+		let phone = page.qb_customer_phone_field ? page.qb_customer_phone_field.get_value() : (window.qb_state && window.qb_state.customer_phone);
+		ready = !!phone;
+	} else {
+		let customer = selected_customer;
+		if (customer === null && page.qb_customer_field) {
+			customer = page.qb_customer_field.get_value();
+		}
+		if (customer === null) {
+			customer = window.qb_state && window.qb_state.customer;
+		}
+		ready = !!customer;
 	}
-	if (customer === null) {
-		customer = window.qb_state && window.qb_state.customer;
-	}
-	$(page.body).find('.qb-step-content[data-step="1"] .qb-next-1').toggle(!!customer);
+	$(page.body).find('.qb-step-content[data-step="1"] .qb-next-1').toggle(!!ready);
 }
 
 function set_customer_step_focus(page) {
@@ -1162,6 +1183,9 @@ function setup_customer_step(page) {
 	});
 	page.qb_payment_mode_field = payment_mode_field;
 
+	let $customer_link_wrap = $('<div></div>').appendTo($container);
+	let $cash_contact_wrap = $('<div></div>').appendTo($container);
+
 	let customer_field = frappe.ui.form.make_control({
 		df: {
 			fieldtype: 'Link',
@@ -1178,17 +1202,66 @@ function setup_customer_step(page) {
 				};
 			}
 		},
-		parent: $container,
+		parent: $customer_link_wrap,
 		render_input: true
 	});
 	customer_field.$input.css({ 'font-size': '15px', 'padding': '10px' });
 	page.qb_customer_field = customer_field;
 
-	// Restore previously selected customer
-	if (window.qb_state.customer) {
+	// Cash mode: no customer to pick — every walk-in sale shares the same Cash
+	// Customer record, distinguished only by the phone number captured here.
+	let customer_phone_field = frappe.ui.form.make_control({
+		df: {
+			fieldtype: 'Data',
+			options: 'Phone',
+			label: 'Phone Number',
+			fieldname: 'customer_phone',
+			reqd: 1,
+			placeholder: "Walk-in customer's phone number"
+		},
+		parent: $cash_contact_wrap,
+		render_input: true
+	});
+	customer_phone_field.$input.css({ 'font-size': '15px', 'padding': '10px' });
+	page.qb_customer_phone_field = customer_phone_field;
+
+	let customer_pin_field = frappe.ui.form.make_control({
+		df: {
+			fieldtype: 'Data',
+			label: 'KRA PIN (optional)',
+			fieldname: 'customer_pin',
+			placeholder: 'Optional'
+		},
+		parent: $cash_contact_wrap,
+		render_input: true
+	});
+	customer_pin_field.$input.css({ 'font-size': '15px', 'padding': '10px', 'margin-top': '10px' });
+	page.qb_customer_pin_field = customer_pin_field;
+
+	// Restore previously entered values
+	if (window.qb_state.customer_phone) {
+		customer_phone_field.set_value(window.qb_state.customer_phone);
+	}
+	if (window.qb_state.customer_pin) {
+		customer_pin_field.set_value(window.qb_state.customer_pin);
+	}
+	if (window.qb_state.payment_mode !== 'cash' && window.qb_state.customer) {
 		customer_field.set_value(window.qb_state.customer);
 	}
-	update_customer_next_button_visibility(page, window.qb_state.customer || customer_field.get_value());
+
+	function apply_customer_mode_visibility(mode) {
+		let is_cash = mode === 'cash';
+		$customer_link_wrap.toggle(!is_cash);
+		$cash_contact_wrap.toggle(is_cash);
+		if (is_cash) {
+			get_shared_cash_customer().then(function (cash_customer) {
+				window.qb_state.customer = cash_customer.name || '';
+				update_customer_next_button_visibility(page);
+			});
+		}
+		update_customer_next_button_visibility(page);
+	}
+	apply_customer_mode_visibility(normalize_customer_payment_mode(window.qb_state.payment_mode));
 
 	set_customer_step_focus(page);
 
@@ -1197,23 +1270,49 @@ function setup_customer_step(page) {
 		if (window.qb_state.payment_mode && window.qb_state.payment_mode !== next_mode) {
 			window.qb_state.customer = '';
 			customer_field.set_value('');
-			update_customer_next_button_visibility(page, '');
 		}
 		window.qb_state.payment_mode = next_mode;
+		apply_customer_mode_visibility(next_mode);
 	});
 
 	customer_field.$input.on('change input blur awesomplete-selectcomplete', function () {
 		update_customer_next_button_visibility(page, customer_field.get_value());
 	});
 
+	customer_phone_field.$input.on('change input blur', function () {
+		window.qb_state.customer_phone = customer_phone_field.get_value();
+		update_customer_next_button_visibility(page);
+	});
+
+	customer_pin_field.$input.on('change input blur', function () {
+		window.qb_state.customer_pin = customer_pin_field.get_value();
+	});
+
 	$(page.body).find('.qb-next-1').off('click').on('click', function () {
 		let payment_mode = normalize_customer_payment_mode(payment_mode_field.get_value());
+		window.qb_state.payment_mode = payment_mode;
+
+		if (payment_mode === 'cash') {
+			let phone = customer_phone_field.get_value();
+			if (!phone) {
+				frappe.msgprint('Please enter the customer\'s phone number.');
+				return;
+			}
+			window.qb_state.customer_phone = phone;
+			window.qb_state.customer_pin = customer_pin_field.get_value();
+			if (!window.qb_state.customer) {
+				frappe.msgprint('Please wait for the Cash Customer record to load and try again.');
+				return;
+			}
+			render_step(page, 2);
+			return;
+		}
+
 		let val = customer_field.get_value();
 		if (!val) {
 			frappe.msgprint('Please select a Customer.');
 			return;
 		}
-		window.qb_state.payment_mode = payment_mode;
 		window.qb_state.customer = val;
 		render_step(page, 2);
 	});
@@ -2556,12 +2655,20 @@ function generate_quotation(page) {
 		return;
 	}
 
+	let payment_mode = normalize_customer_payment_mode(state.payment_mode);
+
 	let api_args = {
 		customer: state.customer,
 		items: JSON.stringify(state.items),
 		price_adjustment_type: state.price_adjustment ? state.price_adjustment.type : '',
-		price_adjustment_percent: state.price_adjustment ? state.price_adjustment.percent : 0
+		price_adjustment_percent: state.price_adjustment ? state.price_adjustment.percent : 0,
+		payment_mode: payment_mode
 	};
+
+	if (payment_mode === 'cash') {
+		api_args.customer_phone = state.customer_phone;
+		api_args.customer_pin = state.customer_pin;
+	}
 
 	// If editing an existing quotation, pass its name so the API updates it
 	if (state.editing_quotation) {
