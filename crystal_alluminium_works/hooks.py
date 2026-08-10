@@ -195,6 +195,11 @@ doc_events = {
 	"Payments": {
 		"on_trash": "crystal_alluminium_works.api.on_payments_trash"
 	},
+	# CBK rates are typed by hand, so a blank New Exchange Rate reads as zero and
+	# would revalue the USD banks to nothing.
+	"Exchange Rate Revaluation": {
+		"validate": "crystal_alluminium_works.exchange_rate_revaluation_handler.validate_rates"
+	},
 	# Glass sheet / ceiling piece quantities are derived server-side at every
 	# procurement step so they cannot drift from what was entered, whichever
 	# document the flow starts at.
