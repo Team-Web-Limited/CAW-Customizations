@@ -274,13 +274,33 @@ def _load_psoa():
 	return _patch(psoa)
 
 
+# This app only ever wants the job-card statement rendered through its own layout,
+# never erpnext's plain default HTML. Older PSOA rows (and any created without
+# manually picking a print format) are saved with this field empty, and erpnext's
+# get_html() silently falls back to its default template when it is - so force it
+# here rather than depend on someone remembering to pick it in the UI.
+CRYSTAL_STATEMENT_PRINT_FORMAT = "Crystal Statement of Accounts"
+
+
+def _ensure_print_format(document_name):
+	if (
+		frappe.db.get_value("Process Statement Of Accounts", document_name, "print_format")
+		!= CRYSTAL_STATEMENT_PRINT_FORMAT
+	):
+		frappe.db.set_value(
+			"Process Statement Of Accounts", document_name, "print_format", CRYSTAL_STATEMENT_PRINT_FORMAT
+		)
+
+
 @frappe.whitelist()
 def download_statements(document_name):
+	_ensure_print_format(document_name)
 	psoa = _load_psoa()
 	return psoa.download_statements(document_name)
 
 
 @frappe.whitelist()
 def send_emails(document_name, from_scheduler=False, posting_date=None):
+	_ensure_print_format(document_name)
 	psoa = _load_psoa()
 	return psoa.send_emails(document_name, from_scheduler=from_scheduler, posting_date=posting_date)
