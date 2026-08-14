@@ -2,6 +2,13 @@
 
 Crystal Alluminium Works App
 
+### Guides
+
+- [Foreign Currency: FIFO Cost Basis and Month-End Revaluation](FOREX_FIFO_AND_REVALUATION.md) —
+  how USD holdings are costed, and the month-end revaluation steps
+- [Sales Invoice: Cancel, Credit Note/Return, and Amend](INVOICE_AMENDMENT_GUIDE.md) —
+  picking the right correction tool
+
 ### Installation
 
 You can install this app using the [bench](https://github.com/frappe/bench) CLI:
