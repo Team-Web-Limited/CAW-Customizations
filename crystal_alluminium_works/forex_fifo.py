@@ -13,11 +13,13 @@ Two rules drive everything here:
   one. Keying off ``payment_type`` alone would read a USD->USD transfer between
   the two bank accounts as a sale on one side and a purchase on the other, and
   invent a gain that never happened.
-* Gain or loss only ever arises on the way *out*. Currency arriving from a
-  customer receipt lands at the rate the GL debited the bank at, so it has no
-  gain of its own; the invoice-rate-vs-receipt-rate difference is receivable FX
-  and ERPNext has already booked it against Debtors. Recognising anything on an
-  inbound movement double-counts that.
+* Gain is realised only when the currency is genuinely converted back to KES.
+  Currency arriving lands at the rate the GL recorded it at, so it has no gain
+  of its own; the invoice-rate-vs-receipt-rate difference is receivable FX and
+  ERPNext has already booked it against Debtors. Paying a supplier in dollars
+  out of a dollar account converts nothing, so it realises nothing either --
+  see the note on cost basis below. Selling dollars for shillings does convert,
+  and the shillings received are a fact, so that is where gain appears.
 
 The ledger is *derived*: it replays submitted Payment Entries from the
 beginning on every read rather than storing lot state. Backdated, amended and
@@ -26,25 +28,43 @@ a different history. At this business's volume a full replay is a few
 milliseconds, which buys immunity from the drift that incremental lot tables
 suffer.
 
-Realised gain/loss is *reported*, not posted -- the GL keeps ERPNext's native
-treatment, which is worth understanding before trusting either number.
+This ledger *determines* the exchange rate on outgoing Payment Entries rather
+than merely describing them: ``payment_entry_forex_rate.py`` stamps the FIFO
+cost of the currency being spent onto the document before it saves, so the GL
+credits the bank with what those dollars actually cost.
 
-ERPNext credits the bank at the rate of each outgoing payment, and books no
-exchange gain against the bank at all. So after buying 500 USD at 130 and
-paying 200 away at 131.50, the account holds 300 USD carried at 38,700 KES --
-an implied 129.00, which is neither what the dollars cost (130.00) nor any spot
-rate that ever existed. It is a residue. The gap between that balance and this
-ledger's valuation is exactly the cumulative gain the GL has never recognised.
+Left to itself ERPNext credits the bank at the rate of each outgoing payment and
+books no exchange gain against the bank at all. After buying 500 USD at 130 and
+paying 200 away at 131.50 the account would hold 300 USD carried at 38,700 KES
+-- an implied 129.00, which is neither what the dollars cost (130.00) nor any
+spot rate that ever existed. That residue is what costing the outflow removes:
+the account stays at 130.00, because the 200 dollars that left cost 130.00.
 
-Restating the balance is Exchange Rate Revaluation's job, and it composes
-fine with this ledger precisely because nothing here posts: revaluation fixes
-the balance sheet, FIFO answers the separate question of what the currency cost
-and what trading it actually earned. Were these figures ever posted to the GL,
-running both would book the same movement twice.
+Two consequences follow, and both matter more than they look.
+
+The first is that this module is now GL-determining, which makes history edits
+consequential. A backdated or cancelled entry changes which lots later payments
+consumed, and those later payments have already posted. Nothing reposts them --
+the handler warns when it spots the situation, but the real defence is closing
+periods.
+
+The second is that a payment out of a dollar account to a dollar payable now
+realises nothing here, by construction: the rate stamped on it *is* the cost
+rate, so proceeds equal cost. That is the intended reading -- spending dollars
+on a dollar invoice converts no currency. The whole economic result of settling
+still reaches the P&L, as the difference between the payable's invoice rate and
+this cost rate, which ERPNext books natively against Creditors. Gain appears in
+this ledger only on a genuine sale of currency, where ``proceeds`` carries the
+shillings actually received.
+
+What the dollars are worth *today* remains Exchange Rate Revaluation's job. It
+composes with this ledger because the two measure different things: cost basis
+here, closing rate there. Between month-ends the books carry currency at cost;
+at each reporting date revaluation restates it.
 """
 
 import frappe
-from frappe.utils import flt
+from frappe.utils import flt, getdate
 
 import erpnext
 
@@ -137,6 +157,7 @@ def replay(movements):
 		row = dict(mv)
 		row["allocations"] = []
 		row["realized_gain_loss"] = 0.0
+		row["proceeds"] = 0.0
 		row["shortfall"] = 0.0
 		row["qty_in"] = 0.0
 		row["qty_out"] = 0.0
@@ -178,12 +199,25 @@ def replay(movements):
 			row["cost_out"] = cost_out
 			row["avg_cost_rate"] = _rate(cost_out, consumed_qty)
 
+			# What was actually got for the currency. A sale carries ``proceeds``
+			# -- the shillings the GL really received -- because that is a fact
+			# rather than a rate. Everything else is valued at the document's own
+			# rate, which since costing is applied to outflows *is* the cost rate,
+			# so proceeds equal cost and nothing is realised. That is the point:
+			# spending dollars on a dollar invoice converts no currency.
+			proceeds = mv.get("proceeds")
+			if proceeds is None:
+				proceeds = flt(consumed_qty * mv["txn_rate"], VALUE_PRECISION)
+			elif shortfall and flt(mv["qty"]):
+				# Only the part that had a cost basis can be measured against.
+				proceeds = flt(flt(proceeds) * consumed_qty / flt(mv["qty"]), VALUE_PRECISION)
+			
+			row["proceeds"] = flt(proceeds, VALUE_PRECISION)
+			
 			# Gain is measured only on what actually had a cost basis. Valuing a
-			# shortfall at the transaction rate would book a 100% "gain" on
-			# currency whose acquisition this ledger never saw.
-			row["realized_gain_loss"] = flt(
-				flt(consumed_qty * mv["txn_rate"], VALUE_PRECISION) - cost_out, VALUE_PRECISION
-			)
+			# shortfall at the proceeds rate would book a 100% "gain" on currency
+			# whose acquisition this ledger never saw.
+			row["realized_gain_loss"] = flt(row["proceeds"] - cost_out, VALUE_PRECISION)
 
 			if mv["movement_type"] == TRANSFER_OUT:
 				# Nothing is realised in transit -- the currency is still held,
@@ -307,20 +341,28 @@ def get_movements(company, tracked=None):
 			continue
 
 		if source:
-			movements.append(
-				dict(
-					common,
-					account=source,
-					currency=tracked[source],
-					counter_account=pe.paid_to,
-					# Moving currency back into the company's own currency is a
-					# sale of it; paying a supplier just spends it. Both realise
-					# gain identically, but the distinction is worth reading.
-					movement_type=SELL if pe.payment_type == "Internal Transfer" else PAYMENT,
-					qty=flt(pe.paid_amount, QTY_PRECISION),
-					txn_rate=_rate(pe.base_paid_amount, pe.paid_amount),
-				)
+			# Moving currency back into the company's own currency is a sale of
+			# it; paying a supplier just spends it. Only the sale realises
+			# anything, and the distinction is the whole reason for the split.
+			movement_type = SELL if pe.payment_type == "Internal Transfer" else PAYMENT
+			outgoing = dict(
+				common,
+				account=source,
+				currency=tracked[source],
+				counter_account=pe.paid_to,
+				movement_type=movement_type,
+				qty=flt(pe.paid_amount, QTY_PRECISION),
+				txn_rate=_rate(pe.base_paid_amount, pe.paid_amount),
 			)
+
+			if movement_type == SELL:
+				# The shillings that actually landed in the receiving account.
+				# Gain on a sale is measured against this rather than against a
+				# rate, because the outgoing rate is now the cost rate and would
+				# report every sale as breaking even.
+				outgoing["proceeds"] = flt(pe.base_received_amount, VALUE_PRECISION)
+
+			movements.append(outgoing)
 
 		if target:
 			movements.append(
@@ -358,6 +400,62 @@ def build(company, account=None):
 
 
 # ---------------------------------------------------------------------------
+# Cost basis for a document being written
+# ---------------------------------------------------------------------------
+
+
+def get_lots_as_of(company, account, posting_date, tracked=None):
+	"""Lots held in ``account`` at the close of ``posting_date``.
+
+	Movements after that date are excluded so a backdated document consumes the
+	lots that existed when it says it happened, not the ones that exist now.
+	Entries dated the same day are included: they were submitted first, and
+	ordering within a day is by creation anyway.
+	"""
+	tracked = tracked if tracked is not None else get_tracked_accounts(company)
+	if account not in tracked:
+		return []
+
+	cutoff = getdate(posting_date)
+	movements = [
+		mv for mv in get_movements(company, tracked) if getdate(mv["posting_date"]) <= cutoff
+	]
+	_rows, lots_by_account = replay(movements)
+	return lots_by_account.get(account, [])
+
+
+def get_cost_rate(company, account, qty, posting_date, tracked=None):
+	"""What ``qty`` leaving ``account`` on ``posting_date`` cost, oldest lots first.
+
+	Returns the blended rate to put on the document along with the workings, so
+	a caller can explain the number rather than just assert it. ``shortfall`` is
+	how much of ``qty`` no lot could cover; callers decide what that means, and
+	the Payment Entry handler refuses to post it.
+
+	The rate is blended because a payment routinely spans lots -- 20 at 130 plus
+	15 at 129 is 4,535 KES for 35 USD, so the document carries 129.571429. That
+	rate matches no market quote and is not meant to: it is the cost of that
+	particular mix of dollars.
+	"""
+	lots = get_lots_as_of(company, account, posting_date, tracked=tracked)
+	available = flt(sum(lot["qty"] for lot in lots), QTY_PRECISION)
+
+	allocations, shortfall = consume([dict(lot) for lot in lots], qty)
+	cost = flt(sum(a["value"] for a in allocations), VALUE_PRECISION)
+	consumed = flt(sum(a["qty"] for a in allocations), QTY_PRECISION)
+
+	return {
+		"rate": _rate(cost, consumed),
+		"cost": cost,
+		"consumed_qty": consumed,
+		"available_qty": available,
+		"shortfall": flt(shortfall, QTY_PRECISION),
+		"allocations": allocations,
+		"currency": (tracked or get_tracked_accounts(company)).get(account),
+	}
+
+
+# ---------------------------------------------------------------------------
 # Desk entry points
 # ---------------------------------------------------------------------------
 
@@ -373,6 +471,27 @@ def tracked_account_query(doctype, txt, searchfield, start, page_len, filters):
 	tracked = get_tracked_accounts(company)
 	matches = [(name, currency) for name, currency in tracked.items() if not txt or txt.lower() in name.lower()]
 	return sorted(matches)[start : start + page_len]
+
+
+@frappe.whitelist()
+def get_payment_cost_rate(company, account, qty, posting_date):
+	"""Cost rate for a Payment Entry still being typed.
+
+	The form uses this so the shilling figures settle while the entry is being
+	written instead of jumping when it saves. It is a convenience, not the
+	control: ``payment_entry_forex_rate.py`` recomputes the same number on the
+	server, because a rate read before another entry was submitted is stale.
+	"""
+	frappe.has_permission("Payment Entry", throw=True)
+
+	tracked = get_tracked_accounts(company)
+	if account not in tracked:
+		return {"tracked": False}
+
+	detail = get_cost_rate(company, account, flt(qty), posting_date, tracked=tracked)
+	detail["tracked"] = True
+	detail.pop("allocations", None)
+	return detail
 
 
 @frappe.whitelist()
@@ -403,6 +522,7 @@ def get_payment_entry_detail(payment_entry):
 				"cost_out": r["cost_out"],
 				"avg_cost_rate": r.get("avg_cost_rate"),
 				"txn_rate": r.get("txn_rate"),
+				"proceeds": r["proceeds"],
 				"realized_gain_loss": r["realized_gain_loss"],
 				"shortfall": r["shortfall"],
 				"allocations": r["allocations"] if r["movement_type"] in OUTBOUND else [],

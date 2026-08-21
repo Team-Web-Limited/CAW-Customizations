@@ -82,9 +82,12 @@ doctype_js = {
 	"Purchase Order" : "public/js/procurement_sheet_items.js",
 	"Purchase Receipt" : "public/js/procurement_sheet_items.js",
 	"Purchase Invoice" : "public/js/procurement_sheet_items.js",
-	# FIFO cost basis of the USD bank accounts, shown on the entry that moved
-	# the currency rather than only in a report.
-	"Payment Entry" : "public/js/payment_entry_forex_fifo.js",
+	# FIFO cost basis of the USD bank accounts: one script derives the exchange
+	# rate as currency is paid out, the other shows which lots it consumed.
+	"Payment Entry" : [
+		"public/js/payment_entry_fifo_rate.js",
+		"public/js/payment_entry_forex_fifo.js",
+	],
 	# Crystal Statement of Accounts print format is portrait; default the
 	# Orientation field to match instead of erpnext's unset (Landscape) default.
 	"Process Statement Of Accounts" : "public/js/process_statement_of_accounts.js"
@@ -197,6 +200,12 @@ doc_events = {
 	},
 	"Payments": {
 		"on_trash": "crystal_alluminium_works.api.on_payments_trash"
+	},
+	# Currency leaving a USD account is credited at what those dollars cost,
+	# oldest lots first, rather than at a rate someone types. before_validate so
+	# ERPNext derives every downstream figure from the rate we set.
+	"Payment Entry": {
+		"before_validate": "crystal_alluminium_works.payment_entry_forex_rate.set_fifo_exchange_rate"
 	},
 	# CBK rates are typed by hand, so a blank New Exchange Rate reads as zero and
 	# would revalue the USD banks to nothing.

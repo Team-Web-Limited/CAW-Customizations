@@ -46,8 +46,11 @@ def _format(row):
 		"counter_account": row.get("counter_account"),
 		"qty_in": row["qty_in"] or None,
 		"qty_out": row["qty_out"] or None,
-		# The rate the movement itself happened at: what was paid away on the way
-		# out, what the currency was booked in at on the way in.
+		# The rate on the document. Inbound that is the rate the currency was
+		# booked in at; outbound it is the FIFO cost stamped on the entry, so it
+		# tracks the cost column rather than the market. Kept as a separate
+		# column because a divergence between the two means an entry was posted
+		# before costing applied, or history moved under one that already had.
 		"txn_rate": row.get("txn_rate")
 		if row["qty_out"]
 		else _acquisition_rate(row["value_in"], row["qty_in"]),
@@ -145,7 +148,7 @@ def get_columns():
 		},
 		{
 			"fieldname": "txn_rate",
-			"label": _("Txn Rate"),
+			"label": _("Posted Rate"),
 			"fieldtype": "Float",
 			"precision": 4,
 			"width": 95,
