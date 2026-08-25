@@ -325,15 +325,15 @@ function open_upload_modal(page, category) {
 				fieldname: 'instructions',
 				options: instructions
 			},
-			...(category === 'Aluminium' ? [{
+			{
 				fieldtype: 'HTML',
 				fieldname: 'template_download',
 				options: `
 					<div style="margin-bottom:12px;">
-						<button type="button" class="btn btn-default btn-sm mi-download-aluminium-template">Download Aluminium Template</button>
+						<button type="button" class="btn btn-default btn-sm mi-download-template">Download ${frappe.utils.escape_html(category)} Template</button>
 					</div>
 				`
-			}] : []),
+			},
 			{
 				fieldtype: 'Attach',
 				fieldname: 'file_url',
@@ -376,61 +376,35 @@ function open_upload_modal(page, category) {
 
 	d.show();
 
-	if (category === 'Aluminium') {
-		d.$wrapper.on('click', '.mi-download-aluminium-template', function() {
-			frappe.call({
-				method: 'crystal_alluminium_works.api.download_aluminium_items_template',
-				freeze: true,
-				freeze_message: 'Preparing template...',
-				callback: function(r) {
-					if (!r.exc && r.message && r.message.file_url) {
-						window.open(r.message.file_url, '_blank');
-					}
-				}
-			});
-		});
-	}
+	d.$wrapper.on('click', '.mi-download-template', function() {
+		// Streams the xlsx straight down; no File record is created.
+		window.open(
+			'/api/method/crystal_alluminium_works.api.download_items_template'
+			+ '?category=' + encodeURIComponent(category),
+			'_blank'
+		);
+	});
 }
 
+// All three stream the xlsx straight down; no File record is created.
 function export_aluminium_items() {
-	frappe.call({
-		method: 'crystal_alluminium_works.api.export_aluminium_items',
-		freeze: true,
-		freeze_message: 'Preparing aluminium export...',
-		callback: function(r) {
-			if (!r.exc && r.message && r.message.file_url) {
-				window.open(r.message.file_url, '_blank');
-			}
-		}
-	});
+	window.open('/api/method/crystal_alluminium_works.api.export_aluminium_items', '_blank');
 }
 
 function export_glass_items(category) {
-	frappe.call({
-		method: 'crystal_alluminium_works.api.export_glass_items',
-		args: { category },
-		freeze: true,
-		freeze_message: `Preparing ${category} export...`,
-		callback: function(r) {
-			if (!r.exc && r.message && r.message.file_url) {
-				window.open(r.message.file_url, '_blank');
-			}
-		}
-	});
+	window.open(
+		'/api/method/crystal_alluminium_works.api.export_glass_items'
+		+ '?category=' + encodeURIComponent(category),
+		'_blank'
+	);
 }
 
 function export_standard_items(category) {
-	frappe.call({
-		method: 'crystal_alluminium_works.api.export_standard_items',
-		args: { category },
-		freeze: true,
-		freeze_message: `Preparing ${category} export...`,
-		callback: function(r) {
-			if (!r.exc && r.message && r.message.file_url) {
-				window.open(r.message.file_url, '_blank');
-			}
-		}
-	});
+	window.open(
+		'/api/method/crystal_alluminium_works.api.export_standard_items'
+		+ '?category=' + encodeURIComponent(category),
+		'_blank'
+	);
 }
 
 function load_category_tab(page, category) {

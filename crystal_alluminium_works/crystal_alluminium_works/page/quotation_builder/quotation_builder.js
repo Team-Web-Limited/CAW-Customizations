@@ -2523,14 +2523,8 @@ function open_glass_import_dialog(page, dimension_uom = QB_DEFAULT_GLASS_DIMENSI
 	};
 
 	d.$wrapper.on('click', '.qb-download-glass-template', function () {
-		frappe.call({
-			method: 'crystal_alluminium_works.api.download_glass_builder_template',
-			callback: function (r) {
-				if (r.message && r.message.file_url) {
-					window.open(r.message.file_url, '_blank');
-				}
-			}
-		});
+		// Streams the xlsx straight down; no File record is created.
+		window.open('/api/method/crystal_alluminium_works.api.download_glass_builder_template', '_blank');
 	});
 
 	d.show();
@@ -2623,19 +2617,11 @@ function export_review_rows(page) {
 		]);
 	});
 
-	frappe.call({
-		method: 'crystal_alluminium_works.api.export_quotation_builder_items',
-		args: {
-			data: data
-		},
-		freeze: true,
-		freeze_message: 'Generating Excel...',
-		callback: function (r) {
-			if (r.message && r.message.file_url) {
-				window.open(r.message.file_url, '_blank');
-			}
-		}
-	});
+	// Streams the xlsx straight down; no File record is created. POSTed rather than
+	// opened as a URL because the row payload is too large for a query string.
+	open_url_post('/api/method/crystal_alluminium_works.api.export_quotation_builder_items', {
+		data: data
+	}, true);
 }
 
 // ────────────────────────────────────────────

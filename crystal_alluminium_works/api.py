@@ -2,7 +2,6 @@ import frappe
 import json
 import os
 from frappe.model.rename_doc import rename_doc
-from frappe.utils.file_manager import save_file
 from frappe.utils import flt
 from erpnext.accounts.party import get_party_account
 from crystal_alluminium_works.pricing_engine import (
@@ -992,18 +991,17 @@ def _clean_import_text(value):
     return str(value or "").strip()
 
 
-def _build_xlsx_file(filename, rows):
+def _stream_xlsx_file(filename, rows):
+    """Send an xlsx straight to the browser without leaving a File record behind."""
     from frappe.utils.xlsxutils import make_xlsx
 
     xlsx_file = make_xlsx(rows, filename)
-    file_doc = save_file(
-        f"{filename}.xlsx",
-        xlsx_file.getvalue(),
-        dt=None,
-        dn=None,
-        is_private=0,
+    frappe.response["filename"] = f"{filename}.xlsx"
+    frappe.response["filecontent"] = xlsx_file.getvalue()
+    frappe.response["content_type"] = (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-    return {"file_url": file_doc.file_url, "file_name": file_doc.file_name}
+    frappe.response["type"] = "binary"
 
 
 def _normalize_builder_sheet_header(value):
@@ -4315,7 +4313,7 @@ def save_custom_item(data):
     return item.name
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET"])
 def download_glass_builder_template():
     headers = [[
         "width",
@@ -4358,7 +4356,7 @@ def download_glass_builder_template():
         2,
         "Office partition",
     ]]
-    return _build_xlsx_file("glass_builder_template", headers + sample)
+    return _stream_xlsx_file("glass_builder_template", headers + sample)
 
 
 @frappe.whitelist()
@@ -4397,32 +4395,59 @@ def export_glass_items_from_builder(items):
             item.get("description", ""),
         ])
 
-    return _build_xlsx_file("glass_builder_export", rows)
+    return _stream_xlsx_file("glass_builder_export", rows)
 
 
 @frappe.whitelist()
 def export_quotation_builder_items(data):
     data = json.loads(data) if isinstance(data, str) else (data or [])
-    return _build_xlsx_file("Quotation_Export", data)
+    return _stream_xlsx_file("Quotation_Export", data)
 
 
-@frappe.whitelist()
-def download_aluminium_items_template():
-    rows = [[
-        "item_name",
-        "code",
-        "rate_per_kg",
-        "weight_per_length",
-    ], [
-        "Sample Aluminium Item",
-        "A01.1",
-        870,
-        3.6,
-    ]]
-    return _build_xlsx_file("aluminium_items_template", rows)
+@frappe.whitelist(methods=["GET"])
+def download_items_template(category=None):
+    """Upload template for a Manage Items tab.
+
+    Aluminium prices are derived (rate_per_kg * weight_per_length) so it needs its
+    own column set; every other category shares the three-price-list shape. The
+    file is named after the stored item group, so all four glass tabs hand back the
+    same glass_items_template.
+    """
+    storage_category = _get_storage_category(category) if category else "Aluminium"
+
+    if storage_category == "Aluminium":
+        rows = [[
+            "item_name",
+            "code",
+            "rate_per_kg",
+            "weight_per_length",
+        ], [
+            "Sample Aluminium Item",
+            f"{ALUMINIUM_PRODUCT_CODE}.1",
+            870,
+            3.6,
+        ]]
+    else:
+        sample_code = _get_product_code(category, item_name="Sample")
+        rows = [[
+            "description",
+            "code",
+            "wholesale_rate",
+            "retail_rate",
+            "special_rate",
+        ], [
+            f"Sample {storage_category} Item",
+            f"{sample_code}.1" if sample_code else "",
+            0,
+            0,
+            0,
+        ]]
+
+    filename = frappe.scrub(f"{storage_category}_items_template") or "items_template"
+    return _stream_xlsx_file(filename, rows)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET"])
 def export_aluminium_items():
     _ensure_aluminium_pricing_storage()
 
@@ -4453,10 +4478,10 @@ def export_aluminium_items():
             flt(getattr(item, "custom_aluminium_weight_per_length", 0) or 0),
         ])
 
-    return _build_xlsx_file("aluminium_items_export", rows)
+    return _stream_xlsx_file("aluminium_items_export", rows)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET"])
 def export_glass_items(category):
     storage_category = _get_storage_category(category)
     if storage_category != "Glass":
@@ -4514,10 +4539,10 @@ def export_glass_items(category):
         ])
 
     filename = frappe.scrub(f"{category}_items_export") or "glass_items_export"
-    return _build_xlsx_file(filename, rows)
+    return _stream_xlsx_file(filename, rows)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET"])
 def export_standard_items(category):
     storage_category = _get_storage_category(category)
     if storage_category in ("Aluminium", "Glass"):
@@ -4563,7 +4588,7 @@ def export_standard_items(category):
         ])
 
     filename = frappe.scrub(f"{category}_items_export") or "items_export"
-    return _build_xlsx_file(filename, rows)
+    return _stream_xlsx_file(filename, rows)
 
 
 def _normalize_glass_dimension_uom(dimension_uom=None):
