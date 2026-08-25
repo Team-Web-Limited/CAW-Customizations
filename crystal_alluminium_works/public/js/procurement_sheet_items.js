@@ -71,7 +71,7 @@ function caw_set_item_code_query(frm) {
 		// Keep routing through ERPNext's item_query: it applies the Party
 		// Specific Item restrictions for the supplier and excludes disabled /
 		// template items, which a bare filters dict would silently drop.
-		let filters = { is_stock_item: 1 };
+		let filters = {};
 		if (doc.supplier) filters.supplier = doc.supplier;
 		if (row.custom_product_category) {
 			filters.item_group = row.custom_product_category;
