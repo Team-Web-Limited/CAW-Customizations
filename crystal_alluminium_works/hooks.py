@@ -90,7 +90,9 @@ doctype_js = {
 	],
 	# Crystal Statement of Accounts print format is portrait; default the
 	# Orientation field to match instead of erpnext's unset (Landscape) default.
-	"Process Statement Of Accounts" : "public/js/process_statement_of_accounts.js"
+	"Process Statement Of Accounts" : "public/js/process_statement_of_accounts.js",
+	# Ship No rebuilds the whole voucher -- receipts, vendor invoices, charges.
+	"Landed Cost Voucher" : "public/js/landed_cost_voucher.js"
 }
 # doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
