@@ -6,6 +6,8 @@ frappe.pages['quotation-builder'].on_page_load = function (wrapper) {
 	});
 	wrapper.page = page;
 
+	load_aluminium_price_factor();
+
 	// State
 	if (!window.qb_state) {
 		window.qb_state = {
@@ -36,7 +38,19 @@ frappe.pages['quotation-builder'].on_page_load = function (wrapper) {
 
 const QB_GLASS_DIMENSION_UOM_OPTIONS = 'inches\nmm';
 const QB_DEFAULT_GLASS_DIMENSION_UOM = 'mm';
-const QB_ALUMINIUM_PRICE_FACTOR = 1.07;
+// Fallback only; the live value is the global Aluminium Pricing Settings ratio,
+// kept in step with the ratio shown on the Manage Items page.
+const QB_DEFAULT_ALUMINIUM_PRICE_FACTOR = 1.07;
+let QB_ALUMINIUM_PRICE_FACTOR = QB_DEFAULT_ALUMINIUM_PRICE_FACTOR;
+
+function load_aluminium_price_factor() {
+	frappe.call({
+		method: 'crystal_alluminium_works.api.get_aluminium_price_factor',
+		callback: function(r) {
+			QB_ALUMINIUM_PRICE_FACTOR = flt(r.message) || QB_DEFAULT_ALUMINIUM_PRICE_FACTOR;
+		}
+	});
+}
 const QB_ALUMINIUM_PRICE_OPTIONS = 'Normal Price\nMill Finished Price\nSpecial Price';
 const QB_ALUMINIUM_PRICE_LABEL_TO_PRICE_LIST = {
 	'Normal Price': 'Retail',

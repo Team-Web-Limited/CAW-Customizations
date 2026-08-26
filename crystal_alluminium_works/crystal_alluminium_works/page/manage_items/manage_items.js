@@ -3,7 +3,10 @@ const MI_CONFIGURABLE_GLASS_CATEGORIES = new Set(MI_GLASS_CATEGORIES);
 const MI_SHEET_GLASS_CATEGORIES = new Set(['Ordinary Glass', 'Ready Laminated Glass']);
 const MI_STANDARD_INTERVAL_SET = 'Standard Glass';
 const MI_TOUGHENED_INTERVAL_SET = 'Toughened Glass';
-const MI_ALUMINIUM_PRICE_FACTOR = 1.07;
+// Fallback only; the live value is the global Aluminium Pricing Settings ratio,
+// loaded on page load and refreshed whenever it is edited from the item modal.
+const MI_DEFAULT_ALUMINIUM_PRICE_FACTOR = 1.07;
+let MI_ALUMINIUM_PRICE_FACTOR = MI_DEFAULT_ALUMINIUM_PRICE_FACTOR;
 const MI_HOLE_RATE_TYPES = [
 	{ label: '5mm', fieldname: 'hole_rate_5mm' },
 	{ label: '6mm', fieldname: 'hole_rate_6mm' },
@@ -66,10 +69,20 @@ function get_default_product_code(category) {
 	return MI_DEFAULT_PRODUCT_CODES[category] || '';
 }
 
-function get_aluminium_prices(rate_per_kg, weight_per_length) {
+function load_aluminium_price_factor() {
+	frappe.call({
+		method: 'crystal_alluminium_works.api.get_aluminium_price_factor',
+		callback: function(r) {
+			MI_ALUMINIUM_PRICE_FACTOR = flt(r.message) || MI_DEFAULT_ALUMINIUM_PRICE_FACTOR;
+		}
+	});
+}
+
+function get_aluminium_prices(rate_per_kg, weight_per_length, price_factor) {
+	let factor = flt(price_factor) || MI_ALUMINIUM_PRICE_FACTOR;
 	let normal_price = flt(rate_per_kg) * flt(weight_per_length);
-	let mill_finished_price = MI_ALUMINIUM_PRICE_FACTOR ? normal_price / MI_ALUMINIUM_PRICE_FACTOR : normal_price;
-	let special_price = normal_price * MI_ALUMINIUM_PRICE_FACTOR;
+	let mill_finished_price = factor ? normal_price / factor : normal_price;
+	let special_price = normal_price * factor;
 
 	return {
 		normal_price: flt(normal_price),
@@ -95,6 +108,7 @@ frappe.pages['manage-items'].on_page_load = function(wrapper) {
 	// Inject the HTML
 	$(page.body).html(get_manage_items_html());
 	bind_manage_items_events(page);
+	load_aluminium_price_factor();
 	
 	// Default to first tab
 	load_category_tab(page, 'Aluminium');
@@ -411,7 +425,7 @@ function load_category_tab(page, category) {
 	page.mi_current_category = category;
 	update_table_headers(page, category);
 	let $body = $(page.body).find('.mi-table-body');
-	let colspan = 8;
+	let colspan = 9;
 	$body.html(`<tr><td colspan="${colspan}" style="text-align:center;padding:24px;color:var(--text-muted);">Loading items...</td></tr>`);
 	
 	frappe.call({
@@ -441,12 +455,15 @@ function update_table_headers(page, category) {
 }
 
 function render_items_table(page, items) {
+	items = (items || []).slice().sort((a, b) =>
+		(a.item_code || '').localeCompare(b.item_code || '', undefined, { numeric: true, sensitivity: 'base' })
+	);
 	let $body = $(page.body).find('.mi-table-body');
 	$body.empty();
 	$(page.body).find('.mi-select-all').prop('checked', false);
 	$(page.body).find('.mi-mass-delete-btn').hide();
 	let show_code = true;
-	let colspan = show_code ? 8 : 7;
+	let colspan = show_code ? 9 : 8;
 	let is_aluminium = page.mi_current_category === 'Aluminium';
 
 	if (!items || items.length === 0) {
@@ -467,6 +484,7 @@ function render_items_table(page, items) {
 				</td>
 				<td style="padding:12px 16px;">${item.custom_product_code || ''}</td>
 				${show_code ? `<td style="padding:12px 16px;">${item.item_code || ''}</td>` : ''}
+				<td class="mi-stock-cell" data-item-code="${item_code_esc}" style="padding:12px 16px; font-size:12px; color:var(--text-muted);">…</td>
 				<td style="padding:12px 16px; text-align:center;">
 					<span style="background:var(--subtle-fg);padding:2px 8px;border-radius:10px;font-size:11px;">${item.stock_uom}</span>
 				</td>
@@ -488,6 +506,46 @@ function render_items_table(page, items) {
 			</tr>
 		`);
 	});
+
+	load_stock_balances(page, items);
+}
+
+// Stock is fetched separately so the catalog renders immediately — reconstructing
+// glass sheet balances walks the ledger and can be slow for large categories.
+function load_stock_balances(page, items) {
+	let item_codes = items.map(item => item.item_code).filter(Boolean);
+	if (!item_codes.length) return;
+
+	// Guards against a slower earlier request landing after a tab switch or search.
+	let token = (page.mi_stock_token || 0) + 1;
+	page.mi_stock_token = token;
+
+	frappe.call({
+		method: 'crystal_alluminium_works.api.get_items_stock_balances',
+		args: { item_codes: item_codes },
+		callback: function(r) {
+			if (page.mi_stock_token !== token) return;
+			let balances = r.message || {};
+			$(page.body).find('.mi-stock-cell').each(function() {
+				$(this).html(format_stock_balance(balances[$(this).data('item-code')]));
+			});
+		}
+	});
+}
+
+function format_stock_balance(rows) {
+	if (!rows || !rows.length) {
+		return '<span style="color:var(--text-muted);">—</span>';
+	}
+
+	let single = rows.length === 1;
+	return rows.map(row => {
+		let balance = `<strong style="color:var(--text-color);">${frappe.utils.escape_html(row.balance)}</strong>`;
+		if (single) return `<div>${balance}</div>`;
+
+		let warehouse = (row.warehouse || '').replace(/\s*-\s*CA$/, '').trim();
+		return `<div>${frappe.utils.escape_html(warehouse)}: ${balance}</div>`;
+	}).join('');
 }
 
 function open_item_modal(page, category, existing_item) {
@@ -523,12 +581,22 @@ function open_item_modal(page, category, existing_item) {
 				reqd: 1,
 				default: is_new ? 0 : flt(existing_item.aluminium_rate_per_kg || 0)
 			},
+			{ fieldtype: 'Column Break' },
 			{
 				fieldtype: 'Float',
 				fieldname: 'aluminium_weight_per_length',
 				label: 'Weight / Length',
 				reqd: 1,
 				default: is_new ? 0 : flt(existing_item.aluminium_weight_per_length || 0)
+			},
+			{ fieldtype: 'Column Break' },
+			{
+				fieldtype: 'Float',
+				fieldname: 'aluminium_price_factor',
+				label: 'Ratio',
+				precision: 4,
+				reqd: 1,
+				default: MI_ALUMINIUM_PRICE_FACTOR
 			},
 			{ fieldtype: 'Section Break', label: 'Calculated Prices' },
 			{ fieldtype: 'Currency', fieldname: 'retail_rate', label: 'Normal Price (KES)', read_only: 1, default: is_new ? 0 : (existing_item.retail_rate || aluminium_defaults.normal_price) },
@@ -579,6 +647,7 @@ function open_item_modal(page, category, existing_item) {
 			if (is_aluminium) {
 				payload.aluminium_rate_per_kg = values.aluminium_rate_per_kg;
 				payload.aluminium_weight_per_length = values.aluminium_weight_per_length;
+				payload.aluminium_price_factor = values.aluminium_price_factor;
 			}
 
 			frappe.call({
@@ -588,6 +657,9 @@ function open_item_modal(page, category, existing_item) {
 				freeze_message: 'Saving Item...',
 				callback: function(r) {
 					if (!r.exc) {
+						if (is_aluminium && flt(values.aluminium_price_factor)) {
+							MI_ALUMINIUM_PRICE_FACTOR = flt(values.aluminium_price_factor);
+						}
 						frappe.show_alert({message: `Item Saved successfully`, indicator: 'green'});
 						d.hide();
 						load_category_tab(page, category);
@@ -612,12 +684,13 @@ function open_item_modal(page, category, existing_item) {
 		const recalc_aluminium_prices = () => {
 			let prices = get_aluminium_prices(
 				d.get_value('aluminium_rate_per_kg') || 0,
-				d.get_value('aluminium_weight_per_length') || 0
+				d.get_value('aluminium_weight_per_length') || 0,
+				d.get_value('aluminium_price_factor') || 0
 			);
 			set_aluminium_price_fields(prices);
 		};
 
-		['aluminium_rate_per_kg', 'aluminium_weight_per_length'].forEach(fieldname => {
+		['aluminium_rate_per_kg', 'aluminium_weight_per_length', 'aluminium_price_factor'].forEach(fieldname => {
 			if (d.fields_dict[fieldname] && d.fields_dict[fieldname].$input) {
 				d.fields_dict[fieldname].$input.on('input', recalc_aluminium_prices);
 			}
@@ -1362,6 +1435,7 @@ function get_manage_items_html() {
 							<th>Item</th>
 							<th>Product Code</th>
 							<th class="mi-code-head">Item Code</th>
+							<th>Stock</th>
 							<th style="text-align:center;">UOM</th>
 							<th class="mi-primary-price-head" style="text-align:right;">Retail Price</th>
 							<th class="mi-price-lists-head" style="text-align:right;">Price Lists</th>

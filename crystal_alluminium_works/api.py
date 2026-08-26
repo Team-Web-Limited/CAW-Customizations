@@ -648,10 +648,39 @@ def _infer_product_code(item_group=None, item_code=None, item_name=None, glass_t
     return CATEGORY_PRODUCT_CODES.get(item_group)
 
 
-def _get_aluminium_price_components(rate_per_kg=0, weight_per_length=0):
+def _get_aluminium_price_factor():
+    """The global Normal->Mill Finished/Special ratio, falling back to the built-in
+    default when the setting is missing or zeroed out."""
+    try:
+        factor = flt(frappe.db.get_single_value("Aluminium Pricing Settings", "price_factor"))
+    except Exception:
+        factor = 0
+
+    return factor if factor > 0 else ALUMINIUM_PRICE_FACTOR
+
+
+@frappe.whitelist()
+def get_aluminium_price_factor():
+    return _get_aluminium_price_factor()
+
+
+@frappe.whitelist()
+def save_aluminium_price_factor(price_factor):
+    factor = flt(price_factor)
+    if factor <= 0:
+        frappe.throw("Aluminium price ratio must be greater than zero.")
+
+    settings = frappe.get_single("Aluminium Pricing Settings")
+    settings.price_factor = factor
+    settings.save(ignore_permissions=True)
+    return factor
+
+
+def _get_aluminium_price_components(rate_per_kg=0, weight_per_length=0, price_factor=None):
+    factor = flt(price_factor) if price_factor else _get_aluminium_price_factor()
     normal_price = flt(rate_per_kg) * flt(weight_per_length)
-    mill_finished_price = normal_price / ALUMINIUM_PRICE_FACTOR if ALUMINIUM_PRICE_FACTOR else normal_price
-    special_price = normal_price * ALUMINIUM_PRICE_FACTOR
+    mill_finished_price = normal_price / factor if factor else normal_price
+    special_price = normal_price * factor
     return {
         "normal_price": flt(normal_price),
         "mill_finished_price": flt(mill_finished_price),
@@ -4172,6 +4201,49 @@ def _save_item_price(item_code, price_list, rate):
         ip.save(ignore_permissions=True)
 
 @frappe.whitelist()
+def reprice_aluminium_items(price_factor=None):
+    """Re-derive every Aluminium item's prices from its own rate/kg and weight/length
+    using the global ratio.
+
+    Only the ratio is shared; each item keeps its own inputs. Normal Price does not
+    depend on the ratio, so in practice this moves Mill Finished and Special."""
+    factor = flt(price_factor) if price_factor else _get_aluminium_price_factor()
+    if factor <= 0:
+        frappe.throw("Aluminium price ratio must be greater than zero.")
+
+    if not (
+        _item_has_field("custom_aluminium_rate_per_kg")
+        and _item_has_field("custom_aluminium_weight_per_length")
+    ):
+        return {"repriced": 0, "skipped": 0, "price_factor": factor}
+
+    items = frappe.get_all(
+        "Item",
+        filters={"item_group": "Aluminium"},
+        fields=["name", "custom_aluminium_rate_per_kg", "custom_aluminium_weight_per_length"],
+    )
+
+    repriced = 0
+    skipped = []
+    for item in items:
+        rate_per_kg = flt(item.custom_aluminium_rate_per_kg)
+        weight_per_length = flt(item.custom_aluminium_weight_per_length)
+        # Legacy items priced by hand carry no rate/weight; recomputing would zero them.
+        if rate_per_kg <= 0 or weight_per_length <= 0:
+            skipped.append(item.name)
+            continue
+
+        prices = _get_aluminium_price_components(rate_per_kg, weight_per_length, factor)
+        _save_item_price(item.name, "Retail", prices["normal_price"])
+        _save_item_price(item.name, "Wholesale", prices["mill_finished_price"])
+        _save_item_price(item.name, "Special", prices["special_price"])
+        frappe.db.set_value("Item", item.name, "standard_rate", prices["normal_price"])
+        repriced += 1
+
+    return {"repriced": repriced, "skipped": skipped, "price_factor": factor}
+
+
+@frappe.whitelist()
 def save_custom_item(data):
     """
     Creates or updates an Item and its associated Item Prices (Retail/Wholesale).
@@ -4186,6 +4258,7 @@ def save_custom_item(data):
     is_new = data.get("is_new")
     aluminium_rate_per_kg = flt(data.get("aluminium_rate_per_kg", 0))
     aluminium_weight_per_length = flt(data.get("aluminium_weight_per_length", 0))
+    aluminium_price_factor = flt(data.get("aluminium_price_factor", 0))
     retail_rate = data.get("retail_rate", 0)
     wholesale_rate = data.get("wholesale_rate", 0)
     special_rate = data.get("special_rate", 0)
@@ -4203,6 +4276,8 @@ def save_custom_item(data):
         frappe.throw("Item Name is required.")
     if storage_category == "Aluminium" and (aluminium_rate_per_kg < 0 or aluminium_weight_per_length < 0):
         frappe.throw("Aluminium rate/kg and weight/length cannot be negative.")
+    if storage_category == "Aluminium" and aluminium_price_factor < 0:
+        frappe.throw("Aluminium price ratio cannot be negative.")
 
     if storage_category == "Glass":
         _ensure_glass_type_storage()
@@ -4211,7 +4286,21 @@ def save_custom_item(data):
     elif storage_category == "Aluminium":
         _ensure_product_code_storage()
         _ensure_aluminium_pricing_storage()
-        aluminium_prices = _get_aluminium_price_components(aluminium_rate_per_kg, aluminium_weight_per_length)
+        # The ratio is a global setting: changing it here re-prices the whole
+        # Aluminium catalog, each item off its own rate/kg and weight/length.
+        if aluminium_price_factor > 0 and aluminium_price_factor != _get_aluminium_price_factor():
+            save_aluminium_price_factor(aluminium_price_factor)
+            summary = reprice_aluminium_items(aluminium_price_factor)
+            message = f"Ratio changed to {aluminium_price_factor}. Re-priced <b>{summary['repriced']}</b> Aluminium item(s)."
+            if summary["skipped"]:
+                skipped_list = ", ".join(frappe.utils.escape_html(name) for name in summary["skipped"])
+                message += (
+                    f"<br>Left unchanged (no rate/kg or weight/length on record): {skipped_list}."
+                )
+            frappe.msgprint(message, title="Aluminium Re-priced", indicator="blue")
+        aluminium_prices = _get_aluminium_price_components(
+            aluminium_rate_per_kg, aluminium_weight_per_length, aluminium_price_factor
+        )
         retail_rate = aluminium_prices["normal_price"]
         wholesale_rate = aluminium_prices["mill_finished_price"]
         special_rate = aluminium_prices["special_price"]
@@ -6189,41 +6278,92 @@ def get_item_stock_balance(item_code):
         fields=["warehouse", "actual_qty"]
     )
     
-    balances = []
-    for b in bins:
-        warehouse = b.warehouse
-        actual_qty = frappe.utils.flt(b.actual_qty)
-        
-        if is_glass and not is_laminated:
-            # Reconstruct glass sheet balance for this warehouse
-            try:
-                ledger_data = get_glass_stock_ledger(item_code, warehouse)
-                sheet_bal = ledger_data.get("final_sheet_balance") if isinstance(ledger_data, dict) else {}
-            except Exception:
-                sheet_bal = {}
-                
-            # Format sheet balance string
-            if sheet_bal:
-                sheet_strs = [f"{size}: {int(pcs)} pcs" for size, pcs in sheet_bal.items()]
-                bal_str = ", ".join(sheet_strs)
-            else:
-                bal_str = f"0 sheets ({round(actual_qty, 2)} SFT)"
-            
-            balances.append({
-                "warehouse": warehouse,
-                "balance": bal_str,
-                "qty": actual_qty,
-                "uom": "SFT",
-                "sheet_bal": sheet_bal
-            })
+    return [
+        _build_stock_balance_row(item_code, b.warehouse, b.actual_qty, is_glass, is_laminated, stock_uom)
+        for b in bins
+    ]
+
+
+def _build_stock_balance_row(item_code, warehouse, actual_qty, is_glass, is_laminated, stock_uom):
+    """Format one warehouse's balance for an item.
+
+    Standard (non-laminated) Glass is reported as physical sheet counts per size,
+    reconstructed from the ledger; everything else as plain qty in its stock UOM."""
+    actual_qty = frappe.utils.flt(actual_qty)
+
+    if is_glass and not is_laminated:
+        # Reconstruct glass sheet balance for this warehouse
+        try:
+            ledger_data = get_glass_stock_ledger(item_code, warehouse)
+            sheet_bal = ledger_data.get("final_sheet_balance") if isinstance(ledger_data, dict) else {}
+        except Exception:
+            sheet_bal = {}
+
+        # Format sheet balance string
+        if sheet_bal:
+            sheet_strs = [f"{size}: {int(pcs)} pcs" for size, pcs in sheet_bal.items()]
+            bal_str = ", ".join(sheet_strs)
         else:
-            balances.append({
-                "warehouse": warehouse,
-                "balance": f"{round(actual_qty, 2)} {stock_uom}",
-                "qty": actual_qty,
-                "uom": stock_uom
-            })
-            
+            bal_str = f"0 sheets ({round(actual_qty, 2)} SFT)"
+
+        return {
+            "warehouse": warehouse,
+            "balance": bal_str,
+            "qty": actual_qty,
+            "uom": "SFT",
+            "sheet_bal": sheet_bal
+        }
+
+    return {
+        "warehouse": warehouse,
+        "balance": f"{round(actual_qty, 2)} {stock_uom}",
+        "qty": actual_qty,
+        "uom": stock_uom
+    }
+
+
+@frappe.whitelist()
+def get_items_stock_balances(item_codes):
+    """Bulk variant of get_item_stock_balance for list views.
+
+    Returns {item_code: [balance rows]} using the same per-category rules, but
+    with the Item and Bin lookups batched into one query each."""
+    if isinstance(item_codes, str):
+        item_codes = json.loads(item_codes)
+    item_codes = [c for c in (item_codes or []) if c]
+    if not item_codes:
+        return {}
+
+    item_fields = ["name", "item_group", "stock_uom"]
+    has_glass_type = _item_has_field("custom_glass_type")
+    if has_glass_type:
+        item_fields.append("custom_glass_type")
+
+    item_info = {
+        i.name: i
+        for i in frappe.get_all("Item", filters={"name": ["in", item_codes]}, fields=item_fields)
+    }
+
+    bins = frappe.get_all(
+        "Bin",
+        filters={"item_code": ["in", item_codes], "actual_qty": ["!=", 0]},
+        fields=["item_code", "warehouse", "actual_qty"]
+    )
+
+    balances = {code: [] for code in item_codes}
+    for b in bins:
+        info = item_info.get(b.item_code)
+        if not info:
+            continue
+
+        is_glass = info.item_group == "Glass"
+        is_laminated = is_glass and has_glass_type and info.get("custom_glass_type") == "Laminated"
+        balances[b.item_code].append(
+            _build_stock_balance_row(
+                b.item_code, b.warehouse, b.actual_qty, is_glass, is_laminated, info.stock_uom or "Nos"
+            )
+        )
+
     return balances
 
 
