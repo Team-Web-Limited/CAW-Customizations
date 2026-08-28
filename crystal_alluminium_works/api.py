@@ -5,6 +5,7 @@ from frappe.model.rename_doc import rename_doc
 from frappe.utils import flt
 from erpnext.accounts.party import get_party_account
 from crystal_alluminium_works.pricing_engine import (
+    CEILING_BOARD_ITEM_CODES,
     CEILING_COMPONENTS,
     DEFAULT_GLASS_HOLE_TYPE,
     DEFAULT_GLASS_NOTCH_TYPE,
@@ -4107,6 +4108,11 @@ def get_items_with_prices(category):
                 }
         
     return items
+
+
+@frappe.whitelist()
+def get_ceiling_board_item_codes():
+    return CEILING_BOARD_ITEM_CODES
 
 
 @frappe.whitelist()

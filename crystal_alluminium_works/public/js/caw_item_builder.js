@@ -36,7 +36,15 @@
 	const DEFAULT_HOLE_TYPE = '5mm';
 	const NOTCH_TYPE_OPTIONS = 'Standard\nSmall\nMirror Screws\nTimber Box';
 	const DEFAULT_NOTCH_TYPE = 'Standard';
-	const CEILING_BOARD_ITEM_CODES = new Set(['AMC', 'AGC']);
+	// Loaded from crystal_alluminium_works.api.get_ceiling_board_item_codes at module load —
+	// see CEILING_BOARD_ITEM_CODES in pricing_engine.py for the single source of truth.
+	// get_query below runs synchronously, so this is fetched eagerly rather than lazily,
+	// seeded with the known codes as a fallback in case it's used before the fetch resolves.
+	let CEILING_BOARD_ITEM_CODES = new Set(['AMC', 'AGC']);
+	frappe.call({
+		method: 'crystal_alluminium_works.api.get_ceiling_board_item_codes',
+		callback: r => { CEILING_BOARD_ITEM_CODES = new Set(r.message || []); },
+	});
 
 	const CACHE = { aluminium_colors: null, sheet_configs: null };
 

@@ -7,6 +7,7 @@ frappe.pages['quotation-builder'].on_page_load = function (wrapper) {
 	wrapper.page = page;
 
 	load_aluminium_price_factor();
+	load_ceiling_board_item_codes();
 
 	// State
 	if (!window.qb_state) {
@@ -95,7 +96,19 @@ const QB_CEILING_COMPONENTS = [
 	{ label: 'Wall angle', ratio: 0.25, mode: 'multiply' }
 ];
 const QB_CEILING_COMPONENT_ITEM_CODES = QB_CEILING_COMPONENTS.map(component => component.label);
-const QB_CEILING_BOARD_ITEM_CODES = new Set(['AMC', 'AGC']);
+// Loaded from crystal_alluminium_works.api.get_ceiling_board_item_codes on page load —
+// see CEILING_BOARD_ITEM_CODES in pricing_engine.py for the single source of truth.
+// Seeded with the known codes as a fallback in case something renders before the fetch resolves.
+let QB_CEILING_BOARD_ITEM_CODES = new Set(['AMC', 'AGC']);
+
+function load_ceiling_board_item_codes() {
+	frappe.call({
+		method: 'crystal_alluminium_works.api.get_ceiling_board_item_codes',
+		callback: function (r) {
+			QB_CEILING_BOARD_ITEM_CODES = new Set(r.message || []);
+		}
+	});
+}
 
 function refresh_quotation_builder(page) {
 	if (!page) {

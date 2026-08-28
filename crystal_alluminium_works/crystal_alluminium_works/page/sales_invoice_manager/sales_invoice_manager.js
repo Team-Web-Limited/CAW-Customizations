@@ -10,6 +10,7 @@ frappe.pages['sales-invoice-manager'].on_page_load = function(wrapper) {
 	});
 
 	wrapper.page = page;
+	load_ceiling_board_item_codes();
 };
 
 const SALES_INVOICE_VAT_RATE = 0.16;
@@ -20,7 +21,19 @@ const SALES_INVOICE_CEILING_COMPONENTS = [
 	{ label: 'Sub Cross 2ft', ratio: 1.33, mode: 'multiply' },
 	{ label: 'Wall angle', ratio: 0.25, mode: 'multiply' }
 ];
-const SALES_INVOICE_CEILING_BOARD_ITEM_CODES = new Set(['AMC', 'AGC']);
+// Loaded from crystal_alluminium_works.api.get_ceiling_board_item_codes on page load —
+// see CEILING_BOARD_ITEM_CODES in pricing_engine.py for the single source of truth.
+// Seeded with the known codes as a fallback in case something renders before the fetch resolves.
+let SALES_INVOICE_CEILING_BOARD_ITEM_CODES = new Set(['AMC', 'AGC']);
+
+function load_ceiling_board_item_codes() {
+	frappe.call({
+		method: 'crystal_alluminium_works.api.get_ceiling_board_item_codes',
+		callback: function (r) {
+			SALES_INVOICE_CEILING_BOARD_ITEM_CODES = new Set(r.message || []);
+		}
+	});
+}
 
 function get_sales_invoice_route_context() {
 	let route = frappe.get_route();

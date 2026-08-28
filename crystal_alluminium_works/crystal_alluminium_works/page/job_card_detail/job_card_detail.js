@@ -10,7 +10,22 @@ frappe.pages['job-card-detail'].on_page_load = function(wrapper) {
 	});
 
 	wrapper.page = page;
+	load_ceiling_board_item_codes();
 };
+
+// Loaded from crystal_alluminium_works.api.get_ceiling_board_item_codes on page load —
+// see CEILING_BOARD_ITEM_CODES in pricing_engine.py for the single source of truth.
+// Seeded with the known codes as a fallback in case something renders before the fetch resolves.
+let JC_CEILING_BOARD_ITEM_CODES = ['AMC', 'AGC'];
+
+function load_ceiling_board_item_codes() {
+	frappe.call({
+		method: 'crystal_alluminium_works.api.get_ceiling_board_item_codes',
+		callback: function (r) {
+			JC_CEILING_BOARD_ITEM_CODES = r.message || JC_CEILING_BOARD_ITEM_CODES;
+		}
+	});
+}
 
 frappe.pages['job-card-detail'].on_page_show = function(wrapper) {
 	let page = wrapper.page || (wrapper.control ? wrapper.control.page : null);
@@ -927,7 +942,7 @@ function get_job_card_print_table_context(quotation) {
 	let has_glass_rows = parent_rows.some(row => (row.custom_product_category || '') === 'Glass');
 	let non_ceiling_rows = parent_rows.filter(row => (row.custom_product_category || '') !== 'Ceiling');
 	let ceiling_rows = parent_rows.filter(row => (row.custom_product_category || '') === 'Ceiling');
-	let ceiling_board_item_codes = ['AMC', 'AGC'];
+	let ceiling_board_item_codes = JC_CEILING_BOARD_ITEM_CODES;
 	let ceiling_component_labels = ['Board', 'MainT', 'Sub Cross 4ft', 'Sub Cross 2ft', 'Wall angle'];
 	let has_ceiling_bundle = ceiling_rows.some(row => flt(row.custom_ceiling_sq_m || 0) > 0);
 	let ceiling_single_labels = [];
@@ -1703,7 +1718,7 @@ function render_released_breakdown_ceiling_table(matches) {
 		return '';
 	}
 
-	let ceiling_board_item_codes = ['AMC', 'AGC'];
+	let ceiling_board_item_codes = JC_CEILING_BOARD_ITEM_CODES;
 	let ceiling_component_labels = ['Board', 'MainT', 'Sub Cross 4ft', 'Sub Cross 2ft', 'Wall angle'];
 	let has_ceiling_bundle = ceiling_matches.some(({ row }) => flt(row.custom_ceiling_sq_m || 0) > 0);
 	let ceiling_single_labels = [];

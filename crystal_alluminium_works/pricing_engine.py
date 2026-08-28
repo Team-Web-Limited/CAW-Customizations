@@ -40,6 +40,11 @@ CEILING_COMPONENTS = [
     {"item_code": "Sub Cross 2ft", "ratio": 1.33, "mode": "multiply"},
     {"item_code": "Wall angle", "ratio": 0.25, "mode": "multiply"},
 ]
+# Single source of truth for which Item codes can be sold as a ceiling "bundle"
+# (per-sqm parent row + auto-generated component pcs). Referenced by every page
+# that needs to filter/label board items instead of each keeping its own copy —
+# see get_ceiling_board_item_codes() in api.py.
+CEILING_BOARD_ITEM_CODES = ["AMC", "AGC"]
 LEGACY_CEILING_ITEM_ALIASES = {
     "SC4ft": "Sub Cross 4ft",
     "SC2ft": "Sub Cross 2ft",

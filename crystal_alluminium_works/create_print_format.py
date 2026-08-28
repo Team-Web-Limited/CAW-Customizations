@@ -113,7 +113,7 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
 {{% set has_ceiling_bundle = namespace(value=false) %}}
 {{% set ceiling_single_labels = namespace(items=[]) %}}
 {{% set ceiling_component_labels = ['Board', 'MainT', 'Sub Cross 4ft', 'Sub Cross 2ft', 'Wall angle'] %}}
-{{% set ceiling_board_item_codes = ['AMC', 'AGC'] %}}
+{{% set ceiling_board_item_codes = frappe.get_attr("crystal_alluminium_works.pricing_engine.CEILING_BOARD_ITEM_CODES") %}}
 {{% for row in doc.items %}}
     {{% if not row.custom_auto_generated and (row.custom_aluminium_color or '')|trim %}}
         {{% set has_color_rows.value = true %}}
@@ -593,7 +593,7 @@ def build_crystal_job_card_print_format_html():
 {% set has_ceiling_bundle = namespace(value=false) %}
 {% set ceiling_single_labels = namespace(items=[]) %}
 {% set ceiling_component_labels = ['Board', 'MainT', 'Sub Cross 4ft', 'Sub Cross 2ft', 'Wall angle'] %}
-{% set ceiling_board_item_codes = ['AMC', 'AGC'] %}
+{% set ceiling_board_item_codes = frappe.get_attr("crystal_alluminium_works.pricing_engine.CEILING_BOARD_ITEM_CODES") %}
 {% for row in print_items %}
     {% if not row.custom_auto_generated and (row.custom_aluminium_color or '')|trim %}
         {% set has_color_rows.value = true %}
