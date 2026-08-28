@@ -40,7 +40,7 @@
 	// see CEILING_BOARD_ITEM_CODES in pricing_engine.py for the single source of truth.
 	// get_query below runs synchronously, so this is fetched eagerly rather than lazily,
 	// seeded with the known codes as a fallback in case it's used before the fetch resolves.
-	let CEILING_BOARD_ITEM_CODES = new Set(['AMC', 'AGC']);
+	let CEILING_BOARD_ITEM_CODES = new Set(['AC1', 'AC2']);
 	frappe.call({
 		method: 'crystal_alluminium_works.api.get_ceiling_board_item_codes',
 		callback: r => { CEILING_BOARD_ITEM_CODES = new Set(r.message || []); },

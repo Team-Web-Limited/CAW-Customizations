@@ -44,7 +44,7 @@ CEILING_COMPONENTS = [
 # (per-sqm parent row + auto-generated component pcs). Referenced by every page
 # that needs to filter/label board items instead of each keeping its own copy —
 # see get_ceiling_board_item_codes() in api.py.
-CEILING_BOARD_ITEM_CODES = ["AMC", "AGC"]
+CEILING_BOARD_ITEM_CODES = ["AC1", "AC2"]
 LEGACY_CEILING_ITEM_ALIASES = {
     "SC4ft": "Sub Cross 4ft",
     "SC2ft": "Sub Cross 2ft",

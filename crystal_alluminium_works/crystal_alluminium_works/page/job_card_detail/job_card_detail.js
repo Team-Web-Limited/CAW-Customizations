@@ -16,7 +16,7 @@ frappe.pages['job-card-detail'].on_page_load = function(wrapper) {
 // Loaded from crystal_alluminium_works.api.get_ceiling_board_item_codes on page load —
 // see CEILING_BOARD_ITEM_CODES in pricing_engine.py for the single source of truth.
 // Seeded with the known codes as a fallback in case something renders before the fetch resolves.
-let JC_CEILING_BOARD_ITEM_CODES = ['AMC', 'AGC'];
+let JC_CEILING_BOARD_ITEM_CODES = ['AC1', 'AC2'];
 
 function load_ceiling_board_item_codes() {
 	frappe.call({
