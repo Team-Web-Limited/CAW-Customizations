@@ -5867,6 +5867,32 @@ def _attach_sales_invoices_to_entries(entries):
         e.sales_invoice = inv_list[0] if inv_list else ""
 
 
+def block_glass_stock_reconciliation(doc, method=None):
+    """Glass items can't go through the plain Stock Reconciliation doctype: it moves
+    Bin.actual_qty directly, leaving the sheet-count ledger (get_glass_stock_ledger,
+    reconstructed only from Purchase Receipt / Stock Entry rows) frozen at its old
+    value — the SFT balance and the sheet-size breakdown silently go out of sync.
+    Glass items must be adjusted through the "Stock Adjustment" page instead, which
+    posts the equivalent Stock Entry with matching sheet-size tags.
+    """
+    item_codes = list({row.item_code for row in doc.items if row.item_code})
+    if not item_codes:
+        return
+
+    glass_items = frappe.get_all(
+        "Item",
+        filters={"name": ["in", item_codes], "item_group": "Glass"},
+        pluck="name",
+    )
+    if glass_items:
+        frappe.throw(
+            "Glass items can't be adjusted here — Stock Reconciliation doesn't update "
+            "the sheet-size counts and will desync them from the SFT quantity. Use the "
+            f"\"Stock Adjustment\" page (/desk/stock_adjustment) instead. Affected item(s): "
+            f"{', '.join(glass_items)}."
+        )
+
+
 @frappe.whitelist()
 def get_glass_stock_ledger(item_code, warehouse, from_date=None, to_date=None):
     """Reconstruct a running sheet balance alongside the standard SFT balance by parsing

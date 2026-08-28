@@ -231,6 +231,13 @@ doc_events = {
 	# received/rejected quantities when that flag is set.
 	"Purchase Invoice": {
 		"validate": "crystal_alluminium_works.purchase_handler.recompute_sheet_quantities"
+	},
+	# Glass items keep a separate sheet-size ledger (see api.get_glass_stock_ledger)
+	# that a plain Stock Reconciliation can't update, so it silently desyncs the SFT
+	# balance from the sheet counts. Block it here and point to the Stock Adjustment
+	# page instead, which posts the equivalent Stock Entry with matching sheet tags.
+	"Stock Reconciliation": {
+		"validate": "crystal_alluminium_works.api.block_glass_stock_reconciliation"
 	}
 }
 
