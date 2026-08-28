@@ -511,6 +511,7 @@ async function render_customer_detail(page, customer_name) {
 			</div>
 		`);
 	}
+	
 }
 
 async function get_customer_manager_invoices(customer_name, payment_mode) {
