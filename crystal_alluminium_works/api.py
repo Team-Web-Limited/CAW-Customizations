@@ -5880,6 +5880,12 @@ def block_glass_stock_reconciliation(doc, method=None):
     value — the SFT balance and the sheet-size breakdown silently go out of sync.
     Glass items must be adjusted through the "Stock Adjustment" page instead, which
     posts the equivalent Stock Entry with matching sheet-size tags.
+
+    Toughened Glass is exempt: it's cut to order rather than sold from a fixed sheet
+    catalog, so get_glass_stock_ledger never derives a sheet balance for it in the
+    first place (no custom_sheet_size on its Purchase Receipt rows, no "Sheets
+    Consumed/Returned" Stock Entry tags) — there's no sheet-count ledger for a plain
+    Stock Reconciliation to desync.
     """
     item_codes = list({row.item_code for row in doc.items if row.item_code})
     if not item_codes:
@@ -5888,8 +5894,9 @@ def block_glass_stock_reconciliation(doc, method=None):
     glass_items = frappe.get_all(
         "Item",
         filters={"name": ["in", item_codes], "item_group": "Glass"},
-        pluck="name",
+        fields=["name", "custom_glass_type"],
     )
+    glass_items = [d.name for d in glass_items if d.custom_glass_type != "Toughened"]
     if glass_items:
         frappe.throw(
             "Glass items can't be adjusted here — Stock Reconciliation doesn't update "

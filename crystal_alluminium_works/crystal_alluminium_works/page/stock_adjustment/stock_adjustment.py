@@ -81,8 +81,29 @@ def submit_stock_reconciliation(payload):
 		frappe.throw("No items to adjust.")
 
 	if item_group == "Glass":
-		return _submit_glass_sheet_adjustment(warehouse, items)
+		# Toughened Glass is cut to order, not sold from a fixed sheet catalog, so it
+		# carries no sheet-count ledger to desync (see block_glass_stock_reconciliation) —
+		# it's adjusted by qty just like a non-glass item. Everything else in the group
+		# still needs the sheet-size-aware path.
+		toughened_codes = set(frappe.get_all(
+			"Item",
+			filters={"name": ["in", [row.get("item_code") for row in items]], "custom_glass_type": "Toughened"},
+			pluck="name",
+		))
+		qty_items = [row for row in items if row.get("item_code") in toughened_codes]
+		sheet_items = [row for row in items if row.get("item_code") not in toughened_codes]
 
+		entry_names = []
+		if qty_items:
+			entry_names.append(_submit_plain_reconciliation(warehouse, qty_items))
+		if sheet_items:
+			entry_names.append(_submit_glass_sheet_adjustment(warehouse, sheet_items))
+		return ", ".join(entry_names)
+
+	return _submit_plain_reconciliation(warehouse, items)
+
+
+def _submit_plain_reconciliation(warehouse, items):
 	sr = frappe.new_doc("Stock Reconciliation")
 	sr.purpose = "Stock Reconciliation"
 	sr.set_posting_time = 1

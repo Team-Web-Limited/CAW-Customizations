@@ -51,6 +51,14 @@ function load_options(page) {
 	});
 }
 
+// Toughened Glass is cut to order rather than sold from a fixed sheet catalog, so
+// it's adjusted by plain qty like any non-glass item — only other Glass rows go
+// through the Sheet Sizes modal.
+function is_sheet_tracked_glass(page, item) {
+	let item_group = $(page.body).find('.sa-item-group').val();
+	return item_group === 'Glass' && item.custom_glass_type !== 'Toughened';
+}
+
 function bind_events(page) {
 	$(page.body).on('click', '.sa-load-btn', function() {
 		load_items(page);
@@ -60,13 +68,13 @@ function bind_events(page) {
 		submit_reconciliation(page);
 	});
 	
-	// Non-glass rows: New Qty is typed directly.
+	// Non-glass rows (and Toughened Glass rows, which aren't sold as fixed sheets):
+	// New Qty is typed directly.
 	$(page.body).on('change keyup', '.sa-input-new-qty', function() {
 		let $row = $(this).closest('tr');
 		let idx = $row.data('idx');
 		let item = page.adjustment_items[idx];
-		let is_glass = $(page.body).find('.sa-item-group').val() === 'Glass';
-		if (is_glass) return; // Glass rows derive New Qty from the Sheet Sizes modal instead.
+		if (is_sheet_tracked_glass(page, item)) return; // Derives New Qty from the Sheet Sizes modal instead.
 
 		let val = $(this).val();
 		item.new_qty = val !== '' ? flt(val) : null;
@@ -295,27 +303,37 @@ function render_grid(page, item_group) {
 
 	page.adjustment_items.forEach((item, idx) => {
 		let current_qty_display = flt(item.current_qty, 4);
+		let is_sheet_row = is_sheet_tracked_glass(page, item);
 
 		let glass_cols = '';
 		if (is_glass) {
 			item.sheet_balance = item.sheet_balance || {};
 			item.sheet_edits = {};
 
-			let total_current_sheets = 0;
-			Object.keys(item.sheet_balance).forEach(size => { total_current_sheets += flt(item.sheet_balance[size]); });
-			let primary_size = get_primary_sheet_size(item);
+			if (is_sheet_row) {
+				let total_current_sheets = 0;
+				Object.keys(item.sheet_balance).forEach(size => { total_current_sheets += flt(item.sheet_balance[size]); });
+				let primary_size = get_primary_sheet_size(item);
 
-			glass_cols = `
-				<td style="padding:10px 14px; text-align:right; font-weight:bold; color:var(--text-muted);" class="sa-col-glass sa-current-sheets">${flt(total_current_sheets, 2)}</td>
-				<td style="padding:8px 14px;" class="sa-col-glass"><button type="button" class="btn btn-xs btn-default sa-sheet-sizes-btn" style="min-width:110px;">${primary_size ? frappe.utils.escape_html(primary_size) : 'Select Sizes'}</button></td>
-				<td style="padding:10px 14px; text-align:right; font-weight:bold;" class="sa-col-glass sa-sheet-diff"></td>
-			`;
+				glass_cols = `
+					<td style="padding:10px 14px; text-align:right; font-weight:bold; color:var(--text-muted);" class="sa-col-glass sa-current-sheets">${flt(total_current_sheets, 2)}</td>
+					<td style="padding:8px 14px;" class="sa-col-glass"><button type="button" class="btn btn-xs btn-default sa-sheet-sizes-btn" style="min-width:110px;">${primary_size ? frappe.utils.escape_html(primary_size) : 'Select Sizes'}</button></td>
+					<td style="padding:10px 14px; text-align:right; font-weight:bold;" class="sa-col-glass sa-sheet-diff"></td>
+				`;
+			} else {
+				// Toughened Glass: not sold as fixed sheets, so these columns don't apply.
+				glass_cols = `
+					<td style="padding:10px 14px; text-align:right; color:var(--text-muted);" class="sa-col-glass">—</td>
+					<td style="padding:8px 14px; color:var(--text-muted);" class="sa-col-glass">Not sheet-tracked</td>
+					<td style="padding:10px 14px; text-align:right; color:var(--text-muted);" class="sa-col-glass">—</td>
+				`;
+			}
 		}
 
-		let new_qty_input = is_glass ? 
-			`<input type="number" class="form-control sa-input-new-qty" style="width:100px;height:30px;padding:4px;text-align:right;background-color:var(--control-bg);display:inline-block;" disabled>` : 
+		let new_qty_input = is_sheet_row ?
+			`<input type="number" class="form-control sa-input-new-qty" style="width:100px;height:30px;padding:4px;text-align:right;background-color:var(--control-bg);display:inline-block;" disabled>` :
 			`<input type="number" class="form-control sa-input-new-qty" style="width:100px;height:30px;padding:4px;text-align:right;display:inline-block;" min="0" step="any">`;
-		
+
 		$body.append(`
 			<tr data-idx="${idx}">
 				<td style="padding:10px 14px;">${frappe.utils.escape_html(item.item_code)}</td>
@@ -337,7 +355,7 @@ function submit_reconciliation(page) {
 
 	let modified_items = [];
 	page.adjustment_items.forEach(item => {
-		if (is_glass) {
+		if (is_sheet_tracked_glass(page, item)) {
 			// Sent as absolute per-size targets, not net qty: two sizes on the same
 			// item can shift in opposite directions and cancel out in total SFT while
 			// still being a real change the sheet-count ledger needs to know about.
