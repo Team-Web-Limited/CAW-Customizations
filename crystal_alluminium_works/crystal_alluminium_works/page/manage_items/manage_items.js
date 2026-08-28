@@ -195,6 +195,15 @@ function bind_manage_items_events(page) {
 		open_item_modal(page, cat, item);
 	});
 
+	// Stock breakdown
+	$(page.body).on('click', '.mi-stock-btn', function() {
+		let $cell = $(this).closest('.mi-stock-cell');
+		let item_code = $cell.data('item-code');
+		let item_name = $cell.data('item-name') || item_code;
+		let rows = (page.mi_stock_balances && page.mi_stock_balances[item_code]) || [];
+		open_stock_breakdown_modal(item_code, item_name, rows);
+	});
+
 	$(page.body).on('input', '.mi-search-input', function() {
 		let query = ($(this).val() || '').trim().toLowerCase();
 		let items = page.mi_all_items || [];
@@ -484,7 +493,9 @@ function render_items_table(page, items) {
 				</td>
 				<td style="padding:12px 16px;">${item.custom_product_code || ''}</td>
 				${show_code ? `<td style="padding:12px 16px;">${item.item_code || ''}</td>` : ''}
-				<td class="mi-stock-cell" data-item-code="${item_code_esc}" style="padding:12px 16px; font-size:12px; color:var(--text-muted);">…</td>
+				<td class="mi-stock-cell" data-item-code="${item_code_esc}" data-item-name="${frappe.utils.escape_html(item.item_name || item.item_code)}" style="padding:12px 16px; font-size:12px; color:var(--text-muted);">
+						<button class="btn btn-xs btn-default mi-stock-btn" disabled>…</button>
+					</td>
 				<td style="padding:12px 16px; text-align:center;">
 					<span style="background:var(--subtle-fg);padding:2px 8px;border-radius:10px;font-size:11px;">${item.stock_uom}</span>
 				</td>
@@ -526,26 +537,85 @@ function load_stock_balances(page, items) {
 		callback: function(r) {
 			if (page.mi_stock_token !== token) return;
 			let balances = r.message || {};
+			page.mi_stock_balances = balances;
 			$(page.body).find('.mi-stock-cell').each(function() {
-				$(this).html(format_stock_balance(balances[$(this).data('item-code')]));
+				$(this).html(get_stock_cell_html(balances[$(this).data('item-code')]));
 			});
 		}
 	});
 }
 
-function format_stock_balance(rows) {
+function get_stock_cell_html(rows) {
 	if (!rows || !rows.length) {
 		return '<span style="color:var(--text-muted);">—</span>';
 	}
 
-	let single = rows.length === 1;
-	return rows.map(row => {
-		let balance = `<strong style="color:var(--text-color);">${frappe.utils.escape_html(row.balance)}</strong>`;
-		if (single) return `<div>${balance}</div>`;
+	return `<button class="btn btn-xs btn-default mi-stock-btn">${frappe.utils.escape_html(get_stock_summary_label(rows))}</button>`;
+}
 
-		let warehouse = (row.warehouse || '').replace(/\s*-\s*CA$/, '').trim();
-		return `<div>${frappe.utils.escape_html(warehouse)}: ${balance}</div>`;
-	}).join('');
+function get_stock_summary_label(rows) {
+	if (!rows || !rows.length) return '—';
+
+	let total_pcs = get_stock_breakdown_rows(rows).reduce((sum, row) => sum + flt(row.pcs), 0);
+	return `${Math.round(total_pcs * 100) / 100} pcs`;
+}
+
+// Groups the per-warehouse balance rows into a Sheet Size / Pcs breakdown.
+// Glass items already carry a reconstructed sheet_bal map per warehouse; everything
+// else falls back to warehouse name / qty so the same modal shape works for both.
+function get_stock_breakdown_rows(rows) {
+	let size_map = {};
+
+	(rows || []).forEach(row => {
+		if (row.sheet_bal && Object.keys(row.sheet_bal).length) {
+			Object.entries(row.sheet_bal).forEach(([size, pcs]) => {
+				size_map[size] = (size_map[size] || 0) + flt(pcs);
+			});
+		} else {
+			let label = (row.warehouse || '—').replace(/\s*-\s*CA$/, '').trim();
+			size_map[label] = (size_map[label] || 0) + flt(row.qty);
+		}
+	});
+
+	return Object.entries(size_map).map(([size, pcs]) => ({ size, pcs }));
+}
+
+function open_stock_breakdown_modal(item_code, item_name, rows) {
+	let breakdown = get_stock_breakdown_rows(rows);
+
+	let grid_html = breakdown.length
+		? `
+			<table class="table table-bordered">
+				<thead>
+					<tr>
+						<th>Sheet Size</th>
+						<th>Pcs</th>
+					</tr>
+				</thead>
+				<tbody>
+					${breakdown.map(row => `
+						<tr>
+							<td><input type="text" class="form-control" value="${frappe.utils.escape_html(row.size)}" readonly></td>
+							<td><input type="text" class="form-control" value="${frappe.utils.escape_html(String(Math.round(row.pcs * 100) / 100))}" readonly></td>
+						</tr>
+					`).join('')}
+				</tbody>
+			</table>
+		`
+		: `<div style="padding:16px;color:var(--text-muted);">No stock available.</div>`;
+
+	let d = new frappe.ui.Dialog({
+		title: `Stock — ${frappe.utils.escape_html(item_name || item_code)}`,
+		fields: [
+			{ fieldtype: 'HTML', fieldname: 'grid', options: grid_html }
+		],
+		primary_action_label: 'Close',
+		primary_action: function() {
+			d.hide();
+		}
+	});
+
+	d.show();
 }
 
 function open_item_modal(page, category, existing_item) {
