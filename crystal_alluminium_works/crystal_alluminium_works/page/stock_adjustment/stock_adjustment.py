@@ -12,10 +12,14 @@ GLASS_SERVICE_ITEM_KEYWORDS = ("Polishing", "Drilling", "Sandblasting", "Hole", 
 
 @frappe.whitelist()
 def get_items_for_adjustment(item_group, warehouse):
+	fields = ["name as item_code", "item_name as description", "stock_uom"]
+	if item_group == "Glass":
+		fields.append("custom_glass_type")
+
 	items = frappe.get_all(
 		"Item",
 		filters={"item_group": item_group, "disabled": 0, "is_stock_item": 1},
-		fields=["name as item_code", "item_name as description", "stock_uom"],
+		fields=fields,
 		order_by="name asc"
 	)
 
@@ -44,6 +48,22 @@ def get_items_for_adjustment(item_group, warehouse):
 		if item_group == "Glass":
 			glass_data = get_glass_stock_ledger(item.item_code, warehouse)
 			item.sheet_balance = glass_data.get("final_sheet_balance", {})
+
+	if item_group == "Glass":
+		# Laminated glass is repacked from Ordinary sheets rather than stocked by
+		# sheet size directly, so get_glass_stock_ledger never tracks a sheet
+		# balance for it (see the is_laminated check there) — it always shows
+		# Current Sheets = 0 here. Hide it from this page for now; it'll start
+		# reflecting real numbers once the repack process posts its own stock
+		# moves. Only hidden while it has no sheets on record, so a Laminated
+		# item that does pick up a balance some other way still surfaces here.
+		items = [
+			i for i in items
+			if not (
+				i.custom_glass_type == "Laminated"
+				and sum((i.sheet_balance or {}).values()) == 0
+			)
+		]
 
 	return items
 
