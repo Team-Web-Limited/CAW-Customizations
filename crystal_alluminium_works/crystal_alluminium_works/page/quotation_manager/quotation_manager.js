@@ -145,10 +145,13 @@ function get_manager_breakdown_uom(label, parent_item) {
 	return '';
 }
 
-function format_manager_review_number(value, precision = 3) {
+function format_manager_review_number(value, precision = 2) {
+	// Truncate (not round) to keep review numbers consistent with the system-wide
+	// 2-decimal default — explicit precision args (mm, pcs, etc.) are left alone.
 	let number = flt(value || 0);
-	let rounded = parseFloat(number.toFixed(precision));
-	return Number.isFinite(rounded) ? rounded : 0;
+	let factor = Math.pow(10, precision);
+	let truncated = Math.trunc(number * factor) / factor;
+	return Number.isFinite(truncated) ? truncated : 0;
 }
 
 function get_manager_sheet_size_dimensions(size) {
@@ -1104,6 +1107,19 @@ function validate_job_card_payment_capture(dialog) {
 	return true;
 }
 
+function validate_job_card_phone_number(dialog) {
+	let phone = (dialog.get_value('phone_number') || '').trim();
+	if (!phone) {
+		frappe.msgprint(__('Please enter the customer\'s Phone Number.'));
+		return false;
+	}
+	if (!/^\d{10}$/.test(phone)) {
+		frappe.msgprint(__('Phone Number must be exactly 10 digits.'));
+		return false;
+	}
+	return true;
+}
+
 async function get_existing_job_card_for_quotation(quotation) {
 	if (!quotation) {
 		return null;
@@ -1243,6 +1259,10 @@ async function open_job_card_modal(page, doc) {
 			}
 
 			if (!validate_job_card_payment_capture(d)) {
+				return;
+			}
+
+			if (!validate_job_card_phone_number(d)) {
 				return;
 			}
 

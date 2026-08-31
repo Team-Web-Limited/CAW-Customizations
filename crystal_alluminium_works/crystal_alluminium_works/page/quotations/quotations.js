@@ -87,7 +87,7 @@ function load_quotations(page, page_number) {
 
 	$body.find('.quo-list-body').html(`
 		<tr>
-			<td colspan="5" style="padding:24px; text-align:center; color:var(--text-muted);">
+			<td colspan="6" style="padding:24px; text-align:center; color:var(--text-muted);">
 				Loading quotations...
 			</td>
 		</tr>
@@ -117,7 +117,7 @@ function render_quotations_table(page, rows) {
 	if (!rows.length) {
 		$body.html(`
 			<tr>
-				<td colspan="5" style="padding:24px; text-align:center; color:var(--text-muted);">
+				<td colspan="6" style="padding:24px; text-align:center; color:var(--text-muted);">
 					No quotations match the current filters.
 				</td>
 			</tr>
@@ -136,10 +136,18 @@ function render_quotations_table(page, rows) {
 			'Cancelled': '#7f8c8d'
 		}[quotation.status] || '#7f8c8d';
 
+		let is_cash = quotation.customer_type === 'Cash';
+		let type_color = is_cash ? '#16a085' : '#8e44ad';
+
 		return `
 			<tr class="quo-list-row" data-name="${quotation.name}" style="cursor:pointer;">
 				<td style="padding:12px 16px; font-weight:600; color:var(--primary);">${quotation.name}</td>
-				<td style="padding:12px 16px; font-weight:500;">${quotation.customer_name || quotation.party_name || '—'}</td>
+				<td style="padding:12px 16px; text-align:center;">
+					<span style="background:${type_color}20; color:${type_color}; padding:4px 12px; border-radius:12px; font-size:12px; font-weight:600;">
+						${quotation.customer_type || '—'}
+					</span>
+				</td>
+				<td style="padding:12px 16px; font-weight:500;">${quotation.display_name || '—'}</td>
 				<td style="padding:12px 16px;">${quotation.transaction_date ? frappe.datetime.str_to_user(quotation.transaction_date) : '—'}</td>
 				<td style="padding:12px 16px; text-align:right; font-weight:600;">${format_currency(quotation.grand_total || 0, quotation.currency || 'KES')}</td>
 				<td style="padding:12px 16px; text-align:center;">
@@ -315,7 +323,8 @@ function get_quotations_html() {
 					<thead>
 						<tr>
 							<th>Quotation</th>
-							<th>Customer</th>
+							<th style="text-align:center;">C.Type</th>
+							<th>Name</th>
 							<th>Date</th>
 							<th style="text-align:right;">Total</th>
 							<th style="text-align:center;">Status</th>
@@ -323,7 +332,7 @@ function get_quotations_html() {
 					</thead>
 					<tbody class="quo-list-body">
 						<tr>
-							<td colspan="5" style="padding:24px; text-align:center; color:var(--text-muted);">
+							<td colspan="6" style="padding:24px; text-align:center; color:var(--text-muted);">
 								Loading quotations...
 							</td>
 						</tr>

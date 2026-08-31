@@ -205,23 +205,48 @@ def build_terms_html(print_format, values=None):
     return "<ol style=\"padding-left: 16px; margin: 0;\">" + "".join(f"<li>{term}</li>" for term in terms) + "</ol>"
 
 
+#: Values for "paybill_account_no" that mean "put the document's own reference
+#: number here" rather than a literal label. Configured this way because the
+#: paybill account number for these orders is, by policy, the quotation/order/
+#: invoice number itself - not a fixed account.
+PAYBILL_ACCOUNT_NO_DOC_NAME_PLACEHOLDERS = {
+    "QUOTE NO",
+    "QUOTATION NO",
+    "ORDER NO",
+    "INVOICE NO",
+    "DOC NO",
+}
+
+
 def build_payment_details_html(print_format, values=None):
     values = values or get_print_format_configuration(print_format)
+
+    paybill_account_no = values.get("paybill_account_no")
+    if (
+        paybill_account_no
+        and str(paybill_account_no).strip().upper() in PAYBILL_ACCOUNT_NO_DOC_NAME_PLACEHOLDERS
+    ):
+        # Emit raw Jinja so the built print format substitutes the actual
+        # document's name (e.g. SAL-QTN-2026-00021) at render/download time.
+        paybill_account_no_html = "{{ doc.name }}"
+    else:
+        paybill_account_no_html = _escape(paybill_account_no)
+
     rows = [
-        ("BANK", values.get("bank_name")),
-        ("A/C", values.get("account_name")),
-        ("BRANCH", values.get("branch")),
-        ("ACCOUNT NO", values.get("account_no")),
-        ("SWIFT CODE", values.get("swift_code")),
-        ("PAYBILL NO", values.get("paybill_no")),
-        ("ACCOUNT NO", values.get("paybill_account_no")),
+        ("BANK", _escape(values.get("bank_name"))),
+        ("A/C", _escape(values.get("account_name"))),
+        ("BRANCH", _escape(values.get("branch"))),
+        ("ACCOUNT NO", _escape(values.get("account_no"))),
+        ("SWIFT CODE", _escape(values.get("swift_code"))),
+        ("PAYBILL NO", _escape(values.get("paybill_no"))),
+        ("ACCOUNT NO", paybill_account_no_html),
     ]
     rows = [(label, value) for label, value in rows if value]
     if not rows:
         return ""
 
     row_html = "".join(
-        f"<div><strong>{_escape(label)}:</strong> {_escape(value)}</div>"
+        f"<div><strong>{_escape(label)}:</strong> {value}</div>"
         for label, value in rows
     )
     return f"""

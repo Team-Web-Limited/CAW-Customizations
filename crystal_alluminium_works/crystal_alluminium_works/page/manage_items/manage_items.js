@@ -933,6 +933,8 @@ function open_intervals_modal(page) {
 }
 
 function open_sheets_modal(page) {
+	const FIXED_SHEET_SIZE = '1 x 1';
+
 	function parse_sheet_size(size) {
 		let parts = String(size || '')
 			.split(/x/i)
@@ -999,17 +1001,23 @@ function open_sheets_modal(page) {
 
 		data.forEach(row => {
 			let dimensions = parse_sheet_size(row.size);
+			let is_fixed = row.size === FIXED_SHEET_SIZE;
+			let disabled = is_fixed ? 'disabled' : '';
 			html += `
-				<tr class="mi-sheet-row">
+				<tr class="mi-sheet-row ${is_fixed ? 'mi-sheet-row-fixed' : ''}">
 					<td>
 						<div style="display:flex;align-items:center;gap:8px;">
-							<input type="number" class="form-control sheet_width" placeholder="1220" value="${frappe.utils.escape_html(dimensions.width)}">
+							<input type="number" class="form-control sheet_width" placeholder="1220" value="${frappe.utils.escape_html(dimensions.width)}" ${disabled}>
 							<span style="font-weight:600;color:var(--text-muted);">x</span>
-							<input type="number" class="form-control sheet_height" placeholder="1830" value="${frappe.utils.escape_html(dimensions.height)}">
+							<input type="number" class="form-control sheet_height" placeholder="1830" value="${frappe.utils.escape_html(dimensions.height)}" ${disabled}>
 						</div>
 					</td>
-					<td><input type="number" step="0.01" class="form-control sheet_sft" value="${row.sft || ''}"></td>
-					<td style="text-align:center;"><button class="btn btn-xs btn-danger mi-del-sheet-row">✕</button></td>
+					<td><input type="number" step="0.01" class="form-control sheet_sft" value="${row.sft || ''}" ${disabled}></td>
+					<td style="text-align:center;">
+						${is_fixed
+							? `<span class="text-muted" title="Permanent size, cannot be edited or removed">🔒</span>`
+							: `<button class="btn btn-xs btn-danger mi-del-sheet-row">✕</button>`}
+					</td>
 				</tr>
 			`;
 		});

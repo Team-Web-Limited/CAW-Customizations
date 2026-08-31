@@ -197,10 +197,13 @@ function get_sales_invoice_breakdown_uom(label, parent_item) {
 	return '';
 }
 
-function format_sales_invoice_review_number(value, precision = 3) {
+function format_sales_invoice_review_number(value, precision = 2) {
+	// Truncate (not round) to keep review numbers consistent with the system-wide
+	// 2-decimal default — explicit precision args (mm, pcs, etc.) are left alone.
 	let number = flt(value || 0);
-	let rounded = parseFloat(number.toFixed(precision));
-	return Number.isFinite(rounded) ? rounded : 0;
+	let factor = Math.pow(10, precision);
+	let truncated = Math.trunc(number * factor) / factor;
+	return Number.isFinite(truncated) ? truncated : 0;
 }
 
 function get_sales_invoice_polish_sides_label(item) {

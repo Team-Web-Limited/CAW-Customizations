@@ -304,6 +304,38 @@ function queue_job_card_customer_defaults(dialog) {
 
 
 
+// "Cutoffs" is a value in the Item Consumed field (Sheets Consumed column), not a size.
+// It means the company built a new product from unmeasured scrap/off-cuts rather than a
+// tracked sheet item, so the size is pinned to the permanent 1 x 1 = 1 SFT entry (see
+// Glass Sheet Sizes), Pcs becomes N/A, and the row never contributes to stock deduction.
+const JC_CUTOFF_ITEM_CONSUMED = 'Cutoffs';
+const JC_CUTOFF_SIZE_VALUE = '1 x 1';
+
+function jc_is_cutoff_item(item_consumed) {
+	return String(item_consumed || '').trim().toLowerCase() === JC_CUTOFF_ITEM_CONSUMED.toLowerCase();
+}
+
+function jc_sheet_size_options_html(configs, selected_size) {
+	return configs
+		.map(c => `<option value="${c.size}" ${c.size === selected_size ? 'selected' : ''}>${c.size}</option>`)
+		.join('');
+}
+
+function jc_apply_cutoff_row_state($row) {
+	let is_cutoff = jc_is_cutoff_item($row.find('.sheet-item-consumed-input').val());
+	let $size = $row.find('.sheet-size-select');
+	let $pcs = $row.find('.sheet-pcs-input');
+	let $bal = $row.find('.sheet-balance-lbl');
+	if (is_cutoff) {
+		$size.val(JC_CUTOFF_SIZE_VALUE).prop('disabled', true);
+		$pcs.val('').prop('disabled', true).attr('placeholder', 'N/A');
+		$bal.text('N/A');
+	} else {
+		$size.prop('disabled', false);
+		$pcs.prop('disabled', false).attr('placeholder', 'Pcs');
+	}
+}
+
 function open_jc_operations_modal(page, job_card, quotation) {
 	// First fetch the latest custom_sheet_consumption_json from the Job Card
 	frappe.db.get_value('CAW Job Card', job_card.name, 'custom_sheet_consumption_json')
@@ -343,13 +375,15 @@ function open_jc_operations_modal(page, job_card, quotation) {
 						let item_sheets = [];
 						$(this).find('.sheet-entry-row').each(function() {
 							let item_consumed = $(this).find('.sheet-item-consumed-input').val();
-							let size = $(this).find('.sheet-size-select').val();
+							let is_cutoff = jc_is_cutoff_item(item_consumed);
+							let size = is_cutoff ? JC_CUTOFF_SIZE_VALUE : $(this).find('.sheet-size-select').val();
 							let pcs = flt($(this).find('.sheet-pcs-input').val());
-							if (size && pcs > 0) {
+							if (size && (is_cutoff || pcs > 0)) {
 								item_sheets.push({
-									item_consumed: item_consumed,
+									item_consumed: is_cutoff ? JC_CUTOFF_ITEM_CONSUMED : item_consumed,
 									size: size,
-									pcs: pcs
+									pcs: is_cutoff ? null : pcs,
+									is_cutoff: is_cutoff ? 1 : 0
 								});
 							}
 						});
@@ -388,18 +422,20 @@ function open_jc_operations_modal(page, job_card, quotation) {
 								let show_placeholder = existing_sheets.length === 0;
 
 								let sheets_html = existing_sheets.map(sheet => {
-									let row_options = configs.map(c => `<option value="${c.size}" ${c.size === sheet.size ? 'selected' : ''}>${c.size}</option>`).join('');
-									let current_item_consumed = sheet.item_consumed || item.item_code;
-									
+									let is_cutoff = !!sheet.is_cutoff || jc_is_cutoff_item(sheet.item_consumed);
+									let current_item_consumed = is_cutoff ? JC_CUTOFF_ITEM_CONSUMED : (sheet.item_consumed || item.item_code);
+									let size_for_row = is_cutoff ? JC_CUTOFF_SIZE_VALUE : sheet.size;
+									let row_options = jc_sheet_size_options_html(configs, size_for_row);
+
 									return `
 										<div class="sheet-entry-row" style="display: flex; gap: 8px; margin-bottom: 6px; align-items: center;">
 											<input type="text" class="form-control input-sm sheet-item-consumed-input" list="all-glass-items" value="${jc_escape(current_item_consumed)}" style="min-width: 180px; display: inline-block;" placeholder="Item Consumed...">
-											<select class="form-control input-sm sheet-size-select" style="min-width: 130px; display: inline-block;">
+											<select class="form-control input-sm sheet-size-select" style="min-width: 130px; display: inline-block;" ${is_cutoff ? 'disabled' : ''}>
 												<option value=""></option>
 												${row_options}
 											</select>
-											<input type="number" class="form-control input-sm sheet-pcs-input" value="${sheet.pcs || ''}" min="1" step="1" style="text-align:right; width: 70px; display: inline-block;" placeholder="Pcs">
-											<span class="sheet-balance-lbl text-info" style="font-size: 11px; font-weight: bold; min-width: 45px; text-align: center;">-</span>
+											<input type="number" class="form-control input-sm sheet-pcs-input" value="${is_cutoff ? '' : (sheet.pcs || '')}" min="1" step="1" style="text-align:right; width: 70px; display: inline-block;" placeholder="${is_cutoff ? 'N/A' : 'Pcs'}" ${is_cutoff ? 'disabled' : ''}>
+											<span class="sheet-balance-lbl text-info" style="font-size: 11px; font-weight: bold; min-width: 45px; text-align: center;">${is_cutoff ? 'N/A' : '-'}</span>
 											<button class="btn btn-default btn-xs add-sheet-btn" style="padding: 2px 6px;" title="Add Row"><i class="fa fa-plus text-primary"></i></button>
 											<button class="btn btn-default btn-xs remove-sheet-btn" style="padding: 2px 6px;" title="Remove Row"><i class="fa fa-trash text-danger"></i></button>
 										</div>
@@ -428,6 +464,7 @@ function open_jc_operations_modal(page, job_card, quotation) {
 
 							let datalist_html = `
 								<datalist id="all-glass-items">
+									<option value="${JC_CUTOFF_ITEM_CONSUMED}">Cutoffs (no stock deducted)</option>
 									${glass_items.map(i => `<option value="${jc_escape(i.item_code)}">${jc_escape(i.item_name || i.item_code)}</option>`).join('')}
 								</datalist>
 							`;
@@ -461,14 +498,15 @@ function open_jc_operations_modal(page, job_card, quotation) {
 								d.$wrapper.find('.sheet-entry-row').each(function() {
 									has_sheets = true;
 									let item_consumed = $(this).find('.sheet-item-consumed-input').val();
-									let size = $(this).find('.sheet-size-select').val();
+									let is_cutoff = jc_is_cutoff_item(item_consumed);
+									let size = is_cutoff ? JC_CUTOFF_SIZE_VALUE : $(this).find('.sheet-size-select').val();
 									let pcs_val = $(this).find('.sheet-pcs-input').val();
-									
-									if (!item_consumed || !size || !pcs_val) {
+
+									if (!item_consumed || !size) {
 										is_valid = false;
-									} else {
+									} else if (!is_cutoff) {
 										let pcs = parseFloat(pcs_val);
-										if (isNaN(pcs) || pcs <= 0 || !Number.isInteger(pcs)) {
+										if (!pcs_val || isNaN(pcs) || pcs <= 0 || !Number.isInteger(pcs)) {
 											is_valid = false;
 										}
 									}
@@ -488,7 +526,7 @@ function open_jc_operations_modal(page, job_card, quotation) {
 									$btn.prop('disabled', false).attr('title', '');
 									$btn.show();
 								} else {
-									let reason = !all_configured ? 'Add sheets for all glass items' : (!is_valid ? 'Ensure all rows have Item, Size, and valid whole Pcs > 0' : 'Please add sheets consumed');
+									let reason = !all_configured ? 'Add sheets for all glass items' : (!is_valid ? 'Ensure all rows have Item Consumed and Size, with a valid whole Pcs > 0 (or set Item Consumed to Cutoffs)' : 'Please add sheets consumed');
 									$btn.prop('disabled', true).attr('title', reason);
 									$btn.show();
 								}
@@ -497,8 +535,8 @@ function open_jc_operations_modal(page, job_card, quotation) {
 							d.$wrapper.on('click', '.add-sheet-btn', function() {
 								let $cell = $(this).closest('.sheets-container-cell');
 								let $list = $cell.find('.sheets-list');
-								let row_options = configs.map(c => `<option value="${c.size}">${c.size}</option>`).join('');
-								
+								let row_options = jc_sheet_size_options_html(configs, '');
+
 								// Find parent row to get default item code
 								let $row = $(this).closest('.jc-glass-item-row');
 								let default_item = $row.find('td:first').text().trim();
@@ -536,6 +574,10 @@ function open_jc_operations_modal(page, job_card, quotation) {
 								let item_code = $row.find('.sheet-item-consumed-input').val();
 								let size = $row.find('.sheet-size-select').val();
 								let $lbl = $row.find('.sheet-balance-lbl');
+								if (jc_is_cutoff_item(item_code)) {
+									$lbl.text('N/A');
+									return;
+								}
 								if (!item_code || !size) {
 									$lbl.text('-');
 									return;
@@ -557,6 +599,7 @@ function open_jc_operations_modal(page, job_card, quotation) {
 
 							d.$wrapper.on('change awesomplete-selectcomplete input', '.sheet-item-consumed-input', function() {
 								let $row = $(this).closest('.sheet-entry-row');
+								jc_apply_cutoff_row_state($row);
 								update_sheet_row_balance($row);
 								check_save_button_visibility();
 							});
@@ -893,28 +936,6 @@ function can_create_partial_invoice_from_job_card(job_card, quotation) {
 	// what's been paid, so there's no status/customer-type gate here beyond having
 	// something left to release.
 	return !!(quotation && quotation.has_releasable_items);
-}
-
-function is_full_partial_invoice_release(job_card, releases, $wrapper) {
-	let has_remaining = false;
-	let released_all_remaining = true;
-
-	$wrapper.find('.jc-release-input').each(function() {
-		let row_name = $(this).attr('data-row-name');
-		let remaining = flt($(this).attr('data-remaining'));
-		let released = flt(releases[row_name] || 0);
-		if (remaining > 0.0001) {
-			has_remaining = true;
-			if (Math.abs(released - remaining) > 0.0001) {
-				released_all_remaining = false;
-				return false;
-			}
-		}
-	});
-
-	return has_remaining
-		&& released_all_remaining
-		&& flt(job_card.balance_amount || 0) > 0.0001;
 }
 
 function jc_escape(value) {
@@ -1355,11 +1376,6 @@ async function create_partial_invoice_from_job_card(job_card, dialog) {
 
 	if (!releases.length) {
 		frappe.msgprint(__('Enter a quantity to release on the Release Items tab.'));
-		return;
-	}
-
-	if (is_full_partial_invoice_release(job_card, releases_by_row, $wrapper)) {
-		frappe.msgprint(__('You cannot release all remaining items while this Job Card still has an outstanding balance. Reduce the release quantity or clear the balance first.'));
 		return;
 	}
 
@@ -2135,7 +2151,7 @@ function render_single_job_card_detail(job_card, quotation, history, sales_invoi
 		
 		glass_ops_configured = glass_ops_rows.every(row_name => {
 			let rows = saved_consumption[row_name] || [];
-			return rows.length > 0 && rows.some(r => r.item_consumed && r.size && r.pcs > 0);
+			return rows.length > 0 && rows.some(r => r.item_consumed && r.size && (r.is_cutoff || r.pcs > 0));
 		});
 	}
 	let glass_ops_pending = glass_ops_rows.length > 0 && !glass_ops_configured;

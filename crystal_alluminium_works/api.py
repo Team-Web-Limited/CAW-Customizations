@@ -1,6 +1,7 @@
 import frappe
 import json
 import os
+import re
 from frappe.model.rename_doc import rename_doc
 from frappe.utils import flt
 from erpnext.accounts.party import get_party_account
@@ -67,6 +68,11 @@ VAT_RATE = 0.16
 SALES_VAT_TEMPLATE = "Kenya Tax - CAW"
 ALUMINIUM_PRICE_FACTOR = 1.07
 SHARED_GLASS_SHEET_CONFIG_TYPE = "Ordinary"
+# Permanent, non-editable glass sheet size: 1 x 1 = 1 SFT. Used as a fixed unit
+# reference (e.g. for per-SFT pricing paths) and must always exist for every
+# glass type, regardless of what the user edits in the Glass Sheet Sizes modal.
+FIXED_GLASS_SHEET_SIZE = "1 x 1"
+FIXED_GLASS_SHEET_SFT = 1
 JOB_CARD_CURRENCY_PRECISION = 2
 
 # A Job Card's payment_option now holds the actual Mode of Payment the customer pays by, so
@@ -574,6 +580,35 @@ def _ensure_glass_sale_mode_options():
 
 def _get_shared_glass_sheet_type():
     return SHARED_GLASS_SHEET_CONFIG_TYPE
+
+
+def _is_cutoff_sheet(sheet):
+    """A JC Operations sheet row recorded as 'Cutoffs': the company used unmeasured
+    scrap/off-cuts to build a new product, so it is logged against the fixed 1 x 1
+    size for traceability but intentionally never deducts stock (pcs is N/A)."""
+    return bool((sheet or {}).get("is_cutoff"))
+
+
+def _format_consumed_sheet(sheet):
+    """Human-readable label for one JC Operations sheet entry, used in the
+    Stock Deduction preview/history tables."""
+    if _is_cutoff_sheet(sheet):
+        return "Cutoffs"
+    return f"{sheet.get('size')} ({frappe.utils.flt(sheet.get('pcs')):.0f} pcs)"
+
+
+def _ensure_fixed_glass_sheet_size(glass_type):
+    """Guarantee the permanent 1 x 1 = 1 SFT size exists for a glass type.
+    This size is not user-editable/deletable from the Glass Sheet Sizes modal."""
+    if frappe.db.exists("Glass Sheet Config", {"glass_type": glass_type, "size": FIXED_GLASS_SHEET_SIZE}):
+        return
+
+    frappe.get_doc({
+        "doctype": "Glass Sheet Config",
+        "glass_type": glass_type,
+        "size": FIXED_GLASS_SHEET_SIZE,
+        "sft": FIXED_GLASS_SHEET_SFT,
+    }).insert(ignore_permissions=True)
 
 
 def _ensure_glass_type_options():
@@ -1150,6 +1185,7 @@ def get_quotations_page(search=None, status=None, customer=None, from_date=None,
         "name",
         "party_name",
         "customer_name",
+        "custom_customer_name",
         "transaction_date",
         "valid_till",
         "grand_total",
@@ -1168,6 +1204,19 @@ def get_quotations_page(search=None, status=None, customer=None, from_date=None,
         start=start,
         page_length=page_length,
     )
+
+    # The list only needs to know Cash vs Invoice, plus the right display name -
+    # the walk-in's own name for Cash (party_name is always the shared Cash
+    # Customer record so it carries no per-walk-in identity), the linked
+    # Customer's name for Invoice.
+    for row in rows:
+        is_cash = row.get("party_name") == SHARED_CASH_CUSTOMER_NAME
+        row["customer_type"] = "Cash" if is_cash else "Invoice"
+        row["display_name"] = (
+            row.get("custom_customer_name") or SHARED_CASH_CUSTOMER_NAME
+            if is_cash
+            else (row.get("customer_name") or row.get("party_name"))
+        )
 
     count_result = frappe.get_all(
         "Quotation",
@@ -1826,7 +1875,7 @@ def get_job_card_detail(name):
 
                 for itm, itm_sheets in sheets_by_item.items():
                     sft_release_qty = 0
-                    sheets_str = ", ".join([f"{s.get('size')} ({frappe.utils.flt(s.get('pcs')):.0f} pcs)" for s in itm_sheets])
+                    sheets_str = ", ".join([_format_consumed_sheet(s) for s in itm_sheets])
                     for sheet in itm_sheets:
                         size = sheet.get("size")
                         pcs = frappe.utils.flt(sheet.get("pcs"))
@@ -1892,7 +1941,7 @@ def get_job_card_detail(name):
                 try:
                     sheets_data = json.loads(raw_json)
                     if isinstance(sheets_data, list):
-                        sheets_str = ", ".join([f"{s.get('size')} ({frappe.utils.flt(s.get('pcs')):.0f} pcs)" for s in sheets_data])
+                        sheets_str = ", ".join([_format_consumed_sheet(s) for s in sheets_data])
                     else:
                         sheets_str = raw_json
                 except Exception:
@@ -2028,6 +2077,7 @@ def create_quotation_from_builder(
     price_adjustment_percent=None,
     payment_mode=None,
     customer_phone=None,
+    customer_name=None,
     customer_pin=None,
 ):
     """
@@ -2047,8 +2097,9 @@ def create_quotation_from_builder(
     payment_mode is the Builder's normalized 'cash' / 'invoice' selection.
     For cash sales the customer picker is skipped entirely — every cash
     quotation is billed against the single shared Cash Customer record, and
-    customer_phone (mandatory) / customer_pin (optional) are stamped on the
-    quotation itself so the specific walk-in can still be identified.
+    customer_phone (mandatory) / customer_name (optional) / customer_pin
+    (optional) are stamped on the quotation itself so the specific walk-in
+    can still be identified.
     """
     items = json.loads(items) if isinstance(items, str) else items
 
@@ -2057,10 +2108,13 @@ def create_quotation_from_builder(
 
     is_cash = str(payment_mode or "").strip().lower() == "cash"
     customer_phone = (customer_phone or "").strip()
+    customer_name = (customer_name or "").strip()
     customer_pin = (customer_pin or "").strip()
     if is_cash:
         if not customer_phone:
             frappe.throw("Phone Number is required for Cash Customer quotations.")
+        if not re.fullmatch(r"\d{10}", customer_phone):
+            frappe.throw("Phone Number must be exactly 10 digits.")
         # Resolve server-side rather than trusting the client's customer value —
         # every cash quotation belongs to the one shared walk-in Customer record.
         customer = get_or_create_shared_cash_customer().name
@@ -2101,6 +2155,7 @@ def create_quotation_from_builder(
     quo.custom_price_adjustment_percent = frappe.utils.flt(price_adjustment_percent or 0)
     if is_cash:
         quo.custom_customer_phone = customer_phone
+        quo.custom_customer_name = customer_name
         quo.custom_customer_pin = customer_pin
 
     for item in items:
@@ -2356,20 +2411,6 @@ def _quotation_has_releasable_items(quotation):
     return False
 
 
-def _is_full_remaining_release(rows_by_name, releases):
-    """True when the request releases every still-releasable row up to its current
-    remaining quantity."""
-    has_remaining = False
-    for name, row in rows_by_name.items():
-        remaining = _get_partial_row_native_full(row) - flt(getattr(row, "custom_collected_qty", 0))
-        if remaining <= 0.0001:
-            continue
-        has_remaining = True
-        if abs(flt(releases.get(name, 0)) - remaining) > 0.0001:
-            return False
-    return has_remaining
-
-
 def _scale_partial_invoice_row(row, ratio):
     """Scale a row's driving quantities by ratio so its amount, generated service
     rows and printed table all reflect the released portion. rate is left intact —
@@ -2496,7 +2537,7 @@ def _validate_glass_consumption(job_card):
                 row_consumption = consumption.get(row.name, [])
                 valid = False
                 for sheet in row_consumption:
-                    if sheet.get("item_consumed") and sheet.get("size") and frappe.utils.flt(sheet.get("pcs")) > 0:
+                    if sheet.get("item_consumed") and sheet.get("size") and (_is_cutoff_sheet(sheet) or frappe.utils.flt(sheet.get("pcs")) > 0):
                         valid = True
                         break
                 if not valid:
@@ -2822,9 +2863,6 @@ def make_partial_sales_invoice_from_job_card(job_card_name, releases=None):
 
     if not capped:
         frappe.throw("Enter a quantity to release.")
-
-    if flt(job_card.balance_amount or 0) > 0.0001 and _is_full_remaining_release(rows_by_name, capped):
-        frappe.throw("You cannot release all remaining items while this Job Card still has an outstanding balance. Reduce the release quantity or clear the balance first.")
 
     invoice_name = make_sales_invoice_from_quotation(job_card.quotation, releases=capped)
     invoice = frappe.get_doc("Sales Invoice", invoice_name)
@@ -4913,6 +4951,7 @@ def save_dimension_intervals(intervals, interval_set=None):
 def get_glass_sheet_configs(glass_type=None):
     _ensure_glass_sheet_config_storage()
     shared_glass_type = _get_shared_glass_sheet_type()
+    _ensure_fixed_glass_sheet_size(shared_glass_type)
     rows = frappe.get_all(
         "Glass Sheet Config",
         filters={"glass_type": shared_glass_type},
@@ -4943,7 +4982,7 @@ def save_glass_sheet_configs(rows, glass_type=None):
     for row in rows:
         size = str((row or {}).get("size") or "").strip()
         sft = flt((row or {}).get("sft") or 0)
-        if not size or sft <= 0:
+        if not size or sft <= 0 or size == FIXED_GLASS_SHEET_SIZE:
             continue
 
         frappe.get_doc({
@@ -4952,6 +4991,8 @@ def save_glass_sheet_configs(rows, glass_type=None):
             "size": size,
             "sft": sft,
         }).insert(ignore_permissions=True)
+
+    _ensure_fixed_glass_sheet_size(shared_glass_type)
 
     frappe.db.commit()
     return True
@@ -6203,6 +6244,8 @@ def save_jc_operations_consumption(job_card_name, consumption_json):
         # Check raw component stock sufficiency
         shortfalls = []
         for sheet in row_consumption:
+            if _is_cutoff_sheet(sheet):
+                continue
             comp_item = sheet.get("item_consumed")
             size = sheet.get("size")
             pcs = frappe.utils.flt(sheet.get("pcs"))
@@ -6267,12 +6310,19 @@ def _create_composite_repack_entry(laminated_item, row_consumption, sft_qty_from
     
     # Consumed items (Ordinary / Ready Laminated)
     for sheet in row_consumption:
+        if _is_cutoff_sheet(sheet):
+            # Cutoffs are unmeasured scrap logged for traceability only — never
+            # deducted, so they don't get a Stock Entry line here.
+            continue
+
         comp_item = sheet.get("item_consumed")
         size = sheet.get("size")
         pcs = frappe.utils.flt(sheet.get("pcs"))
         sft_per_sheet = next((frappe.utils.flt(c.get("sft")) for c in configs if c.get("size") == size), 0)
         needed = round(sft_per_sheet * pcs, 4)
-        
+        if needed <= 0.0001:
+            continue
+
         entry.append("items", {
             "item_code": comp_item,
             "s_warehouse": warehouse,

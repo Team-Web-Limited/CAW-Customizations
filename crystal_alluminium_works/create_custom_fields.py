@@ -720,10 +720,22 @@ def add_custom_fields():
                 "module": "Crystal Alluminium Works",
             },
             {
+                # The walk-in's own name, captured alongside the phone number in
+                # Quotation Builder's cash-mode step. Same reasoning as
+                # custom_customer_phone above — the shared Cash Customer party
+                # itself carries no per-walk-in identity.
+                "fieldname": "custom_customer_name",
+                "label": "Customer Name",
+                "fieldtype": "Data",
+                "insert_after": "custom_customer_phone",
+                "no_copy": 1,
+                "module": "Crystal Alluminium Works",
+            },
+            {
                 "fieldname": "custom_customer_pin",
                 "label": "Customer KRA PIN",
                 "fieldtype": "Data",
-                "insert_after": "custom_customer_phone",
+                "insert_after": "custom_customer_name",
                 "no_copy": 1,
                 "module": "Crystal Alluminium Works",
             },

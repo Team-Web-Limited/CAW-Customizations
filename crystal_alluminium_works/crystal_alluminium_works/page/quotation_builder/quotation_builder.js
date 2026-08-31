@@ -13,6 +13,7 @@ frappe.pages['quotation-builder'].on_page_load = function (wrapper) {
 	if (!window.qb_state) {
 		window.qb_state = {
 			customer: '',
+			customer_name: '',
 			customer_phone: '',
 			customer_pin: '',
 			payment_mode: 'invoice',
@@ -186,6 +187,31 @@ function get_aluminium_rate_for_selling_price(normal_price, selling_price) {
 	return normal_price;
 }
 
+// Same Item Price → standard_rate fallback chain fetch_item_price_rate() uses
+// inside the single-item dialog, wrapped as a promise so batch-add flows can
+// resolve a rate per row without duplicating the lookup logic.
+function fetch_item_selling_rate(item_code, price_list) {
+	return new Promise(function (resolve) {
+		frappe.call({
+			method: 'frappe.client.get_value',
+			args: {
+				doctype: 'Item Price',
+				filters: { item_code: item_code, price_list: price_list, selling: 1 },
+				fieldname: 'price_list_rate'
+			},
+			callback: function (r) {
+				if (r.message && r.message.price_list_rate) {
+					resolve(flt(r.message.price_list_rate));
+					return;
+				}
+				frappe.db.get_value('Item', item_code, 'standard_rate', function (r2) {
+					resolve(flt(r2 && r2.standard_rate));
+				});
+			}
+		});
+	});
+}
+
 function get_item_selling_price_label(item) {
 	return item.category === 'Aluminium' ? get_aluminium_price_label(item.price_list) : (item.price_list || 'Retail');
 }
@@ -321,10 +347,6 @@ function bind_events(page) {
 			return;
 		}
 		add_item_row(page, category);
-	});
-
-	$(page.body).on('click.qbbuilder', '.qb-import-products-btn', function () {
-		open_glass_import_dialog(page, QB_DEFAULT_GLASS_DIMENSION_UOM);
 	});
 
 	setup_price_adjustment_controls(page);
@@ -511,10 +533,13 @@ function get_review_breakdown_uom(label, item) {
 	return '';
 }
 
-function format_review_number(value, precision = 3) {
+function format_review_number(value, precision = 2) {
+	// Truncate (not round) to keep review numbers consistent with the system-wide
+	// 2-decimal default — explicit precision args (mm, pcs, etc.) are left alone.
 	let number = flt(value || 0);
-	let rounded = parseFloat(number.toFixed(precision));
-	return Number.isFinite(rounded) ? rounded : 0;
+	let factor = Math.pow(10, precision);
+	let truncated = Math.trunc(number * factor) / factor;
+	return Number.isFinite(truncated) ? truncated : 0;
 }
 
 function get_ceiling_component_breakdown(quantity) {
@@ -1236,7 +1261,25 @@ function setup_customer_step(page) {
 	page.qb_customer_field = customer_field;
 
 	// Cash mode: no customer to pick — every walk-in sale shares the same Cash
-	// Customer record, distinguished only by the phone number captured here.
+	// Customer record, distinguished only by the name/phone number captured here.
+	// Name (left) and phone (right) sit on the same row.
+	let $name_phone_row = $('<div style="display:flex; gap:12px;"></div>').appendTo($cash_contact_wrap);
+	let $customer_name_wrap = $('<div style="flex:1;"></div>').appendTo($name_phone_row);
+	let $customer_phone_wrap = $('<div style="flex:1;"></div>').appendTo($name_phone_row);
+
+	let customer_name_field = frappe.ui.form.make_control({
+		df: {
+			fieldtype: 'Data',
+			label: 'Customer Name',
+			fieldname: 'customer_name',
+			placeholder: "Walk-in customer's name"
+		},
+		parent: $customer_name_wrap,
+		render_input: true
+	});
+	customer_name_field.$input.css({ 'font-size': '15px', 'padding': '10px' });
+	page.qb_customer_name_field = customer_name_field;
+
 	let customer_phone_field = frappe.ui.form.make_control({
 		df: {
 			fieldtype: 'Data',
@@ -1246,7 +1289,7 @@ function setup_customer_step(page) {
 			reqd: 1,
 			placeholder: "Walk-in customer's phone number"
 		},
-		parent: $cash_contact_wrap,
+		parent: $customer_phone_wrap,
 		render_input: true
 	});
 	customer_phone_field.$input.css({ 'font-size': '15px', 'padding': '10px' });
@@ -1266,6 +1309,9 @@ function setup_customer_step(page) {
 	page.qb_customer_pin_field = customer_pin_field;
 
 	// Restore previously entered values
+	if (window.qb_state.customer_name) {
+		customer_name_field.set_value(window.qb_state.customer_name);
+	}
 	if (window.qb_state.customer_phone) {
 		customer_phone_field.set_value(window.qb_state.customer_phone);
 	}
@@ -1306,6 +1352,10 @@ function setup_customer_step(page) {
 		update_customer_next_button_visibility(page, customer_field.get_value());
 	});
 
+	customer_name_field.$input.on('change input blur', function () {
+		window.qb_state.customer_name = customer_name_field.get_value();
+	});
+
 	customer_phone_field.$input.on('change input blur', function () {
 		window.qb_state.customer_phone = customer_phone_field.get_value();
 		update_customer_next_button_visibility(page);
@@ -1325,7 +1375,12 @@ function setup_customer_step(page) {
 				frappe.msgprint('Please enter the customer\'s phone number.');
 				return;
 			}
+			if (!/^\d{10}$/.test((phone || '').trim())) {
+				frappe.msgprint('Phone Number must be exactly 10 digits.');
+				return;
+			}
 			window.qb_state.customer_phone = phone;
+			window.qb_state.customer_name = customer_name_field.get_value();
 			window.qb_state.customer_pin = customer_pin_field.get_value();
 			if (!window.qb_state.customer) {
 				frappe.msgprint('Please wait for the Cash Customer record to load and try again.');
@@ -1722,6 +1777,39 @@ function open_item_editor(page, item, is_new = false) {
 		}
 	}
 
+	// Shared by the single-item Link picker (edit flow) and the multi-select
+	// Item picker (new-item flow) below — same filtering rules either way.
+	function resolve_item_editor_filters() {
+		if (item.category === 'Glass') {
+			let f = [
+				['Item', 'item_group', '=', 'Glass'],
+				['Item', 'item_name', 'not like', '%Polishing%'],
+				['Item', 'item_name', 'not like', '%Drilling%'],
+				['Item', 'item_name', 'not like', '%Sandblasting%'],
+				['Item', 'item_name', 'not like', '%Hole%'],
+				['Item', 'item_name', 'not like', '%Notch%']
+			];
+
+			if (item.glass_type_filter) {
+				f.push(['Item', 'custom_glass_type', '=', item.glass_type_filter]);
+			}
+
+			return f;
+		}
+		if (item.category === 'Ceiling' && item.ceiling_mode === 'bundle') {
+			return [
+				['Item', 'item_group', '=', 'Ceiling'],
+				['Item', 'item_code', 'in', Array.from(QB_CEILING_BOARD_ITEM_CODES)]
+			];
+		}
+		return { item_group: item.category };
+	}
+
+	// Picking several items at once only makes sense for a plain new-item add —
+	// sheet glass and ceiling bundles build one composite row with their own
+	// extra fields (sheet size, bundle quantity), not a batch of bare items.
+	let enable_multi_add = is_new && !is_sheet_glass && !is_ceiling_bundle;
+
 	let fields = [
 		{
 			fieldtype: 'Link',
@@ -1731,32 +1819,7 @@ function open_item_editor(page, item, is_new = false) {
 			reqd: 1,
 			read_only: 0,
 			get_query: function () {
-				let filters = { item_group: item.category };
-				if (item.category === 'Glass') {
-					let f = [
-						['Item', 'item_group', '=', 'Glass'],
-						['Item', 'item_name', 'not like', '%Polishing%'],
-						['Item', 'item_name', 'not like', '%Drilling%'],
-						['Item', 'item_name', 'not like', '%Sandblasting%'],
-						['Item', 'item_name', 'not like', '%Hole%'],
-						['Item', 'item_name', 'not like', '%Notch%']
-					];
-
-					if (item.glass_type_filter) {
-						f.push(['Item', 'custom_glass_type', '=', item.glass_type_filter]);
-					}
-
-					return { filters: f };
-				}
-				if (item.category === 'Ceiling' && item.ceiling_mode === 'bundle') {
-					return {
-						filters: [
-							['Item', 'item_group', '=', 'Ceiling'],
-							['Item', 'item_code', 'in', Array.from(QB_CEILING_BOARD_ITEM_CODES)]
-						]
-					};
-				}
-				return { filters: filters };
+				return { filters: resolve_item_editor_filters() };
 			},
 			default: item.item_code,
 			change: function () {
@@ -1916,11 +1979,97 @@ function open_item_editor(page, item, is_new = false) {
 		);
 	}
 
+	if (enable_multi_add) {
+		// Slim dialog: pick as many items as needed (searching for more as you
+		// go) plus a shared selling price. Each selected item lands on the
+		// review table as its own bare row — open its ✏️ afterward to fill in
+		// dimensions/rate/etc, same as editing any other row.
+		fields = [
+			{
+				fieldtype: 'MultiSelectPills',
+				fieldname: 'item_codes',
+				label: 'Item',
+				reqd: 1,
+				get_data: function (txt) {
+					return frappe.db.get_link_options('Item', txt, resolve_item_editor_filters());
+				}
+			},
+			{
+				fieldtype: 'Select',
+				options: item.category === 'Aluminium' ? QB_ALUMINIUM_PRICE_OPTIONS : 'Retail\nWholesale\nSpecial',
+				fieldname: 'price_list',
+				label: 'Selling Price',
+				reqd: 1,
+				read_only: is_ceiling ? 1 : 0,
+				default: item.category === 'Aluminium'
+					? get_aluminium_price_label(item.price_list)
+					: (is_ceiling ? get_ceiling_mode_price_list(item.ceiling_mode) : (item.price_list || 'Retail'))
+			}
+		];
+	}
+
 	let d = new frappe.ui.Dialog({
-		title: `${item.category} Item`,
+		title: enable_multi_add ? `${item.category} Items` : `${item.category} Item`,
 		fields: fields,
-		primary_action_label: 'Save Item',
+		primary_action_label: enable_multi_add ? 'Add Items' : 'Save Item',
 		primary_action: function (values) {
+			if (enable_multi_add) {
+				let codes = values.item_codes || [];
+				if (!codes.length) {
+					frappe.msgprint('Please select at least one item.');
+					return;
+				}
+				let price_list_value = is_ceiling
+					? get_ceiling_mode_price_list(item.ceiling_mode)
+					: (item.category === 'Aluminium'
+						? get_aluminium_price_label(values.price_list || 'Normal Price')
+						: (values.price_list || 'Retail'));
+
+				frappe.db.get_list('Item', {
+					filters: { name: ['in', codes] },
+					fields: ['name', 'item_name', 'stock_uom', 'custom_aluminium_rate_per_kg', 'custom_aluminium_weight_per_length'],
+					limit: codes.length
+				}).then(function (rows) {
+					let by_code = {};
+					(rows || []).forEach(function (row) { by_code[row.name] = row; });
+					let new_items = codes.map(function (code) {
+						let meta = by_code[code] || {};
+						return Object.assign({}, item, {
+							id: frappe.utils.get_random(8),
+							item_code: code,
+							item_name: meta.item_name || code,
+							uom: meta.stock_uom || item.uom,
+							price_list: price_list_value,
+							qty: 1,
+							rate: 0,
+							amount: 0,
+							// Item master defaults — Aluminium's batch table prefills
+							// Rate/Kg and Weight/Length from these instead of starting at 0.
+							aluminium_rate_per_kg: flt(meta.custom_aluminium_rate_per_kg || 0),
+							aluminium_weight_per_length: flt(meta.custom_aluminium_weight_per_length || 0)
+						});
+					});
+
+					close_builder_dialog(d);
+
+					// Glass/Aluminium/Fittings each need their own per-piece details
+					// before they have a sane rate/amount — hand off to that
+					// category's batch detail table instead of dropping bare rows
+					// straight into the review table.
+					if (is_glass) {
+						open_glass_batch_details_dialog(page, new_items);
+					} else if (item.category === 'Aluminium') {
+						open_aluminium_batch_details_dialog(page, new_items);
+					} else if (item.category === 'Fittings') {
+						open_fittings_batch_details_dialog(page, new_items);
+					} else {
+						window.qb_state.items.push(...new_items);
+						render_items_table(page);
+					}
+				});
+				return;
+			}
+
 			item.item_code = values.item_code;
 			item.item_name = item.item_name || values.item_code;
 			item.description = values.description || '';
@@ -2222,7 +2371,7 @@ function open_item_editor(page, item, is_new = false) {
 	}
 
 	// Glass real-time calculation
-	if (is_glass && !is_sheet_glass) {
+	if (is_glass && !is_sheet_glass && !enable_multi_add) {
 		let update_allowance_dimensions = function (baseWidthFt, baseHeightFt) {
 			let widthAllowance = flt(d.get_value('width_allowance') || 0);
 			let heightAllowance = flt(d.get_value('height_allowance') || 0);
@@ -2415,35 +2564,383 @@ function open_item_editor(page, item, is_new = false) {
 		}
 	}
 
-	d.fields_dict.item_code.df.change = function () { queue_fetch_rate(true); };
-	d.fields_dict.price_list.df.change = function () { queue_fetch_rate(false); };
-	d.fields_dict.item_code.$input.on('change awesomplete-selectcomplete', function () {
-		queue_fetch_rate(true);
-	});
-	d.fields_dict.price_list.$input.on('change', function () {
-		queue_fetch_rate(false);
-	});
+	// All of the rest wires up the single-item Link/rate fields (item_code,
+	// aluminium_rate_per_kg, etc.) that the multi-select add dialog doesn't have.
+	if (!enable_multi_add) {
+		d.fields_dict.item_code.df.change = function () { queue_fetch_rate(true); };
+		d.fields_dict.price_list.df.change = function () { queue_fetch_rate(false); };
+		d.fields_dict.item_code.$input.on('change awesomplete-selectcomplete', function () {
+			queue_fetch_rate(true);
+		});
+		d.fields_dict.price_list.$input.on('change', function () {
+			queue_fetch_rate(false);
+		});
 
-	if (item.category === 'Aluminium') {
-		let recalc_aluminium_from_inputs = function () {
-			let ic = d.get_value('item_code');
-			if (!update_aluminium_rate_from_inputs() && ic) {
-				fetch_item_price_rate(ic, get_aluminium_backend_price_list(d.get_value('price_list')));
+		if (item.category === 'Aluminium') {
+			let recalc_aluminium_from_inputs = function () {
+				let ic = d.get_value('item_code');
+				if (!update_aluminium_rate_from_inputs() && ic) {
+					fetch_item_price_rate(ic, get_aluminium_backend_price_list(d.get_value('price_list')));
+				}
+			};
+			d.fields_dict.aluminium_rate_per_kg.$input.on('input change', recalc_aluminium_from_inputs);
+			d.fields_dict.aluminium_weight_per_length.$input.on('input change', recalc_aluminium_from_inputs);
+		}
+
+		setTimeout(function () {
+			let current_item_code = d.get_value('item_code') || item.item_code;
+			let current_price_list = d.get_value('price_list') || (item.category === 'Aluminium' ? get_aluminium_price_label(item.price_list) : (item.price_list || 'Retail'));
+			if (current_item_code && current_price_list && (item.category === 'Aluminium' || !parseFloat(d.get_value('rate') || 0))) {
+				fetch_rate(true);
 			}
-		};
-		d.fields_dict.aluminium_rate_per_kg.$input.on('input change', recalc_aluminium_from_inputs);
-		d.fields_dict.aluminium_weight_per_length.$input.on('input change', recalc_aluminium_from_inputs);
+		}, 300);
+	}
+}
+
+// After multi-selecting Glass items to add, this fills in each piece's own
+// dimensions/processing options in one wide inline-editable table (mirroring
+// the Review tab's Glass columns) instead of opening N single-item dialogs.
+// Nothing is computed as you type — Save Items batch-calls the same
+// calculate_glass_total used by the single-item editor, once per row, then
+// adds every finished row to the quotation in one go.
+function open_glass_batch_details_dialog(page, items) {
+	if (!items || !items.length) {
+		return;
 	}
 
-	setTimeout(function () {
-		let current_item_code = d.get_value('item_code') || item.item_code;
-		let current_price_list = d.get_value('price_list') || (item.category === 'Aluminium' ? get_aluminium_price_label(item.price_list) : (item.price_list || 'Retail'));
-		if (current_item_code && current_price_list && (item.category === 'Aluminium' || !parseFloat(d.get_value('rate') || 0))) {
-			fetch_rate(true);
+	let dimension_uom = normalize_glass_dimension_uom(items[0].dimension_uom);
+	let dimension_label = get_glass_dimension_label(dimension_uom);
+
+	function option_list(options_str, current) {
+		return options_str.split('\n').map(function (opt) {
+			return `<option value="${frappe.utils.escape_html(opt)}" ${opt === current ? 'selected' : ''}>${frappe.utils.escape_html(opt)}</option>`;
+		}).join('');
+	}
+
+	let rows_html = items.map(function (it, index) {
+		return `
+			<tr data-id="${it.id}">
+				<td style="text-align:center;white-space:nowrap;">${index + 1}</td>
+				<td style="white-space:nowrap;">${frappe.utils.escape_html(it.item_name || it.item_code)}</td>
+				<td><input type="number" min="0" step="any" class="form-control input-sm qb-batch-input" data-field="width_mm" value="0" style="width:80px;"></td>
+				<td><input type="number" min="0" step="any" class="form-control input-sm qb-batch-input" data-field="height_mm" value="0" style="width:80px;"></td>
+				<td><input type="number" min="0" step="any" class="form-control input-sm qb-batch-input" data-field="width_allowance" value="0" style="width:70px;"></td>
+				<td><input type="number" min="0" step="any" class="form-control input-sm qb-batch-input" data-field="height_allowance" value="0" style="width:70px;"></td>
+				<td><input type="number" min="0" max="2" step="1" class="form-control input-sm qb-batch-input" data-field="polish_width_sides" value="0" style="width:60px;"></td>
+				<td><input type="number" min="0" max="2" step="1" class="form-control input-sm qb-batch-input" data-field="polish_height_sides" value="0" style="width:60px;"></td>
+				<td><select class="form-control input-sm qb-batch-input" data-field="polish_type" style="width:80px;">${option_list(QB_POLISH_TYPE_OPTIONS, QB_DEFAULT_POLISH_TYPE)}</select></td>
+				<td><input type="number" min="0" step="1" class="form-control input-sm qb-batch-input" data-field="holes" value="0" style="width:60px;"></td>
+				<td><select class="form-control input-sm qb-batch-input" data-field="hole_type" style="width:80px;">${option_list(QB_HOLE_TYPE_OPTIONS, QB_DEFAULT_HOLE_TYPE)}</select></td>
+				<td><input type="number" min="0" step="1" class="form-control input-sm qb-batch-input" data-field="notches" value="0" style="width:60px;"></td>
+				<td><select class="form-control input-sm qb-batch-input" data-field="notch_type" style="width:100px;">${option_list(QB_NOTCH_TYPE_OPTIONS, QB_DEFAULT_NOTCH_TYPE)}</select></td>
+				<td><select class="form-control input-sm qb-batch-input" data-field="sandblast_type" style="width:80px;">${option_list('None\nHalf\nFull', 'None')}</select></td>
+				<td><input type="number" min="1" step="1" class="form-control input-sm qb-batch-input" data-field="qty" value="1" style="width:60px;"></td>
+				<td><input type="text" class="form-control input-sm qb-batch-input" data-field="numbering" value="" style="width:90px;"></td>
+				<td><input type="text" class="form-control input-sm qb-batch-input" data-field="description" value="" style="width:130px;"></td>
+			</tr>
+		`;
+	}).join('');
+
+	let table_html = `
+		<div class="table-responsive" style="max-height:55vh;overflow:auto;">
+			<table class="table table-bordered" style="background:var(--card-bg); margin-bottom:0;">
+				<thead style="background:var(--control-bg);position:sticky;top:0;z-index:1;">
+					<tr>
+						<th style="text-align:center;white-space:nowrap;">No</th>
+						<th style="white-space:nowrap;">Item</th>
+						<th style="white-space:nowrap;">Width (${dimension_label})</th>
+						<th style="white-space:nowrap;">Height (${dimension_label})</th>
+						<th style="white-space:nowrap;">W+</th>
+						<th style="white-space:nowrap;">H+</th>
+						<th style="white-space:nowrap;">PW</th>
+						<th style="white-space:nowrap;">PH</th>
+						<th style="white-space:nowrap;">Polish Type</th>
+						<th style="white-space:nowrap;">Holes</th>
+						<th style="white-space:nowrap;">Hole Type</th>
+						<th style="white-space:nowrap;">Notches</th>
+						<th style="white-space:nowrap;">Notch Type</th>
+						<th style="white-space:nowrap;">Sandblast</th>
+						<th style="white-space:nowrap;">Pcs</th>
+						<th style="white-space:nowrap;">Numbering</th>
+						<th style="white-space:nowrap;">Description</th>
+					</tr>
+				</thead>
+				<tbody>${rows_html}</tbody>
+			</table>
+		</div>
+	`;
+
+	let d = new frappe.ui.Dialog({
+		title: 'Glass Items — Fill Details',
+		size: 'extra-large',
+		fields: [
+			{ fieldtype: 'HTML', fieldname: 'batch_table', options: table_html }
+		],
+		primary_action_label: 'Save Items',
+		primary_action: function () {
+			let $wrapper = d.fields_dict.batch_table.$wrapper;
+
+			let calls = items.map(function (it) {
+				let $row = $wrapper.find(`tr[data-id="${it.id}"]`);
+				function val(field) {
+					return $row.find(`[data-field="${field}"]`).val();
+				}
+
+				let final_item = Object.assign({}, it, {
+					sale_mode: 'Resized',
+					dimension_uom: dimension_uom,
+					width_mm: dimension_input_to_mm(val('width_mm'), dimension_uom),
+					height_mm: dimension_input_to_mm(val('height_mm'), dimension_uom),
+					width_allowance: flt(val('width_allowance') || 0),
+					height_allowance: flt(val('height_allowance') || 0),
+					polish_width_sides: cint(val('polish_width_sides') || 0),
+					polish_height_sides: cint(val('polish_height_sides') || 0),
+					polish_type: val('polish_type') || QB_DEFAULT_POLISH_TYPE,
+					holes: cint(val('holes') || 0),
+					hole_type: val('hole_type') || QB_DEFAULT_HOLE_TYPE,
+					notches: cint(val('notches') || 0),
+					notch_type: val('notch_type') || QB_DEFAULT_NOTCH_TYPE,
+					sandblast_type: val('sandblast_type') || 'None',
+					qty: flt(val('qty') || 1) || 1,
+					numbering: val('numbering') || '',
+					description: val('description') || ''
+				});
+				final_item.polishing = (final_item.polish_width_sides > 0 || final_item.polish_height_sides > 0) ? 1 : 0;
+
+				return new Promise(function (resolve) {
+					frappe.call({
+						method: 'crystal_alluminium_works.api.calculate_glass_total',
+						args: {
+							item_code: final_item.item_code,
+							price_list: final_item.price_list,
+							qty: final_item.qty,
+							sale_mode: final_item.sale_mode,
+							width_mm: final_item.width_mm,
+							height_mm: final_item.height_mm,
+							width_allowance: final_item.width_allowance,
+							height_allowance: final_item.height_allowance,
+							polishing: final_item.polishing,
+							polish_width_sides: final_item.polish_width_sides,
+							polish_height_sides: final_item.polish_height_sides,
+							holes: final_item.holes,
+							notches: final_item.notches,
+							sandblast_type: final_item.sandblast_type,
+							polish_type: final_item.polish_type,
+							hole_type: final_item.hole_type,
+							notch_type: final_item.notch_type
+						},
+						callback: function (r) {
+							if (r.message) {
+								final_item.base_width_ft = r.message.base_width_ft ?? 0;
+								final_item.base_height_ft = r.message.base_height_ft ?? 0;
+								final_item.width_ft = r.message.width_ft ?? 0;
+								final_item.height_ft = r.message.height_ft ?? 0;
+								final_item.area_sqft = r.message.area_sqft ?? 0;
+								final_item.perimeter_rft = r.message.perimeter_rft ?? 0;
+								final_item.rate = r.message.base_rate ?? 0;
+								final_item.amount = r.message.total ?? 0;
+								final_item.glass_breakdown = r.message.breakdown || [];
+							} else {
+								final_item.amount = calculate_item_amount(final_item);
+								final_item.glass_breakdown = [];
+							}
+							resolve(final_item);
+						}
+					});
+				});
+			});
+
+			frappe.dom.freeze('Calculating...');
+			Promise.all(calls).then(function (finished_items) {
+				frappe.dom.unfreeze();
+				window.qb_state.items.push(...finished_items);
+				close_builder_dialog(d);
+				render_items_table(page);
+			});
 		}
-	}, 300);
+	});
 
+	d.show();
+}
 
+// Same idea as open_glass_batch_details_dialog, sized to what Aluminium
+// actually needs: Rate/Piece is derived from Rate/Kg × Weight/Length (with
+// the same Item Price fallback the single-item dialog uses when those are
+// left blank), computed once on Save rather than live per keystroke.
+function open_aluminium_batch_details_dialog(page, items) {
+	if (!items || !items.length) {
+		return;
+	}
+
+	ensure_aluminium_colors(function () {
+		let color_options = get_aluminium_color_options();
+
+		function option_list(options_str, current) {
+			return options_str.split('\n').map(function (opt) {
+				return `<option value="${frappe.utils.escape_html(opt)}" ${opt === current ? 'selected' : ''}>${frappe.utils.escape_html(opt)}</option>`;
+			}).join('');
+		}
+
+		let rows_html = items.map(function (it, index) {
+			return `
+				<tr data-id="${it.id}">
+					<td style="text-align:center;white-space:nowrap;">${index + 1}</td>
+					<td style="white-space:nowrap;">${frappe.utils.escape_html(it.item_name || it.item_code)}</td>
+					<td><select class="form-control input-sm qb-batch-input" data-field="aluminium_color" style="width:110px;">${option_list(color_options, it.aluminium_color || 'None')}</select></td>
+					<td><input type="number" min="1" step="1" class="form-control input-sm qb-batch-input" data-field="qty" value="1" style="width:60px;"></td>
+					<td><input type="number" min="0" step="any" class="form-control input-sm qb-batch-input" data-field="aluminium_rate_per_kg" value="${flt(it.aluminium_rate_per_kg || 0)}" style="width:90px;"></td>
+					<td><input type="number" min="0" step="any" class="form-control input-sm qb-batch-input" data-field="aluminium_weight_per_length" value="${flt(it.aluminium_weight_per_length || 0)}" style="width:90px;"></td>
+					<td><input type="text" class="form-control input-sm qb-batch-input" data-field="description" value="" style="width:150px;"></td>
+				</tr>
+			`;
+		}).join('');
+
+		let table_html = `
+			<div class="table-responsive" style="max-height:55vh;overflow:auto;">
+				<table class="table table-bordered" style="background:var(--card-bg); margin-bottom:0;">
+					<thead style="background:var(--control-bg);position:sticky;top:0;z-index:1;">
+						<tr>
+							<th style="text-align:center;white-space:nowrap;">No</th>
+							<th style="white-space:nowrap;">Item</th>
+							<th style="white-space:nowrap;">Color</th>
+							<th style="white-space:nowrap;">Pcs</th>
+							<th style="white-space:nowrap;">Rate / Kg</th>
+							<th style="white-space:nowrap;">Weight / Length</th>
+							<th style="white-space:nowrap;">Description</th>
+						</tr>
+					</thead>
+					<tbody>${rows_html}</tbody>
+				</table>
+			</div>
+		`;
+
+		let d = new frappe.ui.Dialog({
+			title: 'Aluminium Items — Fill Details',
+			size: 'extra-large',
+			fields: [
+				{ fieldtype: 'HTML', fieldname: 'batch_table', options: table_html }
+			],
+			primary_action_label: 'Save Items',
+			primary_action: function () {
+				let $wrapper = d.fields_dict.batch_table.$wrapper;
+
+				let calls = items.map(function (it) {
+					let $row = $wrapper.find(`tr[data-id="${it.id}"]`);
+					function val(field) {
+						return $row.find(`[data-field="${field}"]`).val();
+					}
+
+					let final_item = Object.assign({}, it, {
+						metres: 1,
+						aluminium_color: normalize_aluminium_color_selection(val('aluminium_color')),
+						qty: flt(val('qty') || 1) || 1,
+						aluminium_rate_per_kg: flt(val('aluminium_rate_per_kg') || 0),
+						aluminium_weight_per_length: flt(val('aluminium_weight_per_length') || 0),
+						description: val('description') || ''
+					});
+
+					let normal_price = get_aluminium_normal_price(final_item.aluminium_rate_per_kg, final_item.aluminium_weight_per_length);
+					if (normal_price > 0) {
+						final_item.rate = get_aluminium_rate_for_selling_price(normal_price, final_item.price_list);
+						final_item.amount = calculate_item_amount(final_item);
+						return Promise.resolve(final_item);
+					}
+
+					return fetch_item_selling_rate(final_item.item_code, get_aluminium_backend_price_list(final_item.price_list)).then(function (rate) {
+						final_item.rate = rate;
+						final_item.amount = calculate_item_amount(final_item);
+						return final_item;
+					});
+				});
+
+				frappe.dom.freeze('Calculating...');
+				Promise.all(calls).then(function (finished_items) {
+					frappe.dom.unfreeze();
+					window.qb_state.items.push(...finished_items);
+					close_builder_dialog(d);
+					render_items_table(page);
+				});
+			}
+		});
+
+		d.show();
+	});
+}
+
+// Fittings has no per-piece formula of its own — Rate is always whatever the
+// chosen Selling Price's Item Price resolves to, so Save just fetches that
+// once per row and multiplies by Pcs.
+function open_fittings_batch_details_dialog(page, items) {
+	if (!items || !items.length) {
+		return;
+	}
+
+	let rows_html = items.map(function (it, index) {
+		return `
+			<tr data-id="${it.id}">
+				<td style="text-align:center;white-space:nowrap;">${index + 1}</td>
+				<td style="white-space:nowrap;">${frappe.utils.escape_html(it.item_name || it.item_code)}</td>
+				<td><input type="number" min="1" step="1" class="form-control input-sm qb-batch-input" data-field="qty" value="1" style="width:60px;"></td>
+				<td><input type="text" class="form-control input-sm qb-batch-input" data-field="description" value="" style="width:200px;"></td>
+			</tr>
+		`;
+	}).join('');
+
+	let table_html = `
+		<div class="table-responsive" style="max-height:55vh;overflow:auto;">
+			<table class="table table-bordered" style="background:var(--card-bg); margin-bottom:0;">
+				<thead style="background:var(--control-bg);position:sticky;top:0;z-index:1;">
+					<tr>
+						<th style="text-align:center;white-space:nowrap;">No</th>
+						<th style="white-space:nowrap;">Item</th>
+						<th style="white-space:nowrap;">Qty</th>
+						<th style="white-space:nowrap;">Description</th>
+					</tr>
+				</thead>
+				<tbody>${rows_html}</tbody>
+			</table>
+		</div>
+	`;
+
+	let d = new frappe.ui.Dialog({
+		title: 'Fittings Items — Fill Details',
+		size: 'large',
+		fields: [
+			{ fieldtype: 'HTML', fieldname: 'batch_table', options: table_html }
+		],
+		primary_action_label: 'Save Items',
+		primary_action: function () {
+			let $wrapper = d.fields_dict.batch_table.$wrapper;
+
+			let calls = items.map(function (it) {
+				let $row = $wrapper.find(`tr[data-id="${it.id}"]`);
+				function val(field) {
+					return $row.find(`[data-field="${field}"]`).val();
+				}
+
+				let final_item = Object.assign({}, it, {
+					qty: flt(val('qty') || 1) || 1,
+					description: val('description') || ''
+				});
+
+				return fetch_item_selling_rate(final_item.item_code, final_item.price_list).then(function (rate) {
+					final_item.rate = rate;
+					final_item.amount = calculate_item_amount(final_item);
+					return final_item;
+				});
+			});
+
+			frappe.dom.freeze('Calculating...');
+			Promise.all(calls).then(function (finished_items) {
+				frappe.dom.unfreeze();
+				window.qb_state.items.push(...finished_items);
+				close_builder_dialog(d);
+				render_items_table(page);
+			});
+		}
+	});
+
+	d.show();
 }
 
 function open_glass_import_dialog(page, dimension_uom = QB_DEFAULT_GLASS_DIMENSION_UOM) {
@@ -2680,6 +3177,7 @@ function generate_quotation(page) {
 
 	if (payment_mode === 'cash') {
 		api_args.customer_phone = state.customer_phone;
+		api_args.customer_name = state.customer_name;
 		api_args.customer_pin = state.customer_pin;
 	}
 
@@ -2796,21 +3294,6 @@ function get_builder_html() {
 			color: var(--primary);
 			background: var(--control-bg);
 		}
-		.qb-import-products-btn {
-			padding: 10px 20px;
-			border-radius: 8px;
-			border: 1px solid var(--primary);
-			background: var(--primary);
-			cursor: pointer;
-			font-size: 14px;
-			font-weight: 600;
-			color: white;
-			transition: all 0.15s;
-		}
-		.qb-import-products-btn:hover {
-			opacity: 0.92;
-			transform: translateY(-1px);
-		}
 		.qb-items-table {
 			width: 100%;
 			border-collapse: collapse;
@@ -2893,7 +3376,6 @@ function get_builder_html() {
 			<div class="qb-card">
 				<h3>📦 Add Products</h3>
 				<div class="qb-add-buttons">
-					<button class="qb-import-products-btn">Import Products</button>
 					<button class="qb-add-btn" data-category="Glass" data-glass-type="Ordinary">+ Ordinary Glass</button>
 					<button class="qb-add-btn" data-category="Glass" data-glass-type="Laminated">+ Laminated Glass</button>
 					<button class="qb-add-btn" data-category="Glass" data-glass-type="Ready Laminated">+ Ready Laminated Glass</button>
