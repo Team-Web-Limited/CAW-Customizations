@@ -310,10 +310,14 @@ function open_create_payment_modal(page) {
 		}
 		let amount = flt(d.get_value('amount') || 0);
 		let remaining = amount - get_allocation_total();
-		let over = remaining < -0.0001;
+		// Allocation rows default to each job card's full outstanding balance and are never
+		// auto-shrunk when the top Amount is edited down — that's a deliberate partial-payment
+		// path (e.g. paying 10,000 toward a 14,999.96 balance), not an error state, so this
+		// reads as "here's what's still owed on the job card(s)" rather than "over-allocated".
+		let short = remaining < -0.0001;
 		let exact = amount > 0 && Math.abs(remaining) < 0.0001;
-		let color = over ? '#e24c4c' : (exact ? '#28a745' : 'var(--text-muted)');
-		let label = over ? __('Over-allocated by') : __('Unallocated balance');
+		let color = short ? '#c0392b' : (exact ? '#28a745' : 'var(--text-muted)');
+		let label = short ? __('Balance remaining') : __('Unallocated balance');
 		d.fields_dict.allocation_balance.$wrapper.html(
 			`<div style="padding:4px 0 8px; font-weight:600; color:${color};">${label}: ${format_currency(Math.abs(remaining), 'KES')}</div>`
 		);
@@ -565,7 +569,7 @@ function open_create_payment_modal(page) {
 			}
 			let allocated_total = allocations.reduce((sum, row) => sum + flt(row.amount || 0), 0);
 			if (allocated_total - flt(values.amount || 0) > 0.0001) {
-				frappe.msgprint(__('Allocated amount cannot exceed the payment amount.'));
+				frappe.msgprint(__('The Job Card Allocations add up to more than the Amount being paid. Lower an allocation row or raise the Amount before saving.'));
 				return;
 			}
 

@@ -1035,12 +1035,7 @@ function get_job_card_outstanding_balance(job_card, quotation_amount) {
 	return balance;
 }
 
-function get_required_cash_job_card_payment(quotation_amount) {
-	return flt(flt(quotation_amount || 0, 2) * 0.50, 2);
-}
-
-function validate_job_card_payment_amount(dialog, options) {
-	options = options || {};
+function validate_job_card_payment_amount(dialog) {
 	if (normalize_job_card_payment_mode(dialog.get_value('payment_mode')) === 'invoice') {
 		return true;
 	}
@@ -1058,16 +1053,6 @@ function validate_job_card_payment_amount(dialog, options) {
 	if (payment_amount <= 0) {
 		frappe.msgprint(__('Please enter a payment amount to create a job card for a cash customer.'));
 		return false;
-	}
-
-	if (options.require_minimum_cash_deposit) {
-		let required_payment = get_required_cash_job_card_payment(dialog.get_value('quotation_amount'));
-		if (required_payment - payment_amount > 0.009) {
-			frappe.msgprint(__('Cash customer Job Cards require an initial payment of at least 50% of the quotation amount ({0}).', [
-				format_currency(required_payment)
-			]));
-			return false;
-		}
 	}
 
 	if (payment_amount > payment_limit) {
@@ -1254,7 +1239,7 @@ async function open_job_card_modal(page, doc) {
 		],
 		primary_action_label: 'Save',
 		primary_action: function(values) {
-			if (!validate_job_card_payment_amount(d, { require_minimum_cash_deposit: !existing_job_card })) {
+			if (!validate_job_card_payment_amount(d)) {
 				return;
 			}
 

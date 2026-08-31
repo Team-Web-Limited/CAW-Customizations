@@ -136,14 +136,6 @@ def _job_card_payment_status(quotation_amount, paid):
     return "Pending"
 
 
-# Cash-customer Job Cards require an upfront deposit of at least this share of the quotation.
-CASH_JOB_CARD_DEPOSIT_RATIO = 0.5
-
-
-def _get_required_cash_job_card_deposit(quotation_amount):
-    return _round_job_card_amount(_round_job_card_amount(quotation_amount) * CASH_JOB_CARD_DEPOSIT_RATIO)
-
-
 def _get_job_card_outstanding_balance(job_card, quotation_amount):
     quotation_amount = _round_job_card_amount(quotation_amount)
     if not job_card or job_card.get("__islocal"):
@@ -1692,12 +1684,6 @@ def create_job_card_from_quotation(quotation, customer, customer_name=None, paym
     if job_card.get("__islocal") and payment_mode == "Cash Customer":
         if payment_amount <= 0:
             frappe.throw("Please enter a payment amount to create a job card for a cash customer.")
-        required_deposit = _get_required_cash_job_card_deposit(quotation_amount)
-        if required_deposit - payment_amount > 0.009:
-            frappe.throw(
-                f"Cash customer Job Cards require an initial payment of at least 50% of the "
-                f"quotation amount ({frappe.utils.fmt_money(required_deposit)})."
-            )
     if payment_amount > payment_limit:
         frappe.throw(f"Payment amount cannot exceed the current balance amount of {frappe.utils.fmt_money(payment_limit)}.")
 
