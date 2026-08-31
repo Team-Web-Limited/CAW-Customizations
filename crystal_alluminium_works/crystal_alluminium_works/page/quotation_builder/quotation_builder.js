@@ -2597,6 +2597,67 @@ function open_item_editor(page, item, is_new = false) {
 	}
 }
 
+// Keyboard flow for the batch "Fill Details" tables: these are filled column by
+// column (all the Pcs, then all the Rates), so Enter moves straight down to the
+// same field in the next row, Shift+Enter back up, and the end of a column rolls
+// over into the top of the next one. The last cell lands on Save Items instead of
+// firing it, so Enter never submits a half-filled table by accident.
+function bind_batch_table_keynav(d) {
+	let $wrapper = d.fields_dict.batch_table.$wrapper;
+
+	function focus_input($el) {
+		if (!$el || !$el.length) {
+			return;
+		}
+		$el.trigger('focus');
+		if ($el.is('input') && $el[0].select) {
+			$el[0].select();
+		}
+	}
+
+	$wrapper.on('keydown', '.qb-batch-input', function (e) {
+		if (e.key !== 'Enter') {
+			return;
+		}
+		e.preventDefault();
+		e.stopPropagation();
+
+		let $inputs = $wrapper.find('.qb-batch-input:visible');
+		let fields = [];
+		$inputs.each(function () {
+			let field = $(this).data('field');
+			if (fields.indexOf(field) === -1) {
+				fields.push(field);
+			}
+		});
+
+		let field = $(this).data('field');
+		let $column = $wrapper.find(`.qb-batch-input[data-field="${field}"]:visible`);
+		let row_index = $column.index(this);
+		let step = e.shiftKey ? -1 : 1;
+		let next_row = row_index + step;
+
+		if (next_row >= 0 && next_row < $column.length) {
+			focus_input($column.eq(next_row));
+			return;
+		}
+
+		// Rolled off the end of this column — continue at the top (or bottom) of the neighbouring one.
+		let next_field = fields[fields.indexOf(field) + step];
+		if (next_field) {
+			let $next_column = $wrapper.find(`.qb-batch-input[data-field="${next_field}"]:visible`);
+			focus_input($next_column.eq(step > 0 ? 0 : $next_column.length - 1));
+			return;
+		}
+
+		if (step > 0) {
+			d.get_primary_btn().trigger('focus');
+		}
+	});
+
+	focus_input($wrapper.find('.qb-batch-input:visible').first());
+}
+
 // After multi-selecting Glass items to add, this fills in each piece's own
 // dimensions/processing options in one wide inline-editable table (mirroring
 // the Review tab's Glass columns) instead of opening N single-item dialogs.
@@ -2761,6 +2822,7 @@ function open_glass_batch_details_dialog(page, items) {
 	});
 
 	d.show();
+	bind_batch_table_keynav(d);
 }
 
 // Same idea as open_glass_batch_details_dialog, sized to what Aluminium
@@ -2864,6 +2926,7 @@ function open_aluminium_batch_details_dialog(page, items) {
 		});
 
 		d.show();
+		bind_batch_table_keynav(d);
 	});
 }
 
@@ -2941,6 +3004,7 @@ function open_fittings_batch_details_dialog(page, items) {
 	});
 
 	d.show();
+	bind_batch_table_keynav(d);
 }
 
 function open_glass_import_dialog(page, dimension_uom = QB_DEFAULT_GLASS_DIMENSION_UOM) {
