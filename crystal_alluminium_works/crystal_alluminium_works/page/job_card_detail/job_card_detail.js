@@ -1479,6 +1479,13 @@ function bind_single_job_card_detail_events(page, $body, job_card, quotation, hi
 		window.open(print_url, '_blank');
 	});
 
+	$body.on('click.job-card-detail', '[data-action="export-job-card-layout"]', function() {
+		let export_url = frappe.urllib.get_full_url(
+			`/api/method/crystal_alluminium_works.api.export_job_card_layout?name=${encodeURIComponent(job_card.name)}`
+		);
+		window.open(export_url, '_blank');
+	});
+
 	$body.on('click.job-card-detail', '[data-action="create-sales-invoice"]', function() {
 		frappe.confirm(
 			'<b>Create Sales Invoice?</b><br><br>This will create, submit, and mark the Sales Invoice as paid from the fully paid Job Card.',
@@ -2238,6 +2245,7 @@ function render_single_job_card_detail(job_card, quotation, history, sales_invoi
 			</div>
 			<div class="jc-detail-actions">
 				<button class="btn btn-primary jc-download-btn" data-action="download-job-card-pdf" title="Download Job Card PDF">${frappe.utils.icon('download', 'sm')}<span>Download</span></button>
+					<button class="btn btn-default jc-download-btn" data-action="export-job-card-layout" title="Export cut-list as xlsx (Code, Item, Pcs, No, Width, Height)">${frappe.utils.icon('download', 'sm')}<span>Export Layout</span></button>
 				${can_create_partial_invoice ? '<button class="btn btn-default" data-action="create-partial-invoice">Partial Invoice</button>' : ''}
 				${primary_invoice_action}
 				<select class="form-control" data-action="view-menu" style="width:auto; min-width:170px; flex:0 0 auto;">

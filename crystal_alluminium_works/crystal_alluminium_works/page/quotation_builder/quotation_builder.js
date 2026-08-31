@@ -283,6 +283,33 @@ function get_customer_payment_mode_label(value) {
 	return normalize_customer_payment_mode(value) === 'cash' ? 'Cash Customer' : 'Invoice Customer';
 }
 
+// The batch details table has one colour cell per row and the colour list runs long, so
+// those cells are type-to-search inputs backed by a <datalist> rather than a plain <select>.
+// Anything typed still has to resolve to a real colour — resolve/blur handling below snaps
+// the cell back to the canonical option (or None) so a typo can never reach the item.
+function get_aluminium_color_datalist_html(list_id, options_str) {
+	let options = options_str.split('\n').map(function (opt) {
+		return `<option value="${frappe.utils.escape_html(opt)}"></option>`;
+	}).join('');
+	return `<datalist id="${list_id}">${options}</datalist>`;
+}
+
+function resolve_aluminium_color_option(value, options_str) {
+	let typed = String(value || '').trim();
+	if (!typed) {
+		return 'None';
+	}
+	let options = options_str.split('\n');
+	let exact = options.find(opt => opt === typed);
+	if (exact) {
+		return exact;
+	}
+	let lowered = typed.toLowerCase();
+	return options.find(opt => opt.toLowerCase() === lowered)
+		|| options.find(opt => opt.toLowerCase().indexOf(lowered) === 0)
+		|| 'None';
+}
+
 function normalize_aluminium_color_selection(value) {
 	return value === 'None' ? '' : (value || '');
 }
@@ -1462,6 +1489,7 @@ function add_item_row(page, category, glass_type = 'Ordinary', dimension_uom = Q
 		metres: 1,
 		aluminium_rate_per_kg: 0,
 		aluminium_weight_per_length: 0,
+		aluminium_powder_coating_charge: 0,
 		quantity: category === 'Ceiling' ? 100 : 0,
 		square_metres: category === 'Ceiling' ? 100 : 0,
 		ceiling_mode: category === 'Ceiling' ? ceiling_mode : '',
@@ -1918,6 +1946,14 @@ function open_item_editor(page, item, is_new = false) {
 				label: 'Weight / Length',
 				default: item.aluminium_weight_per_length || 0
 			},
+			{ fieldtype: 'Section Break' },
+			{
+				fieldtype: 'Currency',
+				fieldname: 'aluminium_powder_coating_charge',
+				label: 'Powder Coating Charges',
+				description: 'Added on top of the computed Rate Per Piece.',
+				default: item.aluminium_powder_coating_charge || 0
+			},
 			{ fieldtype: 'Section Break', label: 'Item Details' },
 			{ fieldtype: 'Select', fieldname: 'aluminium_color', label: 'Color', options: get_aluminium_color_options(), default: item.aluminium_color || 'None' },
 			{ fieldtype: 'Column Break' },
@@ -2081,6 +2117,7 @@ function open_item_editor(page, item, is_new = false) {
 				item.metres = 1;
 				item.aluminium_rate_per_kg = values.aluminium_rate_per_kg || 0;
 				item.aluminium_weight_per_length = values.aluminium_weight_per_length || 0;
+				item.aluminium_powder_coating_charge = values.aluminium_powder_coating_charge || 0;
 				item.aluminium_color = normalize_aluminium_color_selection(values.aluminium_color);
 			} else {
 				item.metres = 0;
@@ -2450,6 +2487,10 @@ function open_item_editor(page, item, is_new = false) {
 		});
 	}
 
+	function get_aluminium_powder_coating_charge() {
+		return flt(d.get_value('aluminium_powder_coating_charge') || 0);
+	}
+
 	function update_aluminium_rate_from_inputs() {
 		let normal_price = get_aluminium_normal_price(
 			d.get_value('aluminium_rate_per_kg') || 0,
@@ -2457,11 +2498,34 @@ function open_item_editor(page, item, is_new = false) {
 		);
 
 		if (normal_price > 0) {
-			d.set_value('rate', get_aluminium_rate_for_selling_price(normal_price, d.get_value('price_list')));
+			d.set_value('rate', get_aluminium_rate_for_selling_price(normal_price, d.get_value('price_list')) + get_aluminium_powder_coating_charge());
 			return true;
 		}
 
 		return false;
+	}
+
+	// Item Price/standard_rate fallback used when Rate/Kg or Weight/Length is left blank —
+	// same lookup as fetch_item_price_rate, but the powder coating charge still has to land
+	// on top of whatever base rate comes back.
+	function fetch_aluminium_fallback_rate(ic, price_list) {
+		frappe.call({
+			method: 'frappe.client.get_value',
+			args: {
+				doctype: 'Item Price',
+				filters: { item_code: ic, price_list: price_list, selling: 1 },
+				fieldname: 'price_list_rate'
+			},
+			callback: function (r) {
+				if (r.message && r.message.price_list_rate) {
+					d.set_value('rate', flt(r.message.price_list_rate) + get_aluminium_powder_coating_charge());
+				} else {
+					frappe.db.get_value('Item', ic, 'standard_rate', function (r2) {
+						d.set_value('rate', flt(r2 && r2.standard_rate) + get_aluminium_powder_coating_charge());
+					});
+				}
+			}
+		});
 	}
 
 	// Auto-fetch rate from Item Price when item_code or price_list changes
@@ -2534,12 +2598,12 @@ function open_item_editor(page, item, is_new = false) {
 									d.set_value('aluminium_weight_per_length', flt(r.message.custom_aluminium_weight_per_length || 0));
 								}
 								if (!update_aluminium_rate_from_inputs()) {
-									fetch_item_price_rate(ic, lookup_price_list);
+									fetch_aluminium_fallback_rate(ic, lookup_price_list);
 								}
 							}
 						});
 					} else if (!update_aluminium_rate_from_inputs()) {
-						fetch_item_price_rate(ic, lookup_price_list);
+						fetch_aluminium_fallback_rate(ic, lookup_price_list);
 					}
 				} else {
 					frappe.db.get_value('Item', ic, ['item_name', 'stock_uom'], function (item_result) {
@@ -2580,11 +2644,12 @@ function open_item_editor(page, item, is_new = false) {
 			let recalc_aluminium_from_inputs = function () {
 				let ic = d.get_value('item_code');
 				if (!update_aluminium_rate_from_inputs() && ic) {
-					fetch_item_price_rate(ic, get_aluminium_backend_price_list(d.get_value('price_list')));
+					fetch_aluminium_fallback_rate(ic, get_aluminium_backend_price_list(d.get_value('price_list')));
 				}
 			};
 			d.fields_dict.aluminium_rate_per_kg.$input.on('input change', recalc_aluminium_from_inputs);
 			d.fields_dict.aluminium_weight_per_length.$input.on('input change', recalc_aluminium_from_inputs);
+			d.fields_dict.aluminium_powder_coating_charge.$input.on('input change', recalc_aluminium_from_inputs);
 		}
 
 		setTimeout(function () {
@@ -2836,28 +2901,26 @@ function open_aluminium_batch_details_dialog(page, items) {
 
 	ensure_aluminium_colors(function () {
 		let color_options = get_aluminium_color_options();
-
-		function option_list(options_str, current) {
-			return options_str.split('\n').map(function (opt) {
-				return `<option value="${frappe.utils.escape_html(opt)}" ${opt === current ? 'selected' : ''}>${frappe.utils.escape_html(opt)}</option>`;
-			}).join('');
-		}
+		// Unique per dialog — a hidden previous dialog can still be in the DOM with its own datalist.
+		let color_list_id = 'qb-aluminium-color-options-' + Date.now();
 
 		let rows_html = items.map(function (it, index) {
 			return `
 				<tr data-id="${it.id}">
 					<td style="text-align:center;white-space:nowrap;">${index + 1}</td>
 					<td style="white-space:nowrap;">${frappe.utils.escape_html(it.item_name || it.item_code)}</td>
-					<td><select class="form-control input-sm qb-batch-input" data-field="aluminium_color" style="width:110px;">${option_list(color_options, it.aluminium_color || 'None')}</select></td>
+					<td><input type="text" class="form-control input-sm qb-batch-input qb-aluminium-color-input" data-field="aluminium_color" list="${color_list_id}" placeholder="Search color..." value="${frappe.utils.escape_html(it.aluminium_color || 'None')}" style="width:130px;"></td>
 					<td><input type="number" min="1" step="1" class="form-control input-sm qb-batch-input" data-field="qty" value="1" style="width:60px;"></td>
 					<td><input type="number" min="0" step="any" class="form-control input-sm qb-batch-input" data-field="aluminium_rate_per_kg" value="${flt(it.aluminium_rate_per_kg || 0)}" style="width:90px;"></td>
 					<td><input type="number" min="0" step="any" class="form-control input-sm qb-batch-input" data-field="aluminium_weight_per_length" value="${flt(it.aluminium_weight_per_length || 0)}" style="width:90px;"></td>
+					<td><input type="number" min="0" step="any" class="form-control input-sm qb-batch-input" data-field="aluminium_powder_coating_charge" value="${flt(it.aluminium_powder_coating_charge || 0)}" style="width:90px;"></td>
 					<td><input type="text" class="form-control input-sm qb-batch-input" data-field="description" value="" style="width:150px;"></td>
 				</tr>
 			`;
 		}).join('');
 
 		let table_html = `
+			${get_aluminium_color_datalist_html(color_list_id, color_options)}
 			<div class="table-responsive" style="max-height:55vh;overflow:auto;">
 				<table class="table table-bordered" style="background:var(--card-bg); margin-bottom:0;">
 					<thead style="background:var(--control-bg);position:sticky;top:0;z-index:1;">
@@ -2868,6 +2931,7 @@ function open_aluminium_batch_details_dialog(page, items) {
 							<th style="white-space:nowrap;">Pcs</th>
 							<th style="white-space:nowrap;">Rate / Kg</th>
 							<th style="white-space:nowrap;">Weight / Length</th>
+							<th style="white-space:nowrap;">Powder Coating</th>
 							<th style="white-space:nowrap;">Description</th>
 						</tr>
 					</thead>
@@ -2894,22 +2958,23 @@ function open_aluminium_batch_details_dialog(page, items) {
 
 					let final_item = Object.assign({}, it, {
 						metres: 1,
-						aluminium_color: normalize_aluminium_color_selection(val('aluminium_color')),
+						aluminium_color: normalize_aluminium_color_selection(resolve_aluminium_color_option(val('aluminium_color'), color_options)),
 						qty: flt(val('qty') || 1) || 1,
 						aluminium_rate_per_kg: flt(val('aluminium_rate_per_kg') || 0),
 						aluminium_weight_per_length: flt(val('aluminium_weight_per_length') || 0),
+						aluminium_powder_coating_charge: flt(val('aluminium_powder_coating_charge') || 0),
 						description: val('description') || ''
 					});
 
 					let normal_price = get_aluminium_normal_price(final_item.aluminium_rate_per_kg, final_item.aluminium_weight_per_length);
 					if (normal_price > 0) {
-						final_item.rate = get_aluminium_rate_for_selling_price(normal_price, final_item.price_list);
+						final_item.rate = get_aluminium_rate_for_selling_price(normal_price, final_item.price_list) + final_item.aluminium_powder_coating_charge;
 						final_item.amount = calculate_item_amount(final_item);
 						return Promise.resolve(final_item);
 					}
 
 					return fetch_item_selling_rate(final_item.item_code, get_aluminium_backend_price_list(final_item.price_list)).then(function (rate) {
-						final_item.rate = rate;
+						final_item.rate = flt(rate) + final_item.aluminium_powder_coating_charge;
 						final_item.amount = calculate_item_amount(final_item);
 						return final_item;
 					});
@@ -2927,6 +2992,19 @@ function open_aluminium_batch_details_dialog(page, items) {
 
 		d.show();
 		bind_batch_table_keynav(d);
+
+		// Clearing "None" on focus is what makes the search usable: the browser filters the
+		// datalist by whatever is already in the box, so an untouched cell would otherwise
+		// only ever offer "None". On the way out the typed text is snapped to a real colour.
+		let $color_cells = d.fields_dict.batch_table.$wrapper;
+		$color_cells.on('focus', '.qb-aluminium-color-input', function () {
+			if (resolve_aluminium_color_option($(this).val(), color_options) === 'None') {
+				$(this).val('');
+			}
+		});
+		$color_cells.on('blur', '.qb-aluminium-color-input', function () {
+			$(this).val(resolve_aluminium_color_option($(this).val(), color_options));
+		});
 	});
 }
 

@@ -279,6 +279,22 @@ function render_payments_pagination(page) {
 	`);
 }
 
+// Colour-coded pill for a job card's own payment state (what has been received against
+// it before this payment), rendered read-only inside the allocations grid.
+const JOB_CARD_PAYMENT_STATUS_COLORS = {
+	'Paid': { bg: '#e8f6ec', fg: '#1f7a3d' },
+	'Partial': { bg: '#fff4e0', fg: '#a35b00' },
+	'Pending': { bg: '#fdeaea', fg: '#c0392b' }
+};
+
+function format_job_card_payment_status(status) {
+	if (!status) {
+		return '';  // row added manually, no job card picked yet
+	}
+	let colors = JOB_CARD_PAYMENT_STATUS_COLORS[status] || JOB_CARD_PAYMENT_STATUS_COLORS['Pending'];
+	return `<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;background:${colors.bg};color:${colors.fg};">${frappe.utils.escape_html(__(status))}</span>`;
+}
+
 function open_create_payment_modal(page) {
 	let mode_of_payments = (page._payments_page_context && page._payments_page_context.mode_of_payments) || ['Cash', 'Bank', 'Paybill', 'Cheque'];
 
@@ -370,7 +386,11 @@ function open_create_payment_modal(page) {
 
 							// Populate grid with one row per outstanding job card
 							grid.df.data = rows.map(function(item) {
-								return { job_card: item.job_card, amount: item.amount };
+								return {
+									job_card: item.job_card,
+									amount: item.amount,
+									payment_status: item.payment_status || 'Pending'
+								};
 							});
 							grid.refresh();
 
@@ -412,7 +432,7 @@ function open_create_payment_modal(page) {
 						options: 'CAW Job Card',
 						in_list_view: 1,
 						reqd: 1,
-						columns: 7,
+						columns: 5,
 						get_query: function() {
 							return {
 								filters: {
@@ -433,10 +453,13 @@ function open_create_payment_modal(page) {
 								method: 'crystal_alluminium_works.api.get_job_card_statement_balance',
 								args: { job_card: row.job_card },
 								callback: function(r) {
-									let balance = flt((r.message || {}).balance || 0);
+									let info = r.message || {};
+									let balance = flt(info.balance || 0);
 									row.amount = Math.max(balance, 0);
+									row.payment_status = info.payment_status || 'Pending';
 									if (control.grid_row) {
 										control.grid_row.refresh_field('amount');
+										control.grid_row.refresh_field('payment_status');
 									}
 									update_amount_from_allocations();
 									update_allocation_balance();
@@ -456,6 +479,17 @@ function open_create_payment_modal(page) {
 							// and clamp the row if it would over-allocate.
 							update_amount_from_allocations();
 							update_allocation_balance();
+						}
+					},
+					{
+						fieldtype: 'Data',
+						fieldname: 'payment_status',
+						label: 'Payment',
+						in_list_view: 1,
+						read_only: 1,
+						columns: 2,
+						formatter: function(value) {
+							return format_job_card_payment_status(value);
 						}
 					}
 				]

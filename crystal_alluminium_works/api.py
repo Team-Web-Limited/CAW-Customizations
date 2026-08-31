@@ -122,6 +122,20 @@ def _round_job_card_amount(value):
     return frappe.utils.flt(value or 0, JOB_CARD_CURRENCY_PRECISION)
 
 
+def _job_card_payment_status(quotation_amount, paid):
+    """Where one job card stands against its own quotation total: nothing received yet
+    (Pending), something but not all of it (Partial), or fully settled (Paid). Shown per
+    allocation row in the Create Payment modal so the user can see, before allocating,
+    which job cards have already been part-paid."""
+    quotation_amount = _round_job_card_amount(quotation_amount)
+    paid = _round_job_card_amount(paid)
+    if quotation_amount > 0 and paid + 0.0001 >= quotation_amount:
+        return "Paid"
+    if paid > 0.0001:
+        return "Partial"
+    return "Pending"
+
+
 # Cash-customer Job Cards require an upfront deposit of at least this share of the quotation.
 CASH_JOB_CARD_DEPOSIT_RATIO = 0.5
 
@@ -466,6 +480,48 @@ def download_crystal_job_card_pdf(name):
         "Job Card No",
         "",
     )
+
+
+@frappe.whitelist(methods=["GET"])
+def export_job_card_layout(name):
+    """Cut-list xlsx for the workshop floor: just Code/Item/Pcs/No/Width/Height,
+    one row per quotation line — the same rows the Crystal Job Card PDF's main
+    items table shows (auto-generated service rows and Ceiling items excluded),
+    without the Qty/UOM/Color/Polish/Holes/Notches columns the PDF also carries."""
+    job_card = frappe.get_doc("CAW Job Card", name)
+    quotation = frappe.get_doc("Quotation", job_card.quotation) if job_card.quotation else None
+    print_items = quotation.items if quotation else []
+
+    rows = [["Code", "Item", "Pcs", "No", "Width", "Height"]]
+    for row in print_items:
+        if row.custom_auto_generated or (row.custom_product_category or "") == "Ceiling":
+            continue
+
+        category = row.custom_product_category or ""
+        pieces = flt(row.qty or 0)
+        if category == "Glass" and row.custom_glass_sale_mode == "Sheet":
+            pieces = flt(row.custom_sheet_pcs or 0)
+
+        if category == "Glass":
+            numbering = row.custom_numbering or "-"
+            width = flt(row.custom_width_mm or 0, 0) or "-"
+            height = flt(row.custom_height_mm or 0, 0) or "-"
+        else:
+            numbering = "-"
+            width = "-"
+            height = "-"
+
+        rows.append([
+            row.item_code or "",
+            row.item_name or row.item_code or "",
+            flt(pieces, 2),
+            numbering,
+            width,
+            height,
+        ])
+
+    filename = f"{name.replace(' ', '-').replace('/', '-')}-layout"
+    return _stream_xlsx_file(filename, rows)
 
 
 @frappe.whitelist()
@@ -5576,7 +5632,12 @@ def get_job_card_statement_balance(job_card):
     else:
         paid = _get_job_card_allocated_payments(job_card)
 
-    return {"balance": _round_job_card_amount(max(quotation_amount - paid, 0))}
+    return {
+        "balance": _round_job_card_amount(max(quotation_amount - paid, 0)),
+        "quotation_amount": _round_job_card_amount(quotation_amount),
+        "paid": _round_job_card_amount(paid),
+        "payment_status": _job_card_payment_status(quotation_amount, paid),
+    }
 
 
 @frappe.whitelist()
@@ -5690,7 +5751,13 @@ def get_customer_outstanding_job_cards(customer):
             paid = flt(paid_by_job_card.get(jc.name, 0))
         balance = _round_job_card_amount(max(flt(jc.quotation_amount) - paid, 0))
         if balance > 0.0001:
-            result.append({"job_card": jc.name, "amount": balance})
+            result.append({
+                "job_card": jc.name,
+                "amount": balance,
+                "quotation_amount": _round_job_card_amount(jc.quotation_amount),
+                "paid": _round_job_card_amount(paid),
+                "payment_status": _job_card_payment_status(jc.quotation_amount, paid),
+            })
 
     return result
 
