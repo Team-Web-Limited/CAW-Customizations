@@ -52,7 +52,7 @@ async function render_payments_page(page) {
 		.pay-filter-field label { display:block; margin-bottom:6px; color:var(--text-muted); font-size:12px; font-weight:600; }
 		.pay-filter-actions { display:flex; gap:8px; }
 		.pay-table-scroll { height:560px; overflow:auto; }
-		.pay-table { width: 100%; min-width: 1050px; border-collapse: separate; border-spacing:0; }
+		.pay-table { width: 100%; min-width: 1250px; border-collapse: separate; border-spacing:0; }
 		.pay-table th { position:sticky; top:0; z-index:2; padding: 11px 14px; font-size: 12px; font-weight: 700; color: var(--text-muted); text-align: left; border-bottom: 1px solid var(--border-color); background: var(--subtle-fg); }
 		.pay-table td { padding: 12px 14px; font-size: 13px; color: var(--text-color); border-bottom: 1px solid var(--border-color); vertical-align: top; }
 		.pay-table tbody tr:last-child td { border-bottom: 0; }
@@ -110,6 +110,8 @@ async function render_payments_page(page) {
 					<thead>
 						<tr>
 							<th>Date</th>
+							<th style="text-align:center;">C.Type</th>
+							<th>Name</th>
 							<th>Customer</th>
 							<th style="text-align:right;">Amount</th>
 							<th>Method</th>
@@ -155,7 +157,7 @@ function render_payment_record_rows(records) {
 	if (!records.length) {
 		return `
 			<tr>
-				<td colspan="7" class="pay-muted" style="text-align:center;padding:24px;">
+				<td colspan="9" class="pay-muted" style="text-align:center;padding:24px;">
 					No payments recorded yet.
 				</td>
 			</tr>
@@ -170,9 +172,17 @@ function render_payment_record_rows(records) {
 				quotation_cell += ' <span class="pay-muted" title="No Job Card yet — held as deposit credit">(deposit)</span>';
 			}
 		}
+		let is_cash = row.customer_type === 'Cash';
+		let type_color = is_cash ? '#16a085' : '#8e44ad';
 		return `
 			<tr>
 				<td>${frappe.utils.escape_html(row.date ? frappe.datetime.str_to_user(row.date) : '-')}</td>
+				<td style="text-align:center;">
+					<span style="background:${type_color}20; color:${type_color}; padding:4px 12px; border-radius:12px; font-size:12px; font-weight:600;">
+						${frappe.utils.escape_html(row.customer_type || '—')}
+					</span>
+				</td>
+				<td style="font-weight:500;">${frappe.utils.escape_html(row.display_name || '-')}</td>
 				<td>${frappe.utils.escape_html(row.customer || '-')}</td>
 				<td style="text-align:right;font-weight:600;">${format_currency(row.amount || 0, 'KES')}</td>
 				<td>${frappe.utils.escape_html(row.payment_method || '-')}</td>
@@ -240,7 +250,7 @@ function load_payment_records(page, page_number) {
 	let request_serial = state.request_serial;
 
 	$body.find('.pay-table-body').html(`
-		<tr><td colspan="6" class="pay-muted" style="text-align:center;padding:32px;">Loading payments...</td></tr>
+		<tr><td colspan="9" class="pay-muted" style="text-align:center;padding:32px;">Loading payments...</td></tr>
 	`);
 
 	frappe.call({

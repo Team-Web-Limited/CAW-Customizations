@@ -5366,6 +5366,39 @@ def get_payments_page(search=None, payment_method=None, from_date=None, to_date=
         page_length=page_length,
     )
 
+    # C.Type + Name mirror the Quotations page: Cash payments all share the same
+    # "Cash Customer" record (no per-walk-in identity on Payments itself), so the
+    # walk-in's actual name - if this payment is linked back to a Quotation - comes
+    # from that Quotation's custom_customer_name instead.
+    customer_ids = {row["customer"] for row in rows if row.get("customer")}
+    customer_names = {}
+    if customer_ids:
+        for c in frappe.get_all(
+            "Customer",
+            filters={"name": ["in", list(customer_ids)]},
+            fields=["name", "customer_name"],
+        ):
+            customer_names[c.name] = c.customer_name
+
+    quotation_ids = {row["quotation"] for row in rows if row.get("quotation")}
+    quotation_walkin_names = {}
+    if quotation_ids:
+        for q in frappe.get_all(
+            "Quotation",
+            filters={"name": ["in", list(quotation_ids)]},
+            fields=["name", "custom_customer_name"],
+        ):
+            if q.custom_customer_name:
+                quotation_walkin_names[q.name] = q.custom_customer_name
+
+    for row in rows:
+        is_cash = row.get("customer") == SHARED_CASH_CUSTOMER_NAME
+        row["customer_type"] = "Cash" if is_cash else "Invoice"
+        if is_cash:
+            row["display_name"] = quotation_walkin_names.get(row.get("quotation")) or SHARED_CASH_CUSTOMER_NAME
+        else:
+            row["display_name"] = customer_names.get(row.get("customer")) or row.get("customer")
+
     count_result = frappe.get_all(
         "Payments",
         filters=filters,

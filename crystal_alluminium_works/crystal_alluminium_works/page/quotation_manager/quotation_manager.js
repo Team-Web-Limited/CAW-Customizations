@@ -749,14 +749,13 @@ function get_action_buttons(doc, sales_invoices, existing_job_card, deposit_cred
 	let note = '';
 	let has_sales_invoices = sales_invoices && sales_invoices.length > 0;
 	let has_job_card = !!(existing_job_card && existing_job_card.name);
-	let job_card_balance = has_job_card ? flt(existing_job_card.balance_amount || 0) : null;
 	let available_deposit_credit = flt((deposit_credit && deposit_credit.credit) || 0);
 
 	// Take a deposit against this quotation without committing to a Job Card yet — offered
-	// while the quotation is still Open (no Job Card) or Converted with an unpaid balance
-	// remaining on its Job Card. See api.py record_customer_payment / get_quotation_deposit_credit.
-	let can_take_deposit = doc.docstatus === 1
-		&& (doc.status === 'Open' || (doc.status === 'Converted' && (job_card_balance === null || job_card_balance > 0.0001)));
+	// only while no Job Card exists yet. Once a Job Card has been created, payments are taken
+	// against the Job Card itself (see Job Card detail page), not the Quotation.
+	// See api.py record_customer_payment / get_quotation_deposit_credit.
+	let can_take_deposit = doc.docstatus === 1 && doc.status === 'Open' && !has_job_card;
 	let deposit_buttons_html = '';
 	if (can_take_deposit) {
 		deposit_buttons_html += `
@@ -765,13 +764,13 @@ function get_action_buttons(doc, sales_invoices, existing_job_card, deposit_cred
 			</button>
 		`;
 	}
-	// Only on the chain's live tip. Every revision resolves the same shared pot of deposit
-	// credit (see api.py get_quotation_deposit_credit), so without this the same money would
-	// offer a Refund button on each superseded revision as well. Deliberately not gated on
-	// docstatus: a chain whose tip ends up cancelled — the customer walked away — is exactly
-	// when the deposit needs handing back.
+	// Only on the chain's live tip, and only before a Job Card exists — once a Job Card is
+	// created any deposit credit is applied to it (see api.py create_job_card_from_quotation),
+	// so there is nothing left here to refund. Every revision resolves the same shared pot of
+	// deposit credit (see api.py get_quotation_deposit_credit), so without the latest-revision
+	// check the same money would offer a Refund button on each superseded revision as well.
 	let is_latest_revision = !deposit_credit || deposit_credit.is_latest_revision !== false;
-	if (available_deposit_credit > 0.0001 && is_latest_revision) {
+	if (available_deposit_credit > 0.0001 && is_latest_revision && !has_job_card) {
 		deposit_buttons_html += `
 			<button class="btn btn-default" id="btn-refund-deposit">
 				<i class="fa fa-undo" style="margin-right:6px;"></i>Refund Deposit (${format_currency(available_deposit_credit, doc.currency)})
