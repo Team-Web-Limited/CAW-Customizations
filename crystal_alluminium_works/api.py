@@ -476,7 +476,7 @@ def download_crystal_job_card_pdf(name):
 
 @frappe.whitelist(methods=["GET"])
 def export_job_card_layout(name):
-    """Cut-list xlsx for the workshop floor: just Code/Item/Pcs/No/Width/Height,
+    """Cut-list xlsx for the workshop floor: just Code/Item/No/Width/Height/Pcs,
     one row per quotation line — the same rows the Crystal Job Card PDF's main
     items table shows (auto-generated service rows and Ceiling items excluded),
     without the Qty/UOM/Color/Polish/Holes/Notches columns the PDF also carries."""
@@ -484,7 +484,7 @@ def export_job_card_layout(name):
     quotation = frappe.get_doc("Quotation", job_card.quotation) if job_card.quotation else None
     print_items = quotation.items if quotation else []
 
-    rows = [["Code", "Item", "Pcs", "No", "Width", "Height"]]
+    rows = [["Code", "Item", "No", "Width", "Height", "Pcs"]]
     for row in print_items:
         if row.custom_auto_generated or (row.custom_product_category or "") == "Ceiling":
             continue
@@ -506,10 +506,10 @@ def export_job_card_layout(name):
         rows.append([
             row.item_code or "",
             row.item_name or row.item_code or "",
-            flt(pieces, 2),
             numbering,
             width,
             height,
+            flt(pieces, 2),
         ])
 
     filename = f"{name.replace(' ', '-').replace('/', '-')}-layout"
@@ -4556,44 +4556,44 @@ def save_custom_item(data):
 @frappe.whitelist(methods=["GET"])
 def download_glass_builder_template():
     headers = [[
+        "numbering",
         "width",
         "height",
+        "pcs",
         "w+",
         "h+",
-        "pcs",
         "holes",
         "notches",
         "sandblast",
         "polish_width_side",
         "polish_height_side",
-        "numbering",
         "details",
     ]]
     sample = [[
+        1,
         600,
         900,
-        0,
-        0,
         1,
+        0,
+        0,
         2,
         0,
         0.5,
         2,
         2,
-        1,
         "",
     ], [
+        2,
         1200,
         900,
+        2,
         0.25,
         0.25,
-        2,
         1,
         1,
         1,
         2,
         1,
-        2,
         "Office partition",
     ]]
     return _stream_xlsx_file("glass_builder_template", headers + sample)
@@ -4603,17 +4603,17 @@ def download_glass_builder_template():
 def export_glass_items_from_builder(items):
     items = json.loads(items) if isinstance(items, str) else (items or [])
     rows = [[
+        "numbering",
         "width",
         "height",
+        "pcs",
         "w+",
         "h+",
-        "pcs",
         "holes",
         "notches",
         "sandblast",
         "polish_width_side",
         "polish_height_side",
-        "numbering",
         "details",
     ]]
 
@@ -4621,17 +4621,17 @@ def export_glass_items_from_builder(items):
         if item.get("category") != "Glass":
             continue
         rows.append([
+            idx + 1,
             item.get("width_mm", 0),
             item.get("height_mm", 0),
+            item.get("qty", 0),
             item.get("width_allowance", 0),
             item.get("height_allowance", 0),
-            item.get("qty", 0),
             item.get("holes", 0),
             item.get("notches", 0),
             1 if item.get("sandblast_type") == "Full" else 0.5 if item.get("sandblast_type") == "Half" else 0,
             item.get("polish_width_sides", 0),
             item.get("polish_height_sides", 0),
-            idx + 1,
             item.get("description", ""),
         ])
 

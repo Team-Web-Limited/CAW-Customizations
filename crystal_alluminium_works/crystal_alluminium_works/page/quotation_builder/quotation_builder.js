@@ -3104,7 +3104,7 @@ function open_glass_import_dialog(page, dimension_uom = QB_DEFAULT_GLASS_DIMENSI
 				fieldname: 'template_help',
 				options: `
 						<div style="margin-bottom:12px;color:var(--text-muted);">
-							Expected columns: <b>numbering</b>, <b>width</b>, <b>height</b>, <b>w+</b>, <b>h+</b>, <b>pcs</b>, <b>holes</b>, <b>notches</b>, <b>sandblast</b>, <b>polish_width_side</b>, <b>polish_height_side</b>, <b>details</b>.
+							Expected columns: <b>numbering</b>, <b>width</b>, <b>height</b>, <b>pcs</b>, <b>w+</b>, <b>h+</b>, <b>holes</b>, <b>notches</b>, <b>sandblast</b>, <b>polish_width_side</b>, <b>polish_height_side</b>, <b>details</b>.
 							Widths and heights are read in the selected <b>UOM</b>.
 							For <b>sandblast</b>, use <b>1</b> for Full, <b>0.5</b> for Half, and <b>0</b> or leave it blank for None.
 							This upload now supports <b>glass items only</b>. Pick the glass category and item below, then upload the measurement rows.
