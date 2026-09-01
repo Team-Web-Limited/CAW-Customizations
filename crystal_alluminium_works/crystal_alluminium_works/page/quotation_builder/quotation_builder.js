@@ -1315,6 +1315,7 @@ function setup_customer_step(page) {
 	});
 	customer_name_field.$input.css({ 'font-size': '15px', 'padding': '10px' });
 	page.qb_customer_name_field = customer_name_field;
+	$customer_name_wrap.css('position', 'relative');
 
 	let customer_phone_field = frappe.ui.form.make_control({
 		df: {
@@ -1343,6 +1344,104 @@ function setup_customer_step(page) {
 	});
 	customer_pin_field.$input.css({ 'font-size': '15px', 'padding': '10px', 'margin-top': '10px' });
 	page.qb_customer_pin_field = customer_pin_field;
+
+	// Returning-customer lookup: as the walk-in's name is typed, suggest past
+	// cash-mode quotations with a matching name so staff can pick one and have
+	// the phone number / KRA PIN auto-fill instead of re-typing them.
+	let $customer_name_suggestions = $(`
+		<div class="qb-customer-name-suggestions" style="
+			display:none;
+			position:absolute;
+			top:100%;
+			left:0;
+			right:0;
+			z-index:50;
+			background:var(--fg-color, #fff);
+			border:1px solid var(--border-color, #d1d8dd);
+			border-radius:6px;
+			box-shadow:var(--shadow-md, 0 2px 6px rgba(0,0,0,0.15));
+			max-height:220px;
+			overflow-y:auto;
+			margin-top:2px;
+		"></div>
+	`).appendTo($customer_name_wrap);
+
+	let qb_customer_name_search_token = 0;
+	function render_customer_name_suggestions(matches) {
+		$customer_name_suggestions.empty();
+		if (!matches || !matches.length) {
+			$customer_name_suggestions.hide();
+			return;
+		}
+		matches.forEach(function (match) {
+			let $row = $(`
+				<div class="qb-customer-name-suggestion" style="
+					padding:8px 10px;
+					cursor:pointer;
+					font-size:13px;
+					border-bottom:1px solid var(--border-color, #eef1f4);
+				">
+					<div style="font-weight:600;">${frappe.utils.escape_html(match.customer_name)}</div>
+					<div class="text-muted" style="font-size:12px;">
+						${frappe.utils.escape_html(match.phone_number || 'No phone on record')}
+						${match.customer_pin ? ' &middot; PIN ' + frappe.utils.escape_html(match.customer_pin) : ''}
+					</div>
+				</div>
+			`).appendTo($customer_name_suggestions);
+
+			$row.on('mouseenter', function () {
+				$row.css('background', 'var(--bg-light-gray, #f4f5f6)');
+			}).on('mouseleave', function () {
+				$row.css('background', '');
+			});
+
+			// mousedown (not click) so this fires before the input's blur handler
+			$row.on('mousedown', function (e) {
+				e.preventDefault();
+				customer_name_field.set_value(match.customer_name);
+				customer_phone_field.set_value(match.phone_number || '');
+				customer_pin_field.set_value(match.customer_pin || '');
+				window.qb_state.customer_name = match.customer_name;
+				window.qb_state.customer_phone = match.phone_number || '';
+				window.qb_state.customer_pin = match.customer_pin || '';
+				update_customer_next_button_visibility(page);
+				$customer_name_suggestions.hide();
+			});
+		});
+		$customer_name_suggestions.show();
+	}
+
+	let qb_customer_name_search_debounce = frappe.utils.debounce(function (txt) {
+		let token = ++qb_customer_name_search_token;
+		frappe.call({
+			method: 'crystal_alluminium_works.api.search_cash_customer_history',
+			args: { txt: txt },
+			callback: function (r) {
+				// Drop stale responses and don't show a list once the field
+				// isn't focused any more (e.g. the user tabbed away fast).
+				if (token !== qb_customer_name_search_token || !customer_name_field.$input.is(':focus')) {
+					return;
+				}
+				render_customer_name_suggestions(r.message || []);
+			}
+		});
+	}, 300);
+
+	customer_name_field.$input.on('input', function () {
+		let txt = customer_name_field.get_value().trim();
+		if (txt.length < 2) {
+			$customer_name_suggestions.hide();
+			return;
+		}
+		qb_customer_name_search_debounce(txt);
+	});
+
+	customer_name_field.$input.on('blur', function () {
+		// Delay so a suggestion row's mousedown handler above still fires first.
+		setTimeout(function () {
+			$customer_name_suggestions.hide();
+		}, 150);
+	});
 
 	// Restore previously entered values
 	if (window.qb_state.customer_name) {

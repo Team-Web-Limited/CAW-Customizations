@@ -1577,6 +1577,66 @@ def get_shared_cash_customer():
 
 
 @frappe.whitelist()
+def search_cash_customer_history(txt=None, limit=8):
+    """Return recently-seen walk-in cash customers matching ``txt`` so the
+    Builder can auto-fill a returning customer's phone number / KRA PIN.
+
+    Cash quotations don't get their own Customer record (see
+    get_or_create_shared_cash_customer), so this is the only place a past
+    walk-in's contact details live — stamped per-quotation as free text on
+    custom_customer_name / custom_customer_phone / custom_customer_pin.
+    Matching is by name text only, so it's a convenience lookup, not an
+    identity match — two different people sharing a name will collide.
+    """
+    txt = (txt or "").strip()
+    limit = max(frappe.utils.cint(limit or 8), 1)
+    if not txt or len(txt) < 2:
+        return []
+
+    rows = frappe.db.sql(
+        """
+        SELECT
+            custom_customer_name AS customer_name,
+            custom_customer_phone AS phone_number,
+            custom_customer_pin AS customer_pin,
+            modified
+        FROM `tabQuotation`
+        WHERE party_name = %(shared_customer)s
+            AND IFNULL(TRIM(custom_customer_name), '') != ''
+            AND custom_customer_name LIKE %(txt)s
+        ORDER BY modified DESC
+        LIMIT 200
+        """,
+        {
+            "shared_customer": SHARED_CASH_CUSTOMER_NAME,
+            "txt": f"%{txt}%",
+        },
+        as_dict=True,
+    )
+
+    # Dedupe by name + phone, keeping the most recent sighting (rows are
+    # already ordered by modified DESC) so a changed PIN/phone wins.
+    seen = set()
+    matches = []
+    for row in rows:
+        key = ((row.customer_name or "").strip().lower(), (row.phone_number or "").strip())
+        if key in seen:
+            continue
+        seen.add(key)
+        matches.append(
+            {
+                "customer_name": row.customer_name,
+                "phone_number": row.phone_number or "",
+                "customer_pin": row.customer_pin or "",
+            }
+        )
+        if len(matches) >= limit:
+            break
+
+    return matches
+
+
+@frappe.whitelist()
 def search_builder_customers(doctype, txt, searchfield, start, page_len, filters):
     txt = (txt or "").strip()
     filters = frappe.parse_json(filters) if isinstance(filters, str) else (filters or {})

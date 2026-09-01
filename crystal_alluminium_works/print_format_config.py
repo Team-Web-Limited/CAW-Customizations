@@ -22,6 +22,7 @@ PRINT_FORMAT_CONFIGS = {
                     {"fieldname": "whatsapp_number", "label": "WhatsApp Number", "fieldtype": "Data"},
                     {"fieldname": "collection_note", "label": "Collection Note", "fieldtype": "Data"},
                     {"fieldname": "payment_quote_no_note", "label": "Quote Number Payment Note", "fieldtype": "Data"},
+                    {"fieldname": "confirm_details_note", "label": "Confirm Details Before Payment Note", "fieldtype": "Data"},
                 ],
             },
             {
@@ -45,6 +46,7 @@ PRINT_FORMAT_CONFIGS = {
             "whatsapp_number": "0702933965",
             "collection_note": "All customers must count and collect goods prior to collection.",
             "payment_quote_no_note": "All payments must include CORRECT QUOTE NO.",
+            "confirm_details_note": "Please confirm the glass sizes, number of pieces, aluminium quality, and the relevant codes before making the payment.",
             "bank_name": "I & M BANK",
             "account_name": "CRYSTAL ALUMINIUM WORKS LTD",
             "branch": "INDUSTRIAL AREA",
@@ -182,6 +184,11 @@ def build_terms_html(print_format, values=None):
             whatsapp_term,
             _escape(values.get("collection_note")),
             _escape(values.get("payment_quote_no_note")),
+            (
+                f"<strong>{_escape(values.get('confirm_details_note'))}</strong>"
+                if values.get("confirm_details_note")
+                else ""
+            ),
         ]
     elif print_format == "Crystal Sales Order":
         advance_payment_percent = _number(values.get("advance_payment_percent")) or 60
@@ -250,8 +257,8 @@ def build_payment_details_html(print_format, values=None):
         for label, value in rows
     )
     return f"""
-        <div style="font-size: 12px; color: #6c757d; margin: 12px 0 5px 0;">PAYMENT DETAILS</div>
-        <div style="font-size: 11px; color: #495057; line-height: 1.5;">{row_html}</div>
+        <div style="font-size: 13px; color: #6c757d; margin: 12px 0 5px 0;">PAYMENT DETAILS</div>
+        <div style="font-size: 12.5px; color: #495057; line-height: 1.5;">{row_html}</div>
     """
 
 
