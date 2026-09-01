@@ -666,9 +666,11 @@ function get_customer_detail_html(customer, transactions) {
 	// "Account for every penny": money not owed against anything becomes a visible credit
 	// pool the user allocates deliberately (Allocate action on a payment) — it is NOT netted
 	// into Outstanding. Two sources: payments with no job card (general / advance deposits),
-	// and overpayment beyond a job card's quotation amount.
+	// and overpayment beyond a job card's quotation amount. An unallocated Refund (a direct
+	// cash-out of credit, e.g. an unconfirmed quotation deposit given back) subtracts from
+	// the pool instead of adding to it — it's money that already left, not money still held.
 	let unallocated_payment_credit = (payments || []).reduce(
-		(sum, payment) => sum + get_payment_unallocated(payment), 0);
+		(sum, payment) => sum + (payment.payment_type === 'Refund' ? -1 : 1) * get_payment_unallocated(payment), 0);
 	let overpaid_job_card_credit = accounted_job_cards.reduce(
 		(sum, job_card) => sum + flt(job_card._statement_excess || 0), 0);
 	let advance_credit = unallocated_payment_credit + overpaid_job_card_credit;

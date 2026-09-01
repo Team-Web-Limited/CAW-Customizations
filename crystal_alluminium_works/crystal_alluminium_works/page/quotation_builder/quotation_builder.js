@@ -1261,6 +1261,15 @@ function setup_customer_step(page) {
 		'text-overflow': 'ellipsis'
 	});
 	page.qb_payment_mode_field = payment_mode_field;
+	// make_control does not apply df.default to a Select's input — it renders with
+	// nothing selected, so get_value() comes back null. Everything else on this step
+	// reads window.qb_state.payment_mode (so the right fields show), but the Next
+	// handler below reads the control, and null normalizes to 'invoice' — which is why
+	// a cash quotation reopened via "Edit in Builder" hit "Please select a Customer".
+	window.qb_state.payment_mode = normalize_customer_payment_mode(
+		window.qb_state.payment_mode || QB_DEFAULT_CUSTOMER_PAYMENT_MODE
+	);
+	payment_mode_field.set_value(get_customer_payment_mode_label(window.qb_state.payment_mode));
 
 	let $customer_link_wrap = $('<div></div>').appendTo($container);
 	let $cash_contact_wrap = $('<div></div>').appendTo($container);

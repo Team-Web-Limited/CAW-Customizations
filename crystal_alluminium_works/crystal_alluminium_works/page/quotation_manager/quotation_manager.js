@@ -418,6 +418,7 @@ function render_quotation_dashboard(page, quotation_name, wrapper) {
 		});
 
 		let existing_job_card = await get_existing_job_card_for_quotation(quotation_name);
+		let deposit_credit = await get_quotation_deposit_credit(quotation_name);
 		let workflow_job_card = get_workflow_job_card_state(sales_invoices, existing_job_card);
 		let subtotal_amount = get_manager_quotation_subtotal(doc);
 		let tax_amount = get_manager_quotation_tax(doc);
@@ -684,7 +685,10 @@ function render_quotation_dashboard(page, quotation_name, wrapper) {
 
 			<div class="qm-header">
 				<div>
-					<h2>${doc.customer_name || doc.party_name}</h2>
+					<!-- Cash quotations all share the one walk-in Customer record, so party_name/
+					     customer_name is always "Cash Customer" — the walk-in's own name lives in
+					     custom_customer_name, captured in Quotation Builder's cash-mode step. -->
+					<h2>${frappe.utils.escape_html(doc.custom_customer_name || doc.customer_name || doc.party_name || '')}</h2>
 					<div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">Created: ${frappe.datetime.global_date_format(doc.creation)}</div>
 				</div>
 				<div style="text-align: right;">
@@ -721,7 +725,7 @@ function render_quotation_dashboard(page, quotation_name, wrapper) {
 			<div class="qm-card">
 				<div class="qm-card-header">Actions</div>
 				<div class="qm-card-body qm-actions">
-					${get_action_buttons(doc, sales_invoices, existing_job_card)}
+					${get_action_buttons(doc, sales_invoices, existing_job_card, deposit_credit)}
 				</div>
 			</div>
 		</div>
@@ -740,11 +744,40 @@ function render_quotation_dashboard(page, quotation_name, wrapper) {
 	});
 }
 
-function get_action_buttons(doc, sales_invoices, existing_job_card) {
+function get_action_buttons(doc, sales_invoices, existing_job_card, deposit_credit) {
 	let buttons = '';
 	let note = '';
 	let has_sales_invoices = sales_invoices && sales_invoices.length > 0;
 	let has_job_card = !!(existing_job_card && existing_job_card.name);
+	let job_card_balance = has_job_card ? flt(existing_job_card.balance_amount || 0) : null;
+	let available_deposit_credit = flt((deposit_credit && deposit_credit.credit) || 0);
+
+	// Take a deposit against this quotation without committing to a Job Card yet — offered
+	// while the quotation is still Open (no Job Card) or Converted with an unpaid balance
+	// remaining on its Job Card. See api.py record_customer_payment / get_quotation_deposit_credit.
+	let can_take_deposit = doc.docstatus === 1
+		&& (doc.status === 'Open' || (doc.status === 'Converted' && (job_card_balance === null || job_card_balance > 0.0001)));
+	let deposit_buttons_html = '';
+	if (can_take_deposit) {
+		deposit_buttons_html += `
+			<button class="btn btn-default" id="btn-record-deposit">
+				<i class="fa fa-money" style="margin-right:6px;"></i>Record Deposit
+			</button>
+		`;
+	}
+	// Only on the chain's live tip. Every revision resolves the same shared pot of deposit
+	// credit (see api.py get_quotation_deposit_credit), so without this the same money would
+	// offer a Refund button on each superseded revision as well. Deliberately not gated on
+	// docstatus: a chain whose tip ends up cancelled — the customer walked away — is exactly
+	// when the deposit needs handing back.
+	let is_latest_revision = !deposit_credit || deposit_credit.is_latest_revision !== false;
+	if (available_deposit_credit > 0.0001 && is_latest_revision) {
+		deposit_buttons_html += `
+			<button class="btn btn-default" id="btn-refund-deposit">
+				<i class="fa fa-undo" style="margin-right:6px;"></i>Refund Deposit (${format_currency(available_deposit_credit, doc.currency)})
+			</button>
+		`;
+	}
 
 	if (doc.docstatus === 0) { // Draft
 		buttons += `
@@ -855,6 +888,8 @@ function get_action_buttons(doc, sales_invoices, existing_job_card) {
 		`;
 	}
 
+	buttons += deposit_buttons_html;
+
 	return (buttons || '<span style="color:var(--text-muted);">No actions available.</span>') + note;
 }
 
@@ -917,8 +952,13 @@ function refresh_job_card_payment_options(dialog) {
 function update_job_card_save_button_visibility(dialog) {
 	let is_invoice = normalize_job_card_payment_mode(dialog.get_value('payment_mode')) === 'invoice';
 	let has_payment_amount = flt(dialog.get_value('payment_amount') || 0) > 0;
+	// A deposit already banked against this quotation funds the Job Card exactly as cash at
+	// the counter does — api.py create_job_card_from_quotation applies it on save. Without
+	// this, a quotation whose deposit already covers it in full could never be converted:
+	// there is legitimately nothing left to collect, so Payment Amount is 0.
+	let has_deposit_credit = flt(dialog._available_credit || 0) > 0.0001;
 	let $primary_btn = dialog.get_primary_btn ? dialog.get_primary_btn() : dialog.$wrapper.find('.modal-footer .btn-primary');
-	$primary_btn.toggle(is_invoice || has_payment_amount);
+	$primary_btn.toggle(is_invoice || has_payment_amount || has_deposit_credit);
 }
 
 function refresh_job_card_payment_capture_fields(dialog) {
@@ -927,25 +967,16 @@ function refresh_job_card_payment_capture_fields(dialog) {
 	// deposit_to is auto-derived and read-only, so keep it visible for cash payments.
 	dialog.set_df_property('deposit_to', 'hidden', is_cash ? 0 : 1);
 
-	// The visible Reference field is for bank transactions only (cheque/transfer number),
-	// entered manually. M-Pesa/Paybill gets its own simulated transaction code generated
-	// separately at save time (see generate_simulated_mpesa_reference) — the two are not
-	// the same field and are not interchangeable.
-	let mop_is_bank_type = (dialog._mode_of_payment_type || '').toLowerCase() === 'bank';
-	let reference_visible = is_cash && mop_is_bank_type;
+	// The Reference field is entered manually: cheque/transfer number for bank-type
+	// modes of payment, the M-Pesa transaction code for phone-type (Paybill).
+	let mop_type = (dialog._mode_of_payment_type || '').toLowerCase();
+	let mop_is_bank_type = mop_type === 'bank';
+	let mop_is_phone_type = mop_type === 'phone';
+	let reference_visible = is_cash && (mop_is_bank_type || mop_is_phone_type);
+	dialog.set_df_property('reference', 'label', mop_is_phone_type ? 'M-Pesa Code' : 'Reference');
 	dialog.set_df_property('reference', 'hidden', reference_visible ? 0 : 1);
 	dialog.set_df_property('reference', 'reqd', reference_visible ? 1 : 0);
 	update_job_card_save_button_visibility(dialog);
-}
-
-function generate_simulated_mpesa_reference() {
-	// TODO: replace with the real M-Pesa transaction code once automated Paybill integration lands.
-	const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-	let code = '';
-	for (let i = 0; i < 10; i++) {
-		code += chars.charAt(Math.floor(Math.random() * chars.length));
-	}
-	return code;
 }
 
 async function refresh_job_card_deposit_to_options(dialog) {
@@ -1050,7 +1081,10 @@ function validate_job_card_payment_amount(dialog) {
 		return false;
 	}
 
-	if (payment_amount <= 0) {
+	// payment_limit here is what's left to collect after any existing deposit credit is
+	// applied (see open_job_card_modal) — if that credit already covers the quotation in
+	// full, 0 is a legitimate "nothing more to collect" value, not a missed entry.
+	if (payment_amount <= 0 && payment_limit > 0.0001) {
 		frappe.msgprint(__('Please enter a payment amount to create a job card for a cash customer.'));
 		return false;
 	}
@@ -1083,9 +1117,11 @@ function validate_job_card_payment_capture(dialog) {
 		return false;
 	}
 
-	let mop_is_bank_type = (dialog._mode_of_payment_type || '').toLowerCase() === 'bank';
-	if (mop_is_bank_type && !(dialog.get_value('reference') || '').trim()) {
-		frappe.msgprint(__('Please enter a Reference to record this payment.'));
+	let mop_type = (dialog._mode_of_payment_type || '').toLowerCase();
+	if ((mop_type === 'bank' || mop_type === 'phone') && !(dialog.get_value('reference') || '').trim()) {
+		frappe.msgprint(mop_type === 'phone'
+			? __('Please enter the M-Pesa Code to record this payment.')
+			: __('Please enter a Reference to record this payment.'));
 		return false;
 	}
 
@@ -1103,6 +1139,19 @@ function validate_job_card_phone_number(dialog) {
 		return false;
 	}
 	return true;
+}
+
+async function get_quotation_deposit_credit(quotation) {
+	// Unallocated deposit taken against this quotation via the Payments page before a Job
+	// Card existed for it — see api.py get_quotation_deposit_credit.
+	if (!quotation) {
+		return { credit: 0, payments: [] };
+	}
+	let r = await frappe.call({
+		method: 'crystal_alluminium_works.api.get_quotation_deposit_credit',
+		args: { quotation: quotation }
+	});
+	return r.message || { credit: 0, payments: [], is_latest_revision: false };
 }
 
 async function get_existing_job_card_for_quotation(quotation) {
@@ -1129,8 +1178,8 @@ async function apply_job_card_customer_defaults(dialog) {
 	}
 	if (!customer) return;
 	let customer_defaults = await get_job_card_customer_defaults(customer);
-	await dialog.set_value('customer_name', customer_defaults.customer_name || '');
 
+	let customer_name = customer_defaults.customer_name || '';
 	let phone = customer_defaults.phone_number || '';
 	let pin = customer_defaults.customer_pin || '';
 	// Cash quotations all share the same walk-in Customer record (so the Customer
@@ -1140,9 +1189,13 @@ async function apply_job_card_customer_defaults(dialog) {
 	// This handler is also what fires when the dialog sets its initial default
 	// value, so without this guard it silently wipes out the quotation's values.
 	if (customer === dialog._quotation_customer) {
+		// Same for the name: for a cash quotation the Customer record is the shared
+		// "Cash Customer" party, so its customer_name carries no walk-in identity.
+		customer_name = dialog._quotation_customer_name || customer_name;
 		phone = dialog._quotation_customer_phone || phone;
 		pin = dialog._quotation_customer_pin || pin;
 	}
+	await dialog.set_value('customer_name', customer_name);
 	await dialog.set_value('customer_pin', pin);
 	await dialog.set_value('phone_number', phone);
 }
@@ -1160,6 +1213,9 @@ async function open_job_card_modal(page, doc) {
 	// Cash quotations all share the same walk-in Customer record, so the Customer
 	// doctype itself carries no phone/PIN — prefer the specific values captured on
 	// this quotation (Quotation Builder's cash-mode step) when present.
+	if (doc.custom_customer_name) {
+		defaults.customer_name = doc.custom_customer_name;
+	}
 	if (doc.custom_customer_phone) {
 		defaults.phone_number = doc.custom_customer_phone;
 	}
@@ -1169,6 +1225,13 @@ async function open_job_card_modal(page, doc) {
 	let existing_job_card = await get_existing_job_card_for_quotation(doc.name);
 	let quotation_total = get_manager_quotation_total(doc);
 	let payment_limit = get_job_card_outstanding_balance(existing_job_card, quotation_total);
+
+	// A deposit may already be sitting as unallocated credit against this quotation (taken
+	// via the Payments page before this Job Card existed) — api.py create_job_card_from_quotation
+	// applies it automatically, so don't ask staff to collect that portion again here.
+	let deposit_credit = await get_quotation_deposit_credit(doc.name);
+	let available_credit = flt(deposit_credit.credit || 0);
+	let remaining_after_credit = Math.max(payment_limit - available_credit, 0);
 	var d;
 	d = new frappe.ui.Dialog({
 		title: 'Create Job Card',
@@ -1223,8 +1286,19 @@ async function open_job_card_modal(page, doc) {
 			{ fieldtype: 'Section Break', label: 'Payment' },
 			{ fieldtype: 'Currency', fieldname: 'quotation_amount', label: 'Quotation Amount', read_only: 1, default: quotation_total },
 			{ fieldtype: 'Column Break' },
-			{ fieldtype: 'Currency', fieldname: 'payment_amount', label: 'Payment Amount', default: payment_limit, reqd: 1 },
-			{ fieldtype: 'Currency', fieldname: 'balance_amount', label: 'Balance', read_only: 1, default: payment_limit },
+			{ fieldtype: 'Currency', fieldname: 'payment_amount', label: 'Payment Amount', default: remaining_after_credit, reqd: 1 },
+			{ fieldtype: 'Currency', fieldname: 'balance_amount', label: 'Balance', read_only: 1, default: remaining_after_credit },
+			...(available_credit > 0.0001 ? [
+				{ fieldtype: 'Column Break' },
+				{
+					fieldtype: 'HTML',
+					fieldname: 'deposit_credit_note',
+					options: `<div style="padding:4px 0 8px; color:var(--text-muted); font-size:13px;">
+						Existing deposit credit on this Quotation: <b>${format_currency(available_credit, doc.currency)}</b> —
+						will be applied automatically; only the remainder needs collecting now.
+					</div>`
+				}
+			] : []),
 			{ fieldtype: 'Section Break', fieldname: 'record_payment_section', label: 'Record Payment' },
 			{
 				fieldtype: 'Link',
@@ -1278,11 +1352,6 @@ async function open_job_card_modal(page, doc) {
 					let job_card_name = r.message;
 
 					if (!is_invoice && new_payment_amount > 0) {
-						let is_phone_payment_method = (d._mode_of_payment_type || '').toLowerCase() === 'phone';
-						let payment_reference = is_phone_payment_method
-							? generate_simulated_mpesa_reference()
-							: values.reference;
-
 						frappe.call({
 							method: 'crystal_alluminium_works.api.record_customer_payment',
 							args: {
@@ -1292,7 +1361,7 @@ async function open_job_card_modal(page, doc) {
 								date: frappe.datetime.get_today(),
 								payment_method: values.payment_option,
 								deposit_to: values.deposit_to,
-								reference: payment_reference
+								reference: values.reference
 							},
 							freeze: true,
 							freeze_message: 'Recording Payment...',
@@ -1313,11 +1382,15 @@ async function open_job_card_modal(page, doc) {
 		}
 	});
 
-	d._payment_limit = payment_limit;
+	d._payment_limit = remaining_after_credit;
+	// What the deposit already covers — read by update_job_card_save_button_visibility, since
+	// a fully-prepaid quotation has nothing left to collect and would otherwise look unsaveable.
+	d._available_credit = available_credit;
 	// See apply_job_card_customer_defaults: lets it tell "still the quotation's own
 	// customer" apart from "user picked a different customer", so it knows when to
 	// keep this quotation's captured phone/PIN instead of the customer record's.
 	d._quotation_customer = defaults.customer || quotation_customer;
+	d._quotation_customer_name = doc.custom_customer_name || '';
 	d._quotation_customer_phone = doc.custom_customer_phone || '';
 	d._quotation_customer_pin = doc.custom_customer_pin || '';
 	d.show();
@@ -1364,6 +1437,9 @@ async function open_quotation_in_builder(doc) {
 
 		window.qb_state = {
 			customer: doc.party_name || doc.customer_name,
+			// Restore the walk-in's own name too — create_quotation_from_builder stamps
+			// whatever it receives, so leaving this out wipes custom_customer_name on save.
+			customer_name: doc.custom_customer_name || '',
 			customer_phone: doc.custom_customer_phone || '',
 			customer_pin: doc.custom_customer_pin || '',
 			payment_mode: payment_mode,
@@ -1505,6 +1581,63 @@ async function open_quotation_in_builder(doc) {
 function bind_action_events(page, doc, sales_invoices, existing_job_card) {
 	// ── Edit in Builder (Draft only) ──
 	$('#btn-edit-builder').on('click', () => open_quotation_in_builder(doc));
+
+	// ── Record Deposit (take a partial payment without creating a Job Card yet) ──
+	// Opens the shared Create Payment dialog in place — see caw_payment_dialog.js
+	// (loaded globally via hooks.py app_include_js) — instead of navigating to the
+	// Payments page. Refreshes this view on save so the new deposit credit shows up
+	// immediately (e.g. on the Create Job Card button / Refund Deposit action).
+	$('#btn-record-deposit').on('click', async () => {
+		if (!window.CAWPaymentDialog) {
+			frappe.msgprint(__('Payment dialog failed to load. Please refresh the page.'));
+			return;
+		}
+		// Pre-fill with what's actually still owed on this quotation: its outstanding
+		// balance (via the existing Job Card if one exists, else the full quotation total),
+		// less any deposit credit already held against it — staff can still edit it down
+		// for a genuinely partial deposit.
+		let quotation_total = get_manager_quotation_total(doc);
+		let outstanding = existing_job_card
+			? get_job_card_outstanding_balance(existing_job_card, quotation_total)
+			: quotation_total;
+		let deposit_credit = await get_quotation_deposit_credit(doc.name);
+		let prefill_amount = Math.max(outstanding - flt(deposit_credit.credit || 0), 0);
+
+		window.CAWPaymentDialog.open({
+			customer: get_quotation_customer_reference(doc),
+			quotation: doc.name,
+			payment_type: 'General Payment',
+			lockPaymentType: true,
+			amount: prefill_amount,
+			onSaved: () => render_quotation_dashboard(page, doc.name, page.wrapper)
+		});
+	});
+
+	// ── Refund Deposit (give back credit the customer never confirmed goods against) ──
+	$('#btn-refund-deposit').on('click', async () => {
+		if (!window.CAWPaymentDialog) {
+			frappe.msgprint(__('Payment dialog failed to load. Please refresh the page.'));
+			return;
+		}
+		// Pre-fill with the deposit credit actually held against this quotation — that's also
+		// the ceiling api.py record_customer_payment enforces for an unallocated refund, so a
+		// full give-back is one click and a partial one is just an edit down.
+		let deposit_credit = await get_quotation_deposit_credit(doc.name);
+		let refundable = flt(deposit_credit.credit || 0);
+		if (refundable <= 0.0001) {
+			frappe.msgprint(__('There is no deposit credit left to refund against this Quotation.'));
+			return;
+		}
+
+		window.CAWPaymentDialog.open({
+			customer: get_quotation_customer_reference(doc),
+			quotation: doc.name,
+			payment_type: 'Refund',
+			lockPaymentType: true,
+			amount: refundable,
+			onSaved: () => render_quotation_dashboard(page, doc.name, page.wrapper)
+		});
+	});
 
 	// ── Amend Quotation (Submitted/Cancelled → cancel + new amendment draft in Builder) ──
 	$('#btn-amend-quo').on('click', () => {

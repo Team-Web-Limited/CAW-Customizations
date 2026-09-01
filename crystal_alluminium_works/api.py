@@ -1679,16 +1679,26 @@ def create_job_card_from_quotation(quotation, customer, customer_name=None, paym
     payment_limit = _get_job_card_outstanding_balance(job_card, quotation_amount)
     paid_to_date = 0 if job_card.get("__islocal") else _round_job_card_amount(quotation_amount - payment_limit)
 
+    # A deposit may already have been taken against this quotation (via the Payments page,
+    # before this Job Card existed) and be sitting as unallocated customer credit — apply it
+    # here instead of asking staff to collect the same money twice.
+    deposit_credit = (
+        get_quotation_deposit_credit(quotation_doc.name) if payment_mode == "Cash Customer" else {"credit": 0, "payments": []}
+    )
+    available_credit = _round_job_card_amount(deposit_credit.get("credit") or 0)
+    credit_to_apply = min(available_credit, max(payment_limit - payment_amount, 0))
+
     if payment_amount < 0:
         frappe.throw("Payment amount cannot be less than zero.")
     if job_card.get("__islocal") and payment_mode == "Cash Customer":
-        if payment_amount <= 0:
+        if payment_amount <= 0 and credit_to_apply <= 0:
             frappe.throw("Please enter a payment amount to create a job card for a cash customer.")
     if payment_amount > payment_limit:
         frappe.throw(f"Payment amount cannot exceed the current balance amount of {frappe.utils.fmt_money(payment_limit)}.")
 
-    balance_amount = _round_job_card_amount(payment_limit - payment_amount)
-    paid_amount = _round_job_card_amount(paid_to_date + payment_amount)
+    total_payment_amount = _round_job_card_amount(payment_amount + credit_to_apply)
+    balance_amount = _round_job_card_amount(payment_limit - total_payment_amount)
+    paid_amount = _round_job_card_amount(paid_to_date + total_payment_amount)
 
     job_card.quotation = quotation_doc.name
     job_card.customer = customer_doc.name
@@ -1717,9 +1727,47 @@ def create_job_card_from_quotation(quotation, customer, customer_name=None, paym
                 show_alert=False,
             )
 
+    if credit_to_apply > 0.0001:
+        _apply_quotation_deposit_credit_to_job_card(deposit_credit["payments"], job_card.name, credit_to_apply)
+
+    # credit_to_apply is capped at what this Job Card can absorb, so a deposit bigger than the
+    # quotation leaves a remainder behind. It stays as the customer's advance (visible on
+    # Customer Manager) rather than going missing — but this is the moment it becomes stranded,
+    # so name it instead of letting staff discover it later.
+    stranded_credit = _round_job_card_amount(available_credit - credit_to_apply)
+    if stranded_credit > 0.0001:
+        frappe.msgprint(
+            f"{frappe.utils.fmt_money(credit_to_apply)} of the deposit went to this Job Card. "
+            f"The remaining {frappe.utils.fmt_money(stranded_credit)} stays as "
+            f"{job_card.customer_name or job_card.customer}'s credit — refund it, or leave it "
+            "to fund another job.",
+            title="Deposit is more than this Job Card needs",
+            indicator="orange",
+        )
+
     _mark_quotation_as_converted(quotation_doc.name)
 
     return job_card.name
+
+
+def _apply_quotation_deposit_credit_to_job_card(contributing_payments, job_card_name, amount_to_apply):
+    """Pin previously-unallocated deposit Payments (see get_quotation_deposit_credit) onto
+    the Job Card that just consumed their credit, oldest first, so the money is no longer
+    reported as unallocated once it's actually funding this Job Card. Mirrors what staff
+    would otherwise do by hand via set_payment_allocations from the Payments page — but adds
+    to each payment's existing allocations rather than replacing them, since a deposit could
+    in principle already be partly split across other job cards."""
+    remaining = flt(amount_to_apply)
+    for row in contributing_payments:
+        if remaining <= 0.0001:
+            break
+        take = min(flt(row["unallocated"]), remaining)
+        if take <= 0.0001:
+            continue
+        payment_doc = frappe.get_doc("Payments", row["name"])
+        existing = [{"job_card": alloc.job_card, "amount": flt(alloc.amount)} for alloc in (payment_doc.allocations or [])]
+        set_payment_allocations(row["name"], json.dumps(existing + [{"job_card": job_card_name, "amount": take}]))
+        remaining -= take
 
 
 @frappe.whitelist()
@@ -3199,7 +3247,24 @@ def _on_quotation_amendment_submitted(quotation_doc):
     its name/number stable. Rejects a new total below the amount already paid."""
     job_card_name = _resolve_job_card_for_quotation(quotation_doc.name)
     if not job_card_name:
-        return  # this quotation chain never had a Job Card; nothing to re-point
+        # No Job Card yet — but an unconfirmed deposit may already be held against this
+        # chain. Unlike the Job Card case below this is NOT an error worth blocking: a
+        # customer taking less than they put down is ordinary, and the excess survives as
+        # their credit rather than going missing. It should still be said out loud, since
+        # otherwise nothing on screen mentions that money is now stranded.
+        deposit_credit = flt((get_quotation_deposit_credit(quotation_doc.name) or {}).get("credit") or 0)
+        new_total = _get_quotation_display_total(quotation_doc)
+        excess = _round_job_card_amount(deposit_credit - new_total)
+        if excess > 0.0001:
+            frappe.msgprint(
+                f"A deposit of {frappe.utils.fmt_money(deposit_credit)} is held against this "
+                f"Quotation, which now totals {frappe.utils.fmt_money(new_total)}. Once a Job "
+                f"Card is created, {frappe.utils.fmt_money(excess)} will stay as the customer's "
+                "credit — refund it, or leave it to fund another job.",
+                title="Deposit is more than the amended total",
+                indicator="orange",
+            )
+        return  # nothing to re-point
 
     job_card = frappe.get_doc("CAW Job Card", job_card_name)
     new_total = _get_quotation_display_total(quotation_doc)
@@ -5285,6 +5350,7 @@ def get_payments_page(search=None, payment_method=None, from_date=None, to_date=
         or_filters = [
             ["Payments", "customer", "like", like],
             ["Payments", "job_card", "like", like],
+            ["Payments", "quotation", "like", like],
             ["Payments", "payment_method", "like", like],
             ["Payments", "deposit_to", "like", like],
             ["Payments", "reference", "like", like],
@@ -5294,7 +5360,7 @@ def get_payments_page(search=None, payment_method=None, from_date=None, to_date=
         "Payments",
         filters=filters,
         or_filters=or_filters,
-        fields=["name", "customer", "amount", "date", "payment_method", "deposit_to", "reference"],
+        fields=["name", "customer", "amount", "date", "payment_method", "deposit_to", "reference", "job_card", "quotation", "payment_type"],
         order_by="creation desc",
         start=start,
         page_length=page_length,
@@ -5350,6 +5416,131 @@ def _normalize_payment_allocations(allocations, customer, payment_amount):
     return cleaned
 
 
+def _get_customer_unallocated_credit(customer, quotation=None):
+    """Total unallocated advance/credit currently sitting on this customer's Payments —
+    General Payment rows not (yet) pinned to a job card, net of credit already refunded
+    directly (a Refund row with no job-card allocation of its own). Optionally scoped to
+    Payments tagged with one Quotation (its full amendment chain included)."""
+    filters = {"customer": customer}
+    if quotation:
+        quotation_chain = _resolve_quotation_chain(quotation) or [quotation]
+        filters["quotation"] = ["in", quotation_chain]
+
+    rows = frappe.get_all("Payments", filters=filters, fields=["name", "amount", "payment_type"])
+    if not rows:
+        return 0
+
+    # Payments.autoname is "autoincrement" so get_all hands back an int name, while a child
+    # table's `parent` is always varchar — compare as strings or every lookup silently misses
+    # and allocations never get subtracted (same trap as _get_job_card_allocated_payments).
+    payment_names = [str(row.name) for row in rows]
+    allocation_rows = frappe.get_all(
+        "Payment Job Card Allocation",
+        filters={"parent": ["in", payment_names], "parenttype": "Payments"},
+        fields=["parent", "amount"],
+    )
+    allocated_by_payment = {}
+    for row in allocation_rows:
+        key = str(row.parent)
+        allocated_by_payment[key] = allocated_by_payment.get(key, 0) + flt(row.amount)
+
+    credit = 0
+    for row in rows:
+        unallocated = max(flt(row.amount) - flt(allocated_by_payment.get(str(row.name), 0)), 0)
+        if row.payment_type == "Refund":
+            credit -= unallocated
+        else:
+            credit += unallocated
+
+    return _round_job_card_amount(max(credit, 0))
+
+
+@frappe.whitelist()
+def get_customer_unallocated_credit(customer, quotation=None):
+    """Whitelisted read of _get_customer_unallocated_credit, for the Payments page to show
+    available credit before a customer-level (no job card) refund is submitted."""
+    if not customer or not frappe.db.exists("Customer", customer):
+        return {"credit": 0}
+    return {"credit": _get_customer_unallocated_credit(customer, quotation=quotation)}
+
+
+@frappe.whitelist()
+def get_quotation_deposit_credit(quotation):
+    """Unallocated deposit credit still held against this quotation (a payment taken via the
+    Payments page before a Job Card existed for it), net of anything already refunded back to
+    the customer. Used to auto-apply an existing deposit when the Job Card is finally created,
+    instead of asking staff to collect it again.
+
+    Scoped to the whole amendment chain, since a deposit stays tagged to the revision it was
+    taken against while the Job Card gets created from a later one. `is_latest_revision` tells
+    callers whether this is the chain's live tip — deposit actions belong there, not on the
+    superseded revisions that would otherwise all report this same shared pot of money."""
+    if not quotation or not frappe.db.exists("Quotation", quotation):
+        return {"credit": 0, "payments": [], "is_latest_revision": False}
+
+    quotation_chain = _resolve_quotation_chain(quotation) or [quotation]
+    is_latest_revision = quotation_chain[-1] == quotation
+    empty = {"credit": 0, "payments": [], "is_latest_revision": is_latest_revision}
+
+    rows = frappe.get_all(
+        "Payments",
+        filters={"quotation": ["in", quotation_chain]},
+        fields=["name", "amount", "payment_type"],
+        order_by="creation asc",
+    )
+    if not rows:
+        return empty
+
+    # str() on both sides: Payments.name comes back as an int (autoincrement naming) but a
+    # child table's `parent` is varchar, so an unnormalised lookup silently misses and the
+    # allocation never gets subtracted — see _get_job_card_allocated_payments.
+    payment_names = [str(row.name) for row in rows]
+    allocation_rows = frappe.get_all(
+        "Payment Job Card Allocation",
+        filters={"parent": ["in", payment_names], "parenttype": "Payments"},
+        fields=["parent", "amount"],
+    )
+    allocated_by_payment = {}
+    for row in allocation_rows:
+        key = str(row.parent)
+        allocated_by_payment[key] = allocated_by_payment.get(key, 0) + flt(row.amount)
+
+    deposits = []
+    refunded_total = 0
+    for row in rows:
+        unallocated = max(flt(row.amount) - flt(allocated_by_payment.get(str(row.name), 0)), 0)
+        if unallocated <= 0.0001:
+            continue
+        if row.payment_type == "Refund":
+            # Already handed back — cancels out deposit still on file. (A job-card refund is
+            # allocated to its job card, so it nets to zero above and never lands here.)
+            refunded_total += unallocated
+        else:
+            deposits.append({"name": row.name, "unallocated": unallocated})
+
+    # Draw refunds down against the deposits, oldest first, so `credit` and `payments` stay in
+    # step: _apply_quotation_deposit_credit_to_job_card allocates straight off `payments`, so a
+    # refunded deposit left listed there would credit a Job Card with money already returned.
+    payments = []
+    total_credit = 0
+    for row in deposits:
+        remaining = flt(row["unallocated"])
+        if refunded_total > 0.0001:
+            drawn = min(refunded_total, remaining)
+            remaining -= drawn
+            refunded_total -= drawn
+        remaining = _round_job_card_amount(remaining)
+        if remaining > 0.0001:
+            payments.append({"name": row["name"], "unallocated": remaining})
+            total_credit += remaining
+
+    return {
+        "credit": _round_job_card_amount(total_credit),
+        "payments": payments,
+        "is_latest_revision": is_latest_revision,
+    }
+
+
 def _post_customer_payment_entry(customer, amount, date, payment_method, deposit_to, reference, is_refund, payments_doc_name):
     """Submit a real Payment Entry mirroring a Payments row, so the receipt/refund this
     app already captures in full detail (method, account, reference, date) actually
@@ -5394,7 +5585,7 @@ def _post_customer_payment_entry(customer, amount, date, payment_method, deposit
 
 
 @frappe.whitelist()
-def record_customer_payment(customer, amount, date, payment_method, deposit_to, reference=None, job_card=None, allocations=None, payment_type="General Payment"):
+def record_customer_payment(customer, amount, date, payment_method, deposit_to, reference=None, job_card=None, allocations=None, payment_type="General Payment", quotation=None):
     if not customer:
         frappe.throw("Customer is required.")
     if not amount or flt(amount) <= 0:
@@ -5416,12 +5607,24 @@ def record_customer_payment(customer, amount, date, payment_method, deposit_to, 
         )
 
     if payment_type == "Refund":
-        for row in cleaned_allocations:
-            paid_so_far = flt(frappe.db.get_value("CAW Job Card", row["job_card"], "payment_amount") or 0)
-            if row["amount"] - paid_so_far > 0.0001:
+        if cleaned_allocations:
+            for row in cleaned_allocations:
+                paid_so_far = flt(frappe.db.get_value("CAW Job Card", row["job_card"], "payment_amount") or 0)
+                if row["amount"] - paid_so_far > 0.0001:
+                    frappe.throw(
+                        f"Cannot refund {frappe.utils.fmt_money(row['amount'])} against Job Card "
+                        f"{row['job_card']} — only {frappe.utils.fmt_money(paid_so_far)} has been paid."
+                    )
+        else:
+            # A refund with no job-card allocation is a refund of the customer's own
+            # unallocated advance/credit (e.g. an unconfirmed quotation deposit) — validate
+            # it against what's actually sitting as credit, or nothing stops staff from
+            # posting an unbacked cash-out Payment Entry here.
+            available_credit = _get_customer_unallocated_credit(customer)
+            if flt(amount) - available_credit > 0.0001:
                 frappe.throw(
-                    f"Cannot refund {frappe.utils.fmt_money(row['amount'])} against Job Card "
-                    f"{row['job_card']} — only {frappe.utils.fmt_money(paid_so_far)} has been paid."
+                    f"Cannot refund {frappe.utils.fmt_money(amount)} — this customer only has "
+                    f"{frappe.utils.fmt_money(available_credit)} in unallocated credit."
                 )
 
     mode_of_payment_type = frappe.db.get_value("Mode of Payment", payment_method, "type")
@@ -5435,6 +5638,7 @@ def record_customer_payment(customer, amount, date, payment_method, deposit_to, 
         # Mirror a single allocation into the legacy field so the Payments list view / search
         # still surfaces the job card; splits leave it blank (the allocations table is truth).
         "job_card": cleaned_allocations[0]["job_card"] if len(cleaned_allocations) == 1 else None,
+        "quotation": quotation or None,
         "amount": flt(amount),
         "date": date,
         "payment_method": payment_method,

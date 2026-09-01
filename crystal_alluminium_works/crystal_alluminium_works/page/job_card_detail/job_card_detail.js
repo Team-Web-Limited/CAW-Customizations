@@ -354,7 +354,8 @@ function open_jc_operations_modal(page, job_card, quotation) {
 			);
 			
 			if (items.length === 0) {
-				frappe.msgprint('No Cut Size glass items found in this Job Card.');
+				// The JC Operations button is hidden whenever there are no such items
+				// (see has_jc_operations_items), so this is just a defensive guard.
 				return;
 			}
 
@@ -2183,6 +2184,21 @@ function render_single_job_card_detail(job_card, quotation, history, sales_invoi
 		&& !has_submitted_invoice
 		&& !has_released_items
 		&& !has_deducted_stock;
+
+	// Matches the item filter in open_jc_operations_modal — hide the button entirely
+	// when there's nothing for it to configure, instead of opening it just to msgprint.
+	let has_jc_operations_items = ((quotation || {}).items || []).some(item =>
+		item.custom_product_category === 'Glass' &&
+		(item.custom_glass_sale_mode === 'Resized' || item.custom_glass_type === 'Laminated')
+	);
+
+	// The cut-list only carries Width/Height/No for Cut Size glass — Sheet rows have no
+	// cut dimensions, so with nothing but those (or no Glass at all) the export is empty.
+	let has_layout_items = ((quotation || {}).items || []).some(item =>
+		!item.custom_auto_generated &&
+		item.custom_product_category === 'Glass' &&
+		item.custom_glass_sale_mode !== 'Sheet'
+	);
 	let status_color = {
 		'Draft': 'orange',
 		'In Progress': 'blue',
@@ -2245,7 +2261,7 @@ function render_single_job_card_detail(job_card, quotation, history, sales_invoi
 			</div>
 			<div class="jc-detail-actions">
 				<button class="btn btn-primary jc-download-btn" data-action="download-job-card-pdf" title="Download Job Card PDF">${frappe.utils.icon('download', 'sm')}<span>Download</span></button>
-					<button class="btn btn-default jc-download-btn" data-action="export-job-card-layout" title="Export cut-list as xlsx (Code, Item, Pcs, No, Width, Height)">${frappe.utils.icon('download', 'sm')}<span>Export Layout</span></button>
+				${has_layout_items ? `<button class="btn btn-default jc-download-btn" data-action="export-job-card-layout" title="Export cut-list as xlsx (Code, Item, Pcs, No, Width, Height)">${frappe.utils.icon('download', 'sm')}<span>Export Layout</span></button>` : ''}
 				${can_create_partial_invoice ? '<button class="btn btn-default" data-action="create-partial-invoice">Partial Invoice</button>' : ''}
 				${primary_invoice_action}
 				<select class="form-control" data-action="view-menu" style="width:auto; min-width:170px; flex:0 0 auto;">
@@ -2254,7 +2270,7 @@ function render_single_job_card_detail(job_card, quotation, history, sales_invoi
 					${has_sales_invoice ? '<option value="go-to-sales-invoice">Go to Sales Invoice</option>' : ''}
 					${job_card.customer ? '<option value="open-customer">Open Customer</option>' : ''}
 				</select>
-				<button class="btn btn-default" data-action="jc-operations">JC Operations</button>
+				${has_jc_operations_items ? '<button class="btn btn-default" data-action="jc-operations">JC Operations</button>' : ''}
 				${can_edit_job_card ? '<button class="btn btn-primary" data-action="edit-job-card">Edit Job Card</button>' : ''}
 				${can_cancel_job_card ? '<button class="btn btn-danger" data-action="cancel-job-card">Cancel Job Card</button>' : ''}
 			</div>

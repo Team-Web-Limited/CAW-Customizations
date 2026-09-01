@@ -10,6 +10,7 @@
   "customer",
   "payment_type",
   "job_card",
+  "quotation",
   "amount",
   "date",
   "payment_method",
@@ -42,6 +43,14 @@
    "in_list_view": 1,
    "label": "Job Card",
    "options": "CAW Job Card"
+  },
+  {
+   "description": "Set when this payment was taken as a deposit against a Quotation before a Job Card existed for it — lets an unallocated deposit be traced back to, and later applied against, the Job Card eventually created for this Quotation.",
+   "fieldname": "quotation",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Quotation",
+   "options": "Quotation"
   },
   {
    "fieldname": "amount",

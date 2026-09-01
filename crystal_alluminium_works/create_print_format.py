@@ -53,8 +53,11 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
 <hr style="border-top: 2px solid #ecf0f1; margin-bottom: 20px;">
 <div class="row" style="margin-bottom: 30px;">
     <div class="col-xs-6">
+        <!-- Cash quotations all share the one walk-in Customer record, so customer_name/
+             party_name is always "Cash Customer" - custom_customer_name (Quotation only,
+             captured in Quotation Builder's cash-mode step) carries the walk-in's own name. -->
         <div style="color: #7f8c8d; font-size: 12px; text-transform: uppercase;">Customer Name:</div>
-        <div style="font-size: 16px; font-weight: bold;">{{{{ doc.customer_name or doc.party_name or doc.customer }}}}</div>
+        <div style="font-size: 16px; font-weight: bold;">{{{{ doc.get('custom_customer_name') or doc.customer_name or doc.party_name or doc.customer }}}}</div>
     </div>
     <div class="col-xs-6 text-right">
         {{% if doc.doctype == 'Sales Invoice' %}}

@@ -54,6 +54,9 @@ app_include_js = [
 	# Shared category-aware "add item" modal (ported from Quotation Builder), used by the
 	# Sales Invoice Manager edit-items flow so items get quotation-builder-grade entry & pricing.
 	"/assets/crystal_alluminium_works/js/caw_item_builder.js",
+	# Shared "Create Payment" dialog (moved out of the Payments page), used by Quotation
+	# Manager's Record/Refund Deposit actions so they open in place instead of navigating away.
+	"/assets/crystal_alluminium_works/js/caw_payment_dialog.js",
 ]
 
 # include js, css files in header of web template
