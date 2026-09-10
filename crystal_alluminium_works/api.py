@@ -710,6 +710,8 @@ def _ensure_product_code_storage():
 
 
 def _infer_glass_type(item_code=None, item_name=None, fallback=None):
+    if fallback in GLASS_TYPE_OPTIONS:
+        return fallback
     source = f"{item_code or ''} {item_name or ''}".lower()
     if "ready laminated" in source:
         return "Ready Laminated"
@@ -717,8 +719,6 @@ def _infer_glass_type(item_code=None, item_name=None, fallback=None):
         return "Toughened"
     if "laminated" in source:
         return "Laminated"
-    if fallback in GLASS_TYPE_OPTIONS:
-        return fallback
     return "Ordinary"
 
 

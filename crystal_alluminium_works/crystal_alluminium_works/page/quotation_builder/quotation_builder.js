@@ -2220,7 +2220,7 @@ function open_item_editor(page, item, is_new = false) {
 
 				frappe.db.get_list('Item', {
 					filters: { name: ['in', codes] },
-					fields: ['name', 'item_name', 'stock_uom', 'custom_aluminium_rate_per_kg', 'custom_aluminium_weight_per_length'],
+					fields: ['name', 'item_name', 'stock_uom', 'standard_rate', 'custom_aluminium_rate_per_kg', 'custom_aluminium_weight_per_length'],
 					limit: codes.length
 				}).then(function (rows) {
 					let by_code = {};
@@ -2256,8 +2256,27 @@ function open_item_editor(page, item, is_new = false) {
 					} else if (item.category === 'Fittings') {
 						open_fittings_batch_details_dialog(page, new_items);
 					} else {
-						window.qb_state.items.push(...new_items);
-						render_items_table(page);
+						// Ceiling/Rubber/Silicone have no batch-detail step of their own,
+						// so unlike the categories above they'd otherwise land on the
+						// review table stuck at rate 0 / amount 0 until someone opens the
+						// row's ✏️ and re-triggers fetch_rate() by hand. Same Item Price →
+						// standard_rate fallback chain fetch_item_price_rate() uses.
+						frappe.db.get_list('Item Price', {
+							filters: { item_code: ['in', codes], price_list: price_list_value, selling: 1 },
+							fields: ['item_code', 'price_list_rate']
+						}).then(function (price_rows) {
+							let rate_by_code = {};
+							(price_rows || []).forEach(function (row) {
+								if (row.price_list_rate) rate_by_code[row.item_code] = flt(row.price_list_rate);
+							});
+							new_items.forEach(function (new_item) {
+								let meta = by_code[new_item.item_code] || {};
+								new_item.rate = rate_by_code[new_item.item_code] || flt(meta.standard_rate || 0);
+								new_item.amount = calculate_item_amount(new_item);
+							});
+							window.qb_state.items.push(...new_items);
+							render_items_table(page);
+						});
 					}
 				});
 				return;
