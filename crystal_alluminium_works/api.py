@@ -196,14 +196,39 @@ def _resolve_quotation_chain(quotation_name):
     return chain
 
 
+def _earliest_quotation_creation(chain):
+    """Creation timestamp of the oldest revision in a quotation's amendment chain."""
+    creations = [frappe.db.get_value("Quotation", name, "creation") for name in chain]
+    creations = [creation for creation in creations if creation]
+    return min(creations) if creations else None
+
+
+def _job_card_predates_quotation(job_card_name, quotation_name):
+    """True when a Job Card already existed before the Quotation it is named after — i.e. it
+    documents an earlier quotation that was deleted before this number was reissued."""
+    job_card_created = frappe.db.get_value("CAW Job Card", job_card_name, "creation")
+    quotation_created = frappe.db.get_value("Quotation", quotation_name, "creation")
+    return bool(job_card_created and quotation_created and job_card_created < quotation_created)
+
+
 def _resolve_job_card_for_quotation(quotation_name):
-    """Find the single owning Job Card across a quotation's amendment chain."""
+    """Find the single owning Job Card across a quotation's amendment chain.
+
+    Job Cards are named after their Quotation (see _get_job_card_name_for_quotation) and keep
+    that link, so a quotation number reissued after the original was deleted would otherwise
+    inherit the deleted quotation's Job Card — along with its amounts and payment history. A
+    Job Card created before the quotation cannot document it, so it is ignored here rather
+    than silently adopted."""
     chain = _resolve_quotation_chain(quotation_name) or ([quotation_name] if quotation_name else [])
     if not chain:
         return None
+    filters = {"quotation": ["in", chain]}
+    earliest_created = _earliest_quotation_creation(chain)
+    if earliest_created:
+        filters["creation"] = [">=", earliest_created]
     return frappe.db.get_value(
         "CAW Job Card",
-        {"quotation": ["in", chain]},
+        filters,
         "name",
         order_by="creation asc",
     )
@@ -1723,7 +1748,9 @@ def create_job_card_from_quotation(quotation, customer, customer_name=None, paym
     if existing_job_card:
         job_card = frappe.get_doc("CAW Job Card", existing_job_card)
         target_job_card_name = job_card.name  # keep the original, stable Job Card number
-    elif frappe.db.exists("CAW Job Card", target_job_card_name):
+    elif frappe.db.exists("CAW Job Card", target_job_card_name) and not _job_card_predates_quotation(
+        target_job_card_name, quotation_doc.name
+    ):
         job_card = frappe.get_doc("CAW Job Card", target_job_card_name)
     else:
         job_card = frappe.new_doc("CAW Job Card")

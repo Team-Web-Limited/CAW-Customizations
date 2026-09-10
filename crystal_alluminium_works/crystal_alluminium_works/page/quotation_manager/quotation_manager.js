@@ -1172,8 +1172,20 @@ async function get_existing_job_card_for_quotation(quotation) {
 		return null;
 	}
 
+	// Job Cards are named JOB-CARD-<quotation> and keep that link, so a quotation number
+	// reissued after the original was deleted would otherwise pick up the old quotation's
+	// Job Card — showing "View Job Card" (and hiding Record Deposit) on a brand-new draft
+	// that nobody has paid against. A card that existed before the quotation can't be its own.
+	let quotation_created = await frappe.db.get_value('Quotation', quotation, 'creation');
+	let created_on = (quotation_created && quotation_created.message && quotation_created.message.creation) || null;
+
+	let filters = { quotation: quotation };
+	if (created_on) {
+		filters.creation = ['>=', created_on];
+	}
+
 	let job_cards = await frappe.db.get_list('CAW Job Card', {
-		filters: { quotation: quotation },
+		filters: filters,
 		fields: ['name', 'payment_amount', 'balance_amount'],
 		order_by: 'creation desc',
 		limit: 1
