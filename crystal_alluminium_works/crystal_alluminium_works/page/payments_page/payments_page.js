@@ -39,18 +39,31 @@ async function render_payments_page(page) {
 	$body.html('<div style="padding:40px;text-align:center;color:var(--text-muted);"><span class="spinner"></span> Loading...</div>');
 
 	let mode_of_payments = await get_payment_mode_options();
+	// Default the date range to today — both the table and the per-method totals pills read
+	// straight off these inputs, so this is what makes them read "today" by default rather
+	// than the whole all-time history.
+	let today = frappe.datetime.get_today();
 
 	let html = `
 	<style>
 		.pay-page { width:100%; max-width: 1400px; margin: 0 auto; padding: 24px 16px; }
 		.pay-toolbar { display: flex; justify-content: flex-end; margin-bottom: 18px; }
 		.pay-card { background: var(--fg-color); border: 1px solid var(--border-color); border-radius: 8px; box-shadow: var(--shadow-xs); overflow: hidden; margin-bottom: 20px; }
-		.pay-card-header { padding: 14px 18px; font-size: 15px; font-weight: 700; color: var(--heading-color); border-bottom: 1px solid var(--border-color); background: var(--subtle-fg); display: flex; align-items: center; gap: 10px; }
+		.pay-card-header { padding: 14px 18px; font-size: 15px; font-weight: 700; color: var(--heading-color); border-bottom: 1px solid var(--border-color); background: var(--subtle-fg); display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 		.pay-card-header .pay-icon { font-size: 18px; }
+		.pay-method-totals { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+		.pay-method-pill { background: var(--fg-color); border: 1px solid var(--border-color); border-radius: 14px; padding: 5px 12px; font-size: 12px; font-weight: 600; color: var(--text-color); white-space: nowrap; }
+		.pay-method-pill .pay-method-pill-label { color: var(--text-muted); font-weight: 600; margin-right: 5px; }
+		.pay-method-pill-total { background: #2c3e50; border-color: #2c3e50; color: #fff; }
+		.pay-method-pill-total .pay-method-pill-label { color: rgba(255,255,255,.75); }
 		.pay-filters { padding:16px 18px; border-bottom:1px solid var(--border-color); background:var(--fg-color); }
 		.pay-filter-grid { display:grid; grid-template-columns:minmax(260px, 2fr) minmax(180px, 1fr) minmax(150px, .8fr) minmax(150px, .8fr) auto; gap:12px; align-items:end; }
 		.pay-filter-field label { display:block; margin-bottom:6px; color:var(--text-muted); font-size:12px; font-weight:600; }
 		.pay-filter-actions { display:flex; gap:8px; }
+		.pay-download-dropdown { position: relative; display: inline-block; }
+		.pay-download-menu { position: absolute; top: calc(100% + 4px); right: 0; background: var(--fg-color); border: 1px solid var(--border-color); border-radius: 6px; box-shadow: 0 4px 14px rgba(0,0,0,.15); min-width: 170px; z-index: 50; overflow: hidden; }
+		.pay-download-option { padding: 9px 14px; font-size: 13px; color: var(--text-color); cursor: pointer; display: flex; align-items: center; }
+		.pay-download-option:hover { background: var(--subtle-fg); }
 		.pay-table-scroll { height:560px; overflow:auto; }
 		.pay-table { width: 100%; min-width: 1250px; border-collapse: separate; border-spacing:0; }
 		.pay-table th { position:sticky; top:0; z-index:2; padding: 11px 14px; font-size: 12px; font-weight: 700; color: var(--text-muted); text-align: left; border-bottom: 1px solid var(--border-color); background: var(--subtle-fg); }
@@ -77,6 +90,7 @@ async function render_payments_page(page) {
 		<div class="pay-card">
 			<div class="pay-card-header">
 				<span class="pay-icon">#</span> Recent Payments
+				<div class="pay-method-totals"></div>
 			</div>
 			<div class="pay-filters">
 				<div class="pay-filter-grid">
@@ -93,15 +107,28 @@ async function render_payments_page(page) {
 					</div>
 					<div class="pay-filter-field">
 						<label>From Date</label>
-						<input type="date" class="form-control" data-filter="from_date">
+						<input type="date" class="form-control" data-filter="from_date" value="${today}">
 					</div>
 					<div class="pay-filter-field">
 						<label>To Date</label>
-						<input type="date" class="form-control" data-filter="to_date">
+						<input type="date" class="form-control" data-filter="to_date" value="${today}">
 					</div>
 					<div class="pay-filter-actions">
 						<button class="btn btn-primary pay-filter-apply">Search</button>
 						<button class="btn btn-default pay-filter-clear">Clear</button>
+						<div class="pay-download-dropdown">
+							<button class="btn btn-default pay-download-toggle" type="button" title="Download the currently filtered payments">
+								<i class="fa fa-download" style="margin-right:6px;"></i>Download Report <i class="fa fa-caret-down" style="margin-left:6px;"></i>
+							</button>
+							<div class="pay-download-menu" hidden>
+								<div class="pay-download-option" data-format="excel">
+									<i class="fa fa-file-excel-o" style="margin-right:8px;"></i>Excel (.xlsx)
+								</div>
+								<div class="pay-download-option" data-format="pdf">
+									<i class="fa fa-file-pdf-o" style="margin-right:8px;"></i>PDF
+								</div>
+							</div>
+						</div>
 					</div>
 				</div>
 			</div>
@@ -112,7 +139,6 @@ async function render_payments_page(page) {
 							<th>Date</th>
 							<th style="text-align:center;">C.Type</th>
 							<th>Name</th>
-							<th>Customer</th>
 							<th style="text-align:right;">Amount</th>
 							<th>Method</th>
 							<th>Deposit To</th>
@@ -157,7 +183,7 @@ function render_payment_record_rows(records) {
 	if (!records.length) {
 		return `
 			<tr>
-				<td colspan="9" class="pay-muted" style="text-align:center;padding:24px;">
+				<td colspan="8" class="pay-muted" style="text-align:center;padding:24px;">
 					No payments recorded yet.
 				</td>
 			</tr>
@@ -183,7 +209,6 @@ function render_payment_record_rows(records) {
 					</span>
 				</td>
 				<td style="font-weight:500;">${frappe.utils.escape_html(row.display_name || '-')}</td>
-				<td>${frappe.utils.escape_html(row.customer || '-')}</td>
 				<td style="text-align:right;font-weight:600;">${format_currency(row.amount || 0, 'KES')}</td>
 				<td>${frappe.utils.escape_html(row.payment_method || '-')}</td>
 				<td>${frappe.utils.escape_html(row.deposit_to || '-')}</td>
@@ -194,8 +219,72 @@ function render_payment_record_rows(records) {
 	}).join('');
 }
 
+function render_method_totals_pills(data) {
+	let by_method = (data && data.by_method) || [];
+	if (!by_method.length) {
+		return '<span class="pay-muted" style="font-size:12px;">No payments match these filters.</span>';
+	}
+	let pills = by_method.map(row => `
+		<span class="pay-method-pill">
+			<span class="pay-method-pill-label">${frappe.utils.escape_html(row.payment_method)}</span>${format_currency(row.total || 0, 'KES')}
+		</span>
+	`).join('');
+	pills += `
+		<span class="pay-method-pill pay-method-pill-total">
+			<span class="pay-method-pill-label">Total</span>${format_currency((data && data.total) || 0, 'KES')}
+		</span>
+	`;
+	return pills;
+}
+
+function download_payments_report(page, format) {
+	// Streams the file straight down; no File record is created (see api.py
+	// download_payments_report / download_payments_report_pdf / _stream_xlsx_file). Uses
+	// exactly the filters currently applied on the page — the same ones driving the table and
+	// the totals pills — so the report's own totals-by-method summary matches what's on screen.
+	let $body = $(page.body);
+	let params = new URLSearchParams();
+	let args = {
+		search: $body.find('[data-filter="search"]').val() || '',
+		payment_method: $body.find('[data-filter="payment_method"]').val() || '',
+		from_date: $body.find('[data-filter="from_date"]').val() || '',
+		to_date: $body.find('[data-filter="to_date"]').val() || ''
+	};
+	Object.keys(args).forEach(function(key) {
+		if (args[key]) {
+			params.append(key, args[key]);
+		}
+	});
+	let method = format === 'pdf'
+		? 'crystal_alluminium_works.api.download_payments_report_pdf'
+		: 'crystal_alluminium_works.api.download_payments_report';
+	window.open('/api/method/' + method + '?' + params.toString(), '_blank');
+}
+
+function load_payment_method_totals(page) {
+	let $body = $(page.body);
+	let from_date = $body.find('[data-filter="from_date"]').val() || '';
+	let to_date = $body.find('[data-filter="to_date"]').val() || '';
+
+	frappe.call({
+		method: 'crystal_alluminium_works.api.get_payments_page_totals',
+		args: {
+			search: $body.find('[data-filter="search"]').val() || '',
+			payment_method: $body.find('[data-filter="payment_method"]').val() || '',
+			from_date: from_date,
+			to_date: to_date
+		},
+		callback: function(response) {
+			$body.find('.pay-method-totals').html(render_method_totals_pills(response.message || {}));
+		}
+	});
+}
+
 function bind_payments_page_events(page, $body) {
 	$body.off('.paymentsPage');
+	// Bound to document (needed to catch a click anywhere outside the dropdown), so it isn't
+	// cleared by the $body.off above — clear it separately or it stacks up on re-render.
+	$(document).off('.paymentsPageDownloadMenu');
 
 	$body.on('click.paymentsPage', '.pay-filter-apply', function() {
 		load_payment_records(page, 1);
@@ -203,7 +292,28 @@ function bind_payments_page_events(page, $body) {
 
 	$body.on('click.paymentsPage', '.pay-filter-clear', function() {
 		$body.find('[data-filter]').val('');
+		// Search / Payment Method clear to blank, but the date range goes back to today —
+		// that's the page's default, not "all time".
+		let today = frappe.datetime.get_today();
+		$body.find('[data-filter="from_date"]').val(today);
+		$body.find('[data-filter="to_date"]').val(today);
 		load_payment_records(page, 1);
+	});
+
+	$body.on('click.paymentsPage', '.pay-download-toggle', function(event) {
+		event.stopPropagation();
+		$body.find('.pay-download-menu').prop('hidden', function(_, hidden) { return !hidden; });
+	});
+
+	$body.on('click.paymentsPage', '.pay-download-option', function() {
+		let format = $(this).attr('data-format');
+		$body.find('.pay-download-menu').prop('hidden', true);
+		download_payments_report(page, format);
+	});
+
+	// Close the dropdown on any click elsewhere on the page.
+	$(document).on('click.paymentsPageDownloadMenu', function() {
+		$body.find('.pay-download-menu').prop('hidden', true);
 	});
 
 	$body.on('keydown.paymentsPage', '.pay-filters input', function(event) {
@@ -249,8 +359,14 @@ function load_payment_records(page, page_number) {
 	state.request_serial += 1;
 	let request_serial = state.request_serial;
 
+	// Only the filters changed (a fresh page-1 load), not just paging within the same result
+	// set — refetch the per-method totals then, not on every Previous/Next click.
+	if (state.page === 1) {
+		load_payment_method_totals(page);
+	}
+
 	$body.find('.pay-table-body').html(`
-		<tr><td colspan="9" class="pay-muted" style="text-align:center;padding:32px;">Loading payments...</td></tr>
+		<tr><td colspan="8" class="pay-muted" style="text-align:center;padding:32px;">Loading payments...</td></tr>
 	`);
 
 	frappe.call({

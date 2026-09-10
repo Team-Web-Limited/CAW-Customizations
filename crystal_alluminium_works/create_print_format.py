@@ -204,9 +204,10 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
                 {{% set quotation_totals.qty = quotation_totals.qty + frappe.utils.flt(qty, 3) %}}
                 {{% set quotation_totals.holes = quotation_totals.holes + frappe.utils.cint(parent.custom_holes or 0) %}}
                 {{% set quotation_totals.notches = quotation_totals.notches + frappe.utils.cint(parent.custom_notches or 0) %}}
-                {{% set width_sides = frappe.utils.cint(parent.custom_polish_width_sides or 0) %}}
-                {{% set height_sides = frappe.utils.cint(parent.custom_polish_height_sides or 0) %}}
-                {{% if parent_category == 'Glass' and not width_sides and not height_sides and frappe.utils.cint(parent.custom_polishing or 0) %}}
+                {{% set is_sheet_glass = parent_category == 'Glass' and parent.custom_glass_sale_mode == 'Sheet' %}}
+                {{% set width_sides = 0 if is_sheet_glass else frappe.utils.cint(parent.custom_polish_width_sides or 0) %}}
+                {{% set height_sides = 0 if is_sheet_glass else frappe.utils.cint(parent.custom_polish_height_sides or 0) %}}
+                {{% if parent_category == 'Glass' and not is_sheet_glass and not width_sides and not height_sides and frappe.utils.cint(parent.custom_polishing or 0) %}}
                     {{% set width_sides = 2 %}}
                     {{% set height_sides = 2 %}}
                 {{% endif %}}
@@ -216,8 +217,17 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
                 {{% set display_height = '-' %}}
                 {{% set display_rate = parent.rate or 0 %}}
                 {{% if parent_category == 'Glass' %}}
-                    {{% set display_width = frappe.utils.flt(parent.custom_width_mm or 0, 0) or '-' %}}
-                    {{% set display_height = frappe.utils.flt(parent.custom_height_mm or 0, 0) or '-' %}}
+                    {{% if is_sheet_glass %}}
+                        {{# Sheet glass has no cut width/height - show the sheet size chosen
+                           (e.g. "1220 x 1830") as one label instead of splitting it across
+                           the Width/Height columns, which would look like ordinary cut
+                           dimensions and hide that this is a whole sheet. #}}
+                        {{% set display_width = (parent.custom_sheet_size or '-')|trim or '-' %}}
+                        {{% set display_height = '-' %}}
+                    {{% else %}}
+                        {{% set display_width = frappe.utils.flt(parent.custom_width_mm or 0, 0) or '-' %}}
+                        {{% set display_height = frappe.utils.flt(parent.custom_height_mm or 0, 0) or '-' %}}
+                    {{% endif %}}
                     {{% if parent.custom_glass_sale_mode not in ['Full Sheet', 'Sheet'] and frappe.utils.flt(parent.custom_area_sqft or 0) > 0 %}}
                         {{% set display_rate = (parent.rate or 0) / frappe.utils.flt(parent.custom_area_sqft or 0) %}}
                     {{% endif %}}
@@ -257,13 +267,13 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
                         {{% else %}}-{{% endif %}}
                     </td>
                     <td style="text-align: center; white-space: nowrap;">
-                        {{% if parent_category == 'Glass' and frappe.utils.cint(parent.custom_holes or 0) > 0 %}}
+                        {{% if parent_category == 'Glass' and not is_sheet_glass and frappe.utils.cint(parent.custom_holes or 0) > 0 %}}
                             {{{{ frappe.utils.cint(parent.custom_holes or 0) }}}}
                             {{% if glass_service.holes_amount %}} ({{{{ frappe.format_value(glass_service.holes_amount, df={{'fieldtype': 'Currency'}}, doc=doc) }}}}){{% endif %}}
                         {{% else %}}-{{% endif %}}
                     </td>
                     <td style="text-align: center; white-space: nowrap;">
-                        {{% if parent_category == 'Glass' and frappe.utils.cint(parent.custom_notches or 0) > 0 %}}
+                        {{% if parent_category == 'Glass' and not is_sheet_glass and frappe.utils.cint(parent.custom_notches or 0) > 0 %}}
                             {{{{ frappe.utils.cint(parent.custom_notches or 0) }}}}
                             {{% if glass_service.notches_amount %}} ({{{{ frappe.format_value(glass_service.notches_amount, df={{'fieldtype': 'Currency'}}, doc=doc) }}}}){{% endif %}}
                         {{% else %}}-{{% endif %}}

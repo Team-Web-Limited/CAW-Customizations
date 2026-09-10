@@ -877,6 +877,20 @@ function render_review_glass_row(item, index) {
 	`;
 }
 
+function render_review_glass_sheet_row(item, index) {
+	let pieces = flt(item.pcs || 0);
+	return `
+		<tr>
+			<td style="text-align:center;">${item.numbering || index + 1}</td>
+			<td style="text-align:center;">${item.sheet_size ? frappe.utils.escape_html(item.sheet_size) : '-'}</td>
+			<td style="text-align:center;">${pieces || '-'}</td>
+			<td style="text-align:center;">${format_review_number(item.qty || 0)}</td>
+			<td style="font-weight:500;white-space:nowrap;">${get_glass_type_review_label(item)}</td>
+			<td style="white-space:pre-wrap;">${item.description ? frappe.utils.escape_html(item.description) : '-'}</td>
+		</tr>
+	`;
+}
+
 function render_review_aluminium_row(item, index) {
 	return `
 		<tr>
@@ -1054,6 +1068,11 @@ function render_review_step(page) {
 
 	// Separate items by category
 	let glass_items = window.qb_state.items.filter(i => i.category === 'Glass');
+	// Sheet glass has no cutting dimensions (width/height allowance, polish,
+	// holes, notches, sandblast) — those columns are all "-" for it in the
+	// combined table, so it gets its own simplified table instead.
+	let glass_cut_size_items = glass_items.filter(i => i.sale_mode !== 'Sheet');
+	let glass_sheet_items = glass_items.filter(i => i.sale_mode === 'Sheet');
 	let aluminium_items = window.qb_state.items.filter(i => i.category === 'Aluminium');
 	let fittings_items = window.qb_state.items.filter(i => i.category === 'Fittings');
 	let ceiling_items = window.qb_state.items.filter(i => i.category === 'Ceiling');
@@ -1064,12 +1083,15 @@ function render_review_step(page) {
 	);
 
 	// ── Glass Section ──
+	// Cut Size and Sheet glass are shown as separate tables: Sheet glass has
+	// no cutting dimensions/polish/holes/notches/sandblast, so cramming it
+	// into the Cut Size table's columns just fills them with "-".
 	let glass_html = '';
-	if (glass_items.length) {
-		glass_html = `
+	if (glass_cut_size_items.length) {
+		glass_html += `
 			<div style="margin-bottom:24px;">
 				<h5 style="margin:0 0 10px 0;font-size:15px;font-weight:600;color:#3498db;display:flex;align-items:center;gap:8px;">
-					<span style="background:#3498db20;padding:3px 10px;border-radius:10px;font-size:12px;">🔷</span> Glass Items
+					<span style="background:#3498db20;padding:3px 10px;border-radius:10px;font-size:12px;">🔷</span> Glass Items — Cut Size
 				</h5>
 				<div class="table-responsive">
 					<table class="table table-bordered" style="background:var(--card-bg); margin-bottom:0;">
@@ -1097,7 +1119,33 @@ function render_review_step(page) {
 							</tr>
 						</thead>
 						<tbody>
-							${glass_items.map((i, index) => render_review_glass_row(i, index)).join('')}
+							${glass_cut_size_items.map((i, index) => render_review_glass_row(i, index)).join('')}
+						</tbody>
+					</table>
+				</div>
+			</div>
+		`;
+	}
+	if (glass_sheet_items.length) {
+		glass_html += `
+			<div style="margin-bottom:24px;">
+				<h5 style="margin:0 0 10px 0;font-size:15px;font-weight:600;color:#3498db;display:flex;align-items:center;gap:8px;">
+					<span style="background:#3498db20;padding:3px 10px;border-radius:10px;font-size:12px;">🔷</span> Glass Items — Sheet
+				</h5>
+				<div class="table-responsive">
+					<table class="table table-bordered" style="background:var(--card-bg); margin-bottom:0;">
+						<thead style="background:var(--control-bg);">
+							<tr>
+								<th style="text-align:center;white-space:nowrap;">No</th>
+								<th style="text-align:center;white-space:nowrap;">Sheet Size</th>
+								<th style="text-align:center;white-space:nowrap;">Pcs</th>
+								<th style="text-align:center;white-space:nowrap;">T.SFT</th>
+								<th style="white-space:nowrap;">Glass Type</th>
+								<th style="white-space:nowrap;">Description</th>
+							</tr>
+						</thead>
+						<tbody>
+							${glass_sheet_items.map((i, index) => render_review_glass_sheet_row(i, index)).join('')}
 						</tbody>
 					</table>
 				</div>
@@ -1942,9 +1990,10 @@ function open_item_editor(page, item, is_new = false) {
 	}
 
 	// Picking several items at once only makes sense for a plain new-item add —
-	// sheet glass and ceiling bundles build one composite row with their own
-	// extra fields (sheet size, bundle quantity), not a batch of bare items.
-	let enable_multi_add = is_new && !is_sheet_glass && !is_ceiling_bundle;
+	// sheet glass and ceiling items (single or bundle) each need their own
+	// rate fetched/computed before they have a sane amount, not a batch of
+	// bare rows dropped in at rate 0.
+	let enable_multi_add = is_new && !is_sheet_glass && !is_ceiling;
 
 	let fields = [
 		{
@@ -3012,19 +3061,29 @@ function open_aluminium_batch_details_dialog(page, items) {
 		// Unique per dialog — a hidden previous dialog can still be in the DOM with its own datalist.
 		let color_list_id = 'qb-aluminium-color-options-' + Date.now();
 
-		let rows_html = items.map(function (it, index) {
+		// Shared by the initial render and by "duplicate row" below, so a clone
+		// picks up the exact same markup/behaviour as an item that came in
+		// through the multi-select.
+		function build_row_html(it, row_number) {
 			return `
 				<tr data-id="${it.id}">
-					<td style="text-align:center;white-space:nowrap;">${index + 1}</td>
+					<td style="text-align:center;white-space:nowrap;" class="qb-batch-row-no">${row_number}</td>
 					<td style="white-space:nowrap;">${frappe.utils.escape_html(it.item_name || it.item_code)}</td>
 					<td><input type="text" class="form-control input-sm qb-batch-input qb-aluminium-color-input" data-field="aluminium_color" list="${color_list_id}" placeholder="Search color..." value="${frappe.utils.escape_html(it.aluminium_color || 'None')}" style="width:130px;"></td>
-					<td><input type="number" min="1" step="1" class="form-control input-sm qb-batch-input" data-field="qty" value="1" style="width:60px;"></td>
+					<td><input type="number" min="1" step="1" class="form-control input-sm qb-batch-input" data-field="qty" value="${flt(it.qty || 1) || 1}" style="width:60px;"></td>
 					<td><input type="number" min="0" step="any" class="form-control input-sm qb-batch-input" data-field="aluminium_rate_per_kg" value="${flt(it.aluminium_rate_per_kg || 0)}" style="width:90px;"></td>
 					<td><input type="number" min="0" step="any" class="form-control input-sm qb-batch-input" data-field="aluminium_weight_per_length" value="${flt(it.aluminium_weight_per_length || 0)}" style="width:90px;"></td>
 					<td><input type="number" min="0" step="any" class="form-control input-sm qb-batch-input" data-field="aluminium_powder_coating_charge" value="${flt(it.aluminium_powder_coating_charge || 0)}" style="width:90px;"></td>
-					<td><input type="text" class="form-control input-sm qb-batch-input" data-field="description" value="" style="width:150px;"></td>
+					<td><input type="text" class="form-control input-sm qb-batch-input" data-field="description" value="${frappe.utils.escape_html(it.description || '')}" style="width:150px;"></td>
+					<td style="text-align:center;white-space:nowrap;">
+						<button type="button" class="btn btn-xs btn-default qb-duplicate-row" title="Duplicate row — same item, new color">⧉</button>
+					</td>
 				</tr>
 			`;
+		}
+
+		let rows_html = items.map(function (it, index) {
+			return build_row_html(it, index + 1);
 		}).join('');
 
 		let table_html = `
@@ -3041,6 +3100,7 @@ function open_aluminium_batch_details_dialog(page, items) {
 							<th style="white-space:nowrap;">Weight / Length</th>
 							<th style="white-space:nowrap;">Powder Coating</th>
 							<th style="white-space:nowrap;">Description</th>
+							<th style="white-space:nowrap;"></th>
 						</tr>
 					</thead>
 					<tbody>${rows_html}</tbody>
@@ -3112,6 +3172,45 @@ function open_aluminium_batch_details_dialog(page, items) {
 		});
 		$color_cells.on('blur', '.qb-aluminium-color-input', function () {
 			$(this).val(resolve_aluminium_color_option($(this).val(), color_options));
+		});
+
+		// Same aluminium item, different color/coating — clone whatever is
+		// currently in the row (including anything the user has already typed)
+		// right below it, blank out the color so it stands out for reselection,
+		// and push it into `items` so Save picks it up like any other row.
+		$color_cells.on('click', '.qb-duplicate-row', function () {
+			let $wrapper = d.fields_dict.batch_table.$wrapper;
+			let $row = $(this).closest('tr');
+			let source_id = $row.data('id');
+			let source = items.find(function (it) { return it.id === source_id; });
+			if (!source) {
+				return;
+			}
+
+			function val(field) {
+				return $row.find(`[data-field="${field}"]`).val();
+			}
+
+			let clone = Object.assign({}, source, {
+				id: frappe.utils.get_random(8),
+				aluminium_color: '',
+				qty: flt(val('qty') || 1) || 1,
+				aluminium_rate_per_kg: flt(val('aluminium_rate_per_kg') || 0),
+				aluminium_weight_per_length: flt(val('aluminium_weight_per_length') || 0),
+				aluminium_powder_coating_charge: flt(val('aluminium_powder_coating_charge') || 0),
+				description: val('description') || ''
+			});
+			items.push(clone);
+
+			$row.after(build_row_html(clone, 0));
+			let $clone_row = $wrapper.find(`tr[data-id="${clone.id}"]`);
+			// build_row_html falls back to "None" for a blank color — clear it
+			// back out here so the new row visibly needs a color pick.
+			$clone_row.find('.qb-aluminium-color-input').val('');
+			$wrapper.find('tbody tr').each(function (idx) {
+				$(this).find('.qb-batch-row-no').text(idx + 1);
+			});
+			$clone_row.find('.qb-aluminium-color-input').trigger('focus');
 		});
 	});
 }

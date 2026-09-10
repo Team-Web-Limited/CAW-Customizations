@@ -1153,6 +1153,20 @@ async function get_quotation_deposit_credit(quotation) {
 	return r.message || { credit: 0, payments: [], is_latest_revision: false };
 }
 
+async function get_customer_unallocated_credit(customer) {
+	// Every General Payment on this customer that isn't pinned to a job card yet, net of
+	// refunds — see api.py get_customer_unallocated_credit. Same figure the Create Payment
+	// dialog shows as "Customer advance", and the pot create_job_card_from_quotation spends.
+	if (!customer) {
+		return 0;
+	}
+	let r = await frappe.call({
+		method: 'crystal_alluminium_works.api.get_customer_unallocated_credit',
+		args: { customer: customer }
+	});
+	return flt((r.message || {}).credit || 0);
+}
+
 async function get_existing_job_card_for_quotation(quotation) {
 	if (!quotation) {
 		return null;
@@ -1166,6 +1180,97 @@ async function get_existing_job_card_for_quotation(quotation) {
 	});
 
 	return job_cards && job_cards.length ? job_cards[0] : null;
+}
+
+// The customer's unallocated advance/credit — the same customer-wide figure the Create
+// Payment / Record Deposit dialog shows (api.py get_customer_unallocated_credit), and the
+// same pot create_job_card_from_quotation now spends: it draws this quotation's own deposit
+// first, then any other credit, up to what this Job Card can absorb.
+//
+// So this both reports the advance and drives the form: Payment Amount defaults to what's
+// genuinely left to collect after the credit lands, and Save is enabled for a quotation the
+// credit already covers in full. Re-run whenever the customer (or payment mode) changes,
+// since that changes whose credit — if any — applies.
+async function refresh_job_card_customer_advance(dialog) {
+	let field = dialog.fields_dict.customer_advance_note;
+	if (!field) {
+		return;
+	}
+	let customer = dialog.get_value('customer')
+		|| (dialog.fields_dict.customer && dialog.fields_dict.customer.$input
+			? dialog.fields_dict.customer.$input.val()
+			: '');
+	// Invoice customers' money never moves through this endpoint (it's recorded on the
+	// Payments page), and the server applies no credit for them — so neither does this.
+	let is_invoice = normalize_job_card_payment_mode(dialog.get_value('payment_mode')) === 'invoice';
+	// Guards against a slow lookup for a customer the user has since switched away from
+	// landing on top of a newer one's figure.
+	let request_id = (dialog._advance_request_id || 0) + 1;
+	dialog._advance_request_id = request_id;
+	if (!customer || is_invoice) {
+		field.$wrapper.empty();
+		apply_job_card_customer_advance(dialog, 0);
+		return;
+	}
+
+	let response = await frappe.call({
+		method: 'crystal_alluminium_works.api.get_customer_unallocated_credit',
+		args: { customer: customer }
+	});
+	if (request_id !== dialog._advance_request_id) {
+		return;
+	}
+
+	let total = flt((response.message || {}).credit || 0);
+	apply_job_card_customer_advance(dialog, total);
+	if (total <= 0.0001) {
+		field.$wrapper.empty();
+		return;
+	}
+
+	let applied = Math.min(total, flt(dialog._gross_payment_limit || 0));
+	let leftover = Math.max(total - applied, 0);
+	let note;
+	if (leftover > 0.0001) {
+		note = __('{0} will be applied to this Job Card on save — Payment Amount below is already net of it. The remaining {1} stays as the customer\'s credit.',
+			[format_currency(applied, 'KES'), format_currency(leftover, 'KES')]);
+	} else {
+		note = __('Applied to this Job Card on save — Payment Amount below is already net of it.');
+	}
+
+	field.$wrapper.html(`
+		<div style="padding:4px 0 2px;">
+			<span style="font-weight:600; color:#a35b00;">${__('Customer advance')}: ${format_currency(total, 'KES')}</span>
+			<div style="color:var(--text-muted); font-size:12px; margin-top:2px;">${note}</div>
+		</div>
+	`);
+}
+
+// Re-derive everything the advance drives, for a credit figure that just changed: what's left
+// to collect (_payment_limit, which the balance display and the save-time validation both
+// read) and the Payment Amount default. The amount is only re-defaulted while it still holds
+// the value this function last put there — once staff type their own figure, it's theirs.
+function apply_job_card_customer_advance(dialog, credit) {
+	let gross = flt(dialog._gross_payment_limit || 0);
+	dialog._available_credit = flt(credit || 0);
+	let remaining = Math.max(gross - Math.min(flt(credit || 0), gross), 0);
+	dialog._payment_limit = remaining;
+
+	let applied = Math.min(flt(credit || 0), gross);
+	if (dialog.fields_dict.advance) {
+		dialog.set_df_property('advance', 'hidden', applied > 0.0001 ? 0 : 1);
+		dialog.set_value('advance', applied);
+	}
+
+	let current = flt(dialog.get_value('payment_amount') || 0);
+	let was_autofilled = dialog._autofilled_payment_amount === undefined
+		|| Math.abs(current - flt(dialog._autofilled_payment_amount)) < 0.0001;
+	if (was_autofilled) {
+		dialog._autofilled_payment_amount = remaining;
+		dialog.set_value('payment_amount', remaining);
+	}
+	update_job_card_balance(dialog);
+	update_job_card_save_button_visibility(dialog);
 }
 
 async function apply_job_card_customer_defaults(dialog) {
@@ -1197,6 +1302,7 @@ async function apply_job_card_customer_defaults(dialog) {
 	await dialog.set_value('customer_name', customer_name);
 	await dialog.set_value('customer_pin', pin);
 	await dialog.set_value('phone_number', phone);
+	refresh_job_card_customer_advance(dialog);
 }
 
 function queue_job_card_customer_defaults(dialog) {
@@ -1225,11 +1331,14 @@ async function open_job_card_modal(page, doc) {
 	let quotation_total = get_manager_quotation_total(doc);
 	let payment_limit = get_job_card_outstanding_balance(existing_job_card, quotation_total);
 
-	// A deposit may already be sitting as unallocated credit against this quotation (taken
-	// via the Payments page before this Job Card existed) — api.py create_job_card_from_quotation
-	// applies it automatically, so don't ask staff to collect that portion again here.
-	let deposit_credit = await get_quotation_deposit_credit(doc.name);
-	let available_credit = flt(deposit_credit.credit || 0);
+	// Credit may already be sitting unallocated on this customer — a deposit taken against
+	// this quotation before the Job Card existed, or any other General Payment never pinned to
+	// a job card. api.py create_job_card_from_quotation spends it (this quotation's deposit
+	// first), so don't ask staff to collect that portion again here. Seeded for the
+	// quotation's own customer; refresh_job_card_customer_advance re-derives it if the user
+	// picks a different one.
+	let customer_credit = await get_customer_unallocated_credit(defaults.customer || quotation_customer);
+	let available_credit = Math.min(customer_credit, payment_limit);
 	let remaining_after_credit = Math.max(payment_limit - available_credit, 0);
 	var d;
 	d = new frappe.ui.Dialog({
@@ -1287,17 +1396,26 @@ async function open_job_card_modal(page, doc) {
 			{ fieldtype: 'Column Break' },
 			{ fieldtype: 'Currency', fieldname: 'payment_amount', label: 'Payment Amount', default: remaining_after_credit, reqd: 1 },
 			{ fieldtype: 'Currency', fieldname: 'balance_amount', label: 'Balance', read_only: 1, default: remaining_after_credit },
-			...(available_credit > 0.0001 ? [
-				{ fieldtype: 'Column Break' },
-				{
-					fieldtype: 'HTML',
-					fieldname: 'deposit_credit_note',
-					options: `<div style="padding:4px 0 8px; color:var(--text-muted); font-size:13px;">
-						Existing deposit credit on this Quotation: <b>${format_currency(available_credit, doc.currency)}</b> —
-						will be applied automatically; only the remainder needs collecting now.
-					</div>`
-				}
-			] : []),
+			{ fieldtype: 'Column Break' },
+			{
+				// How much of the customer's advance this Job Card actually consumes. Always
+				// declared (hidden while it's zero) rather than conditionally built, so
+				// apply_job_card_customer_advance can keep it honest when the customer changes
+				// — a static field would keep showing the previous customer's credit.
+				fieldtype: 'Currency',
+				fieldname: 'advance',
+				label: 'Advance Applied',
+				read_only: 1,
+				hidden: available_credit > 0.0001 ? 0 : 1,
+				default: available_credit
+			},
+			{ fieldtype: 'Section Break' },
+			{
+				// The customer's existing unallocated advance/credit — see
+				// refresh_job_card_customer_advance for what's applied here and what isn't.
+				fieldtype: 'HTML',
+				fieldname: 'customer_advance_note'
+			},
 			{ fieldtype: 'Section Break', fieldname: 'record_payment_section', label: 'Record Payment' },
 			{
 				fieldtype: 'Link',
@@ -1382,7 +1500,13 @@ async function open_job_card_modal(page, doc) {
 	});
 
 	d._payment_limit = remaining_after_credit;
-	// What the deposit already covers — read by update_job_card_save_button_visibility, since
+	// The full quotation balance before any credit — apply_job_card_customer_advance re-derives
+	// _payment_limit and the Payment Amount default from this whenever the credit changes.
+	d._gross_payment_limit = payment_limit;
+	// Payment Amount as this modal filled it in, so a later re-derive can tell its own default
+	// apart from a figure staff typed (see apply_job_card_customer_advance).
+	d._autofilled_payment_amount = remaining_after_credit;
+	// What the advance already covers — read by update_job_card_save_button_visibility, since
 	// a fully-prepaid quotation has nothing left to collect and would otherwise look unsaveable.
 	d._available_credit = available_credit;
 	// See apply_job_card_customer_defaults: lets it tell "still the quotation's own
@@ -1399,6 +1523,7 @@ async function open_job_card_modal(page, doc) {
 	}
 	update_job_card_balance(d);
 	update_job_card_save_button_visibility(d);
+	refresh_job_card_customer_advance(d);
 
 	d.fields_dict.payment_amount.$input.on('input', function() {
 		update_job_card_balance(d);
@@ -1411,6 +1536,9 @@ async function open_job_card_modal(page, doc) {
 		d.set_value('customer_name', '');
 		d.set_value('customer_pin', '');
 		d.set_value('phone_number', '');
+		// Customer just went blank — clear the advance with it rather than leaving the
+		// previous customer's figure sitting above the payment fields.
+		refresh_job_card_customer_advance(d);
 	});
 
 	d.fields_dict.customer.$input.on('awesomplete-selectcomplete', function() {
@@ -1605,6 +1733,7 @@ function bind_action_events(page, doc, sales_invoices, existing_job_card) {
 		window.CAWPaymentDialog.open({
 			customer: get_quotation_customer_reference(doc),
 			quotation: doc.name,
+			quotationTotal: quotation_total,
 			payment_type: 'General Payment',
 			lockPaymentType: true,
 			amount: prefill_amount,
@@ -1631,6 +1760,7 @@ function bind_action_events(page, doc, sales_invoices, existing_job_card) {
 		window.CAWPaymentDialog.open({
 			customer: get_quotation_customer_reference(doc),
 			quotation: doc.name,
+			quotationTotal: get_manager_quotation_total(doc),
 			payment_type: 'Refund',
 			lockPaymentType: true,
 			amount: refundable,

@@ -83,6 +83,10 @@ JOB_CARD_CURRENCY_PRECISION = 2
 CASH_CUSTOMER_PAYMENT_OPTIONS = ["Cash", "Paybill", "Bank Transfer i.e RTGS, TT", "PESALINK"]
 INVOICE_CUSTOMER_PAYMENT_OPTIONS = ["Cheque"]
 
+# record_customer_payment only demands a Reference for these — Mpesa (Paybill), PESALINK,
+# Cash etc. don't leave/need a paper reference. Mirrored in caw_payment_dialog.js.
+REFERENCE_REQUIRED_PAYMENT_METHODS = ["Bank Transfer i.e RTGS, TT", "Cheque"]
+
 
 def _get_job_card_name_for_quotation(quotation_name):
     return f"JOB-CARD-{quotation_name}"
@@ -1543,6 +1547,11 @@ def register_customer(
 
 SHARED_CASH_CUSTOMER_NAME = "Cash Customer"
 
+# Marks a Customer search row (get_customer_names) that matched a walk-in's name rather than a
+# Customer record of its own. caw_payment_dialog.js reads this prefix back off the row to
+# relabel it with the walk-in's name alone, so keep the two in sync.
+WALKIN_DESCRIPTION_PREFIX = "Walk-in: "
+
 
 def get_or_create_shared_cash_customer():
     """Return the single shared walk-in Cash Customer record, creating it on first use.
@@ -1739,14 +1748,30 @@ def create_job_card_from_quotation(quotation, customer, customer_name=None, paym
     payment_limit = _get_job_card_outstanding_balance(job_card, quotation_amount)
     paid_to_date = 0 if job_card.get("__islocal") else _round_job_card_amount(quotation_amount - payment_limit)
 
-    # A deposit may already have been taken against this quotation (via the Payments page,
-    # before this Job Card existed) and be sitting as unallocated customer credit — apply it
-    # here instead of asking staff to collect the same money twice.
-    deposit_credit = (
-        get_quotation_deposit_credit(quotation_doc.name) if payment_mode == "Cash Customer" else {"credit": 0, "payments": []}
-    )
-    available_credit = _round_job_card_amount(deposit_credit.get("credit") or 0)
+    # Money may already be on file for this customer as unallocated credit — a deposit taken
+    # against this quotation before the Job Card existed, or any other General Payment never
+    # pinned to a job card. Apply it here instead of asking staff to collect it twice.
+    #
+    # The pool is customer-wide, the same scope Save Payment draws on (_apply_customer_advance
+    # / get_customer_unallocated_credit), so the "Customer advance" figure the Create Job Card
+    # modal shows is the figure that actually gets spent. Only cash customers pay through this
+    # endpoint at all — invoice customers' money is recorded on the Payments page.
+    if payment_mode == "Cash Customer":
+        customer_credit, credit_payments = _get_customer_credit_payments(customer=customer_doc.name)
+    else:
+        customer_credit, credit_payments = 0, []
+    available_credit = _round_job_card_amount(customer_credit)
     credit_to_apply = min(available_credit, max(payment_limit - payment_amount, 0))
+
+    # Spend this quotation's own deposit before any other credit. It's the same pot of money
+    # either way, but a deposit taken against this quotation is what staff expect to see land
+    # on its Job Card — and it's what the stranded-credit warning below reports on.
+    credit_pool = _order_credit_pool_quotation_first(credit_payments, quotation_doc.name)
+    quotation_credit = min(
+        _round_job_card_amount((get_quotation_deposit_credit(quotation_doc.name).get("credit") or 0)
+                               if payment_mode == "Cash Customer" else 0),
+        available_credit,
+    )
 
     if payment_amount < 0:
         frappe.throw("Payment amount cannot be less than zero.")
@@ -1788,16 +1813,22 @@ def create_job_card_from_quotation(quotation, customer, customer_name=None, paym
             )
 
     if credit_to_apply > 0.0001:
-        _apply_quotation_deposit_credit_to_job_card(deposit_credit["payments"], job_card.name, credit_to_apply)
+        _draw_advance_pool(credit_pool, job_card.name, credit_to_apply)
 
     # credit_to_apply is capped at what this Job Card can absorb, so a deposit bigger than the
     # quotation leaves a remainder behind. It stays as the customer's advance (visible on
     # Customer Manager) rather than going missing — but this is the moment it becomes stranded,
     # so name it instead of letting staff discover it later.
-    stranded_credit = _round_job_card_amount(available_credit - credit_to_apply)
+    #
+    # Reported on this quotation's own deposit, not on the whole customer-wide pool: unrelated
+    # credit sitting on the customer isn't news, and warning about it on every Job Card would
+    # train staff to dismiss the message that does matter. Since the deposit is drawn first
+    # (see credit_pool), whatever it didn't cover is exactly what's left stranded of it.
+    deposit_applied = min(quotation_credit, credit_to_apply)
+    stranded_credit = _round_job_card_amount(quotation_credit - deposit_applied)
     if stranded_credit > 0.0001:
         frappe.msgprint(
-            f"{frappe.utils.fmt_money(credit_to_apply)} of the deposit went to this Job Card. "
+            f"{frappe.utils.fmt_money(deposit_applied)} of the deposit went to this Job Card. "
             f"The remaining {frappe.utils.fmt_money(stranded_credit)} stays as "
             f"{job_card.customer_name or job_card.customer}'s credit — refund it, or leave it "
             "to fund another job.",
@@ -1810,15 +1841,14 @@ def create_job_card_from_quotation(quotation, customer, customer_name=None, paym
     return job_card.name
 
 
-def _apply_quotation_deposit_credit_to_job_card(contributing_payments, job_card_name, amount_to_apply):
-    """Pin previously-unallocated deposit Payments (see get_quotation_deposit_credit) onto
-    the Job Card that just consumed their credit, oldest first, so the money is no longer
-    reported as unallocated once it's actually funding this Job Card. Mirrors what staff
-    would otherwise do by hand via set_payment_allocations from the Payments page — but adds
-    to each payment's existing allocations rather than replacing them, since a deposit could
-    in principle already be partly split across other job cards."""
+def _draw_advance_pool(pool, job_card_name, amount_to_apply):
+    """Allocate amount_to_apply of unallocated advance from `pool` (an oldest-first list of
+    {"name", "unallocated"} Payments rows, mutated in place as it's drawn down) onto
+    job_card_name — pinning it exactly as staff would by hand via Set Payment Allocations,
+    but adding to each payment's existing allocations rather than replacing them, since a
+    deposit could in principle already be partly split across other job cards."""
     remaining = flt(amount_to_apply)
-    for row in contributing_payments:
+    for row in pool:
         if remaining <= 0.0001:
             break
         take = min(flt(row["unallocated"]), remaining)
@@ -1827,7 +1857,59 @@ def _apply_quotation_deposit_credit_to_job_card(contributing_payments, job_card_
         payment_doc = frappe.get_doc("Payments", row["name"])
         existing = [{"job_card": alloc.job_card, "amount": flt(alloc.amount)} for alloc in (payment_doc.allocations or [])]
         set_payment_allocations(row["name"], json.dumps(existing + [{"job_card": job_card_name, "amount": take}]))
+        row["unallocated"] = flt(row["unallocated"]) - take
         remaining -= take
+
+
+def _order_credit_pool_quotation_first(credit_payments, quotation):
+    """Copy of a `_get_customer_credit_payments` pool reordered so Payments tagged to
+    `quotation` (its whole amendment chain) come first, each group still oldest-first.
+
+    Both groups are the same customer-wide credit and spend identically; the ordering just
+    decides which rows get pinned to the Job Card when only part of the pool is drawn, and a
+    deposit taken against this quotation is the one staff expect to see land on it. Values are
+    taken from the single customer-wide computation, never merged with a separately-computed
+    quotation-scoped list, so refund netting can't be counted under two different scopes."""
+    quotation_chain = _resolve_quotation_chain(quotation) or [quotation]
+    tagged = {
+        str(name)
+        for name in frappe.get_all("Payments", filters={"quotation": ["in", quotation_chain]}, pluck="name")
+    }
+    pool = [dict(row) for row in credit_payments]
+    # Stable sort — oldest-first ordering survives inside each group.
+    pool.sort(key=lambda row: 0 if str(row["name"]) in tagged else 1)
+    return pool
+
+
+def _apply_customer_advance(customer, cleaned_allocations):
+    """Draw down this customer's existing unallocated advance/credit (oldest Payments first,
+    customer-wide — same scope as get_customer_unallocated_credit) against the given job-card
+    allocation rows before any new money is collected. The Create Payment dialog's own
+    "Customer advance" note shows staff this same figure live, so Save Payment honours it
+    instead of quietly asking for money that's already on file.
+
+    Returns (remaining_allocations, advance_applied): remaining_allocations holds only the
+    shortfall still needing a fresh Payments/Payment Entry for each row (a row fully covered
+    by advance is dropped); advance_applied is how much of the existing credit was used."""
+    credit, advance_payments = _get_customer_credit_payments(customer=customer)
+    pool = [dict(row) for row in advance_payments]
+    remaining_credit = flt(credit)
+    remaining_rows = []
+    advance_applied = 0
+
+    for row in cleaned_allocations:
+        need = flt(row["amount"])
+        take = min(remaining_credit, need)
+        if take > 0.0001:
+            _draw_advance_pool(pool, row["job_card"], take)
+            remaining_credit -= take
+            advance_applied += take
+            need -= take
+        need = _round_job_card_amount(need)
+        if need > 0.0001:
+            remaining_rows.append({"job_card": row["job_card"], "amount": need})
+
+    return remaining_rows, _round_job_card_amount(advance_applied)
 
 
 @frappe.whitelist()
@@ -5387,12 +5469,10 @@ def get_all_glass_items():
     return [i for i in items if not any(k in (i.item_name or "") for k in service_keywords)]
 
 
-@frappe.whitelist()
-def get_payments_page(search=None, payment_method=None, from_date=None, to_date=None, page=1, page_length=30):
-    page = max(int(page or 1), 1)
-    page_length = min(max(int(page_length or 30), 1), 100)
-    start = (page - 1) * page_length
-
+def _build_payments_page_filters(payment_method, from_date, to_date):
+    """Shared standard (AND) filters for the Payments page's own filter bar — used by
+    get_payments_page, get_payments_page_totals, and the xlsx/PDF report downloads so all
+    four agree on exactly the same result set."""
     filters = {}
     if payment_method:
         filters["payment_method"] = payment_method
@@ -5402,19 +5482,51 @@ def get_payments_page(search=None, payment_method=None, from_date=None, to_date=
         filters["date"] = [">=", from_date]
     elif to_date:
         filters["date"] = ["<=", to_date]
+    return filters
 
-    or_filters = None
+
+def _build_payments_page_or_filters(search):
+    """Shared search (OR) filters for the Payments page's Search box. Returns (or_filters,
+    cleaned search text) — or_filters is None when search is blank.
+
+    A Cash sale's Payments.customer is always the one shared "Cash Customer" placeholder — the
+    walk-in's real name (the page's own Name column) lives on the Quotation instead
+    (custom_customer_name), so a plain LIKE on Payments.customer alone would only ever find
+    literal "Cash Customer" and never the walk-in by name. Matching quotations by that name too
+    is what makes the search actually search what the Name column shows."""
     search = (search or "").strip()
-    if search:
-        like = f"%{search}%"
-        or_filters = [
-            ["Payments", "customer", "like", like],
-            ["Payments", "job_card", "like", like],
-            ["Payments", "quotation", "like", like],
-            ["Payments", "payment_method", "like", like],
-            ["Payments", "deposit_to", "like", like],
-            ["Payments", "reference", "like", like],
-        ]
+    if not search:
+        return None, search
+
+    like = f"%{search}%"
+    or_filters = [
+        ["Payments", "customer", "like", like],
+        ["Payments", "job_card", "like", like],
+        ["Payments", "quotation", "like", like],
+        ["Payments", "payment_method", "like", like],
+        ["Payments", "deposit_to", "like", like],
+        ["Payments", "reference", "like", like],
+    ]
+
+    matching_quotations = frappe.get_all(
+        "Quotation",
+        filters={"custom_customer_name": ["like", like]},
+        pluck="name",
+    )
+    if matching_quotations:
+        or_filters.append(["Payments", "quotation", "in", matching_quotations])
+
+    return or_filters, search
+
+
+@frappe.whitelist()
+def get_payments_page(search=None, payment_method=None, from_date=None, to_date=None, page=1, page_length=30):
+    page = max(int(page or 1), 1)
+    page_length = min(max(int(page_length or 30), 1), 100)
+    start = (page - 1) * page_length
+
+    filters = _build_payments_page_filters(payment_method, from_date, to_date)
+    or_filters, search = _build_payments_page_or_filters(search)
 
     rows = frappe.get_list(
         "Payments",
@@ -5476,12 +5588,263 @@ def get_payments_page(search=None, payment_method=None, from_date=None, to_date=
     }
 
 
-def _normalize_payment_allocations(allocations, customer, payment_amount):
+@frappe.whitelist()
+def get_payments_page_totals(search=None, payment_method=None, from_date=None, to_date=None):
+    """Per-Method totals (plus a grand total) for whatever the Payments page's filters
+    currently match — mirrors get_payments_page's own filter logic, but ignores paging so the
+    numbers reflect the whole filtered set, not just the page currently on screen."""
+    filters = _build_payments_page_filters(payment_method, from_date, to_date)
+    or_filters, search = _build_payments_page_or_filters(search)
+
+    rows = frappe.get_list(
+        "Payments",
+        filters=filters,
+        or_filters=or_filters,
+        fields=["payment_method", "amount"],
+        limit_page_length=0,
+    )
+
+    totals_by_method = {}
+    grand_total = 0
+    for row in rows:
+        method = row.payment_method or "Unspecified"
+        amount = flt(row.amount)
+        totals_by_method[method] = totals_by_method.get(method, 0) + amount
+        grand_total += amount
+
+    by_method = [
+        {"payment_method": method, "total": _round_job_card_amount(total)}
+        for method, total in sorted(totals_by_method.items(), key=lambda kv: -kv[1])
+    ]
+    return {"by_method": by_method, "total": _round_job_card_amount(grand_total)}
+
+
+def _get_payments_report_data(search, payment_method, from_date, to_date):
+    """Rows + per-method totals for the Payments page's current filters — the shared data
+    behind both the xlsx (download_payments_report) and PDF (download_payments_report_pdf)
+    downloads, and the same filter logic as get_payments_page / get_payments_page_totals."""
+    filters = _build_payments_page_filters(payment_method, from_date, to_date)
+    or_filters, search = _build_payments_page_or_filters(search)
+
+    rows = frappe.get_list(
+        "Payments",
+        filters=filters,
+        or_filters=or_filters,
+        fields=["name", "customer", "amount", "date", "payment_method", "deposit_to", "reference", "job_card", "quotation", "payment_type"],
+        order_by="creation desc",
+        limit_page_length=0,
+    )
+
+    # Same Name/Customer resolution as get_payments_page, so the report reads exactly like the
+    # page it was downloaded from (a Cash Customer walk-in's real name off its Quotation, not
+    # the shared placeholder).
+    customer_ids = {row["customer"] for row in rows if row.get("customer")}
+    customer_names = {}
+    if customer_ids:
+        for c in frappe.get_all("Customer", filters={"name": ["in", list(customer_ids)]}, fields=["name", "customer_name"]):
+            customer_names[c.name] = c.customer_name
+
+    quotation_ids = {row["quotation"] for row in rows if row.get("quotation")}
+    quotation_walkin_names = {}
+    if quotation_ids:
+        for q in frappe.get_all("Quotation", filters={"name": ["in", list(quotation_ids)]}, fields=["name", "custom_customer_name"]):
+            if q.custom_customer_name:
+                quotation_walkin_names[q.name] = q.custom_customer_name
+
+    totals_by_method = {}
+    grand_total = 0
+    for row in rows:
+        is_cash = row.get("customer") == SHARED_CASH_CUSTOMER_NAME
+        row["customer_type"] = "Cash" if is_cash else "Invoice"
+        row["display_name"] = (
+            (quotation_walkin_names.get(row.get("quotation")) or SHARED_CASH_CUSTOMER_NAME) if is_cash
+            else (customer_names.get(row.get("customer")) or row.get("customer"))
+        )
+        method = row.get("payment_method") or "Unspecified"
+        amount = flt(row.get("amount"))
+        totals_by_method[method] = totals_by_method.get(method, 0) + amount
+        grand_total += amount
+
+    by_method = [
+        {"payment_method": method, "total": _round_job_card_amount(total)}
+        for method, total in sorted(totals_by_method.items(), key=lambda kv: -kv[1])
+    ]
+    return {
+        "rows": rows,
+        "by_method": by_method,
+        "total": _round_job_card_amount(grand_total),
+        "search": search,
+    }
+
+
+@frappe.whitelist()
+def download_payments_report(search=None, payment_method=None, from_date=None, to_date=None):
+    """Excel export of the Payments page's current filtered result — a per-method totals
+    summary (the same numbers as the page's own pills, see get_payments_page_totals) at the
+    top, followed by every matching payment (the whole filtered set, not just one page)."""
+    data = _get_payments_report_data(search, payment_method, from_date, to_date)
+
+    sheet_rows = [["Payments Report"]]
+    range_bits = []
+    if from_date:
+        range_bits.append(f"From {from_date}")
+    if to_date:
+        range_bits.append(f"To {to_date}")
+    if range_bits:
+        sheet_rows.append([" ".join(range_bits)])
+    if payment_method:
+        sheet_rows.append([f"Payment Method: {payment_method}"])
+    if data["search"]:
+        sheet_rows.append([f"Search: {data['search']}"])
+    sheet_rows.append([])
+
+    sheet_rows.append(["Totals by Payment Method"])
+    for row in data["by_method"]:
+        sheet_rows.append([row["payment_method"], row["total"]])
+    sheet_rows.append(["Total", data["total"]])
+    sheet_rows.append([])
+
+    sheet_rows.append(["Date", "C.Type", "Name", "Customer", "Amount", "Method", "Deposit To", "Reference", "Quotation", "Job Card"])
+    for row in data["rows"]:
+        sheet_rows.append([
+            frappe.utils.formatdate(row.get("date")) if row.get("date") else "",
+            row.get("customer_type") or "",
+            row.get("display_name") or "",
+            row.get("customer") or "",
+            flt(row.get("amount")),
+            row.get("payment_method") or "",
+            row.get("deposit_to") or "",
+            row.get("reference") or "",
+            row.get("quotation") or "",
+            row.get("job_card") or "",
+        ])
+
+    filename_bits = ["Payments"]
+    if from_date or to_date:
+        filename_bits.append(f"{from_date or 'start'}_to_{to_date or 'today'}")
+    return _stream_xlsx_file("_".join(filename_bits), sheet_rows)
+
+
+@frappe.whitelist()
+def download_payments_report_pdf(search=None, payment_method=None, from_date=None, to_date=None):
+    """PDF twin of download_payments_report — the same filtered rows and per-method totals,
+    laid out as a printable report with the Crystal letterhead and a "Payment Report" title,
+    rather than an Excel workbook."""
+    from crystal_alluminium_works.create_print_format import get_letterhead_data_uri
+    from frappe.utils.pdf import get_pdf
+    from frappe.www.printview import get_print_style
+
+    data = _get_payments_report_data(search, payment_method, from_date, to_date)
+
+    range_bits = []
+    if from_date:
+        range_bits.append(f"From {frappe.utils.formatdate(from_date)}")
+    if to_date:
+        range_bits.append(f"To {frappe.utils.formatdate(to_date)}")
+    filter_bits = []
+    if payment_method:
+        filter_bits.append(f"Payment Method: {payment_method}")
+    if data["search"]:
+        filter_bits.append(f"Search: {data['search']}")
+
+    totals_rows_html = "".join(
+        f"<tr><td>{frappe.utils.escape_html(row['payment_method'])}</td>"
+        f"<td style='text-align:right;'>{frappe.utils.fmt_money(row['total'], currency='KES')}</td></tr>"
+        for row in data["by_method"]
+    )
+
+    payment_rows_html = "".join(
+        "<tr>"
+        f"<td>{frappe.utils.escape_html(frappe.utils.formatdate(row.get('date')) if row.get('date') else '-')}</td>"
+        f"<td>{frappe.utils.escape_html(row.get('display_name') or '-')}</td>"
+        f"<td style='text-align:right;'>{frappe.utils.fmt_money(row.get('amount') or 0, currency='KES')}</td>"
+        f"<td>{frappe.utils.escape_html(row.get('payment_method') or '-')}</td>"
+        f"<td>{frappe.utils.escape_html(row.get('reference') or '-')}</td>"
+        f"<td>{frappe.utils.escape_html(row.get('quotation') or '-')}</td>"
+        "</tr>"
+        for row in data["rows"]
+    ) or "<tr><td colspan='6' style='text-align:center;color:#7f8c8d;'>No payments match these filters.</td></tr>"
+
+    html = f"""
+    <html>
+    <head>
+    <style>
+        {get_print_style()}
+        body {{ font-family: 'Helvetica Neue', Arial, sans-serif; color: #2c3e50; }}
+        .ppr-header {{ display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; }}
+        .ppr-letterhead {{ flex: 0 0 60%; max-width: 60%; }}
+        .ppr-letterhead img {{ width: 100%; height: auto; }}
+        .ppr-header-right {{ text-align: right; flex: 1; }}
+        .ppr-title {{ font-size: 22px; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; margin: 0 0 6px; color: #000; }}
+        .ppr-date-range {{ font-weight: bold; font-size: 13px; color: #000; }}
+        .ppr-filters {{ color: #7f8c8d; font-size: 12px; margin-top: 2px; }}
+        .ppr-section-title {{ font-size: 13px; font-weight: bold; text-transform: uppercase; color: #000; margin: 18px 0 8px; }}
+        table.ppr-table {{ width: 100%; border-collapse: collapse; margin-bottom: 10px; table-layout: auto; }}
+        table.ppr-table th {{ text-align: left; font-size: 11px; text-transform: uppercase; color: #000; border-bottom: 2px solid #ecf0f1; padding: 6px 8px; white-space: nowrap; }}
+        table.ppr-table td {{ font-size: 12px; padding: 6px 8px; border-bottom: 1px solid #ecf0f1; white-space: nowrap; }}
+        .ppr-totals-table {{ width: 320px; }}
+        .ppr-grand-total td {{ font-weight: bold; color: #000; border-top: 2px solid #2c3e50; border-bottom: none; }}
+    </style>
+    </head>
+    <body>
+        <div class="ppr-header">
+            <div class="ppr-letterhead">
+                <img src="{get_letterhead_data_uri()}" alt="Crystal Aluminium Works">
+            </div>
+            <div class="ppr-header-right">
+                <div class="ppr-title">Payment Report</div>
+                <div class="ppr-date-range">{frappe.utils.escape_html(" · ".join(range_bits))}</div>
+                {f'<div class="ppr-filters">{frappe.utils.escape_html(" · ".join(filter_bits))}</div>' if filter_bits else ""}
+            </div>
+        </div>
+        <hr style="border-top: 2px solid #ecf0f1; margin: 12px 0 0;">
+
+        <div class="ppr-section-title">Totals by Payment Method</div>
+        <table class="ppr-table ppr-totals-table">
+            <tbody>
+                {totals_rows_html}
+                <tr class="ppr-grand-total"><td>Total</td><td style="text-align:right;">{frappe.utils.fmt_money(data['total'], currency='KES')}</td></tr>
+            </tbody>
+        </table>
+
+        <table class="ppr-table">
+            <thead>
+                <tr>
+                    <th>Date</th><th>Name</th><th style="text-align:right;">Amount</th>
+                    <th>Method</th><th>Reference</th><th>Quotation</th>
+                </tr>
+            </thead>
+            <tbody>
+                {payment_rows_html}
+            </tbody>
+        </table>
+    </body>
+    </html>
+    """
+
+    pdf_file = get_pdf(html, options={
+        "load-error-handling": "ignore",
+        "load-media-error-handling": "ignore",
+        "zoom": "0.9",
+    })
+
+    filename_bits = ["Payments"]
+    if from_date or to_date:
+        filename_bits.append(f"{from_date or 'start'}_to_{to_date or 'today'}")
+    frappe.local.response.filename = f"{'_'.join(filename_bits)}.pdf"
+    frappe.local.response.filecontent = pdf_file
+    frappe.local.response.type = "pdf"
+
+
+def _normalize_payment_allocations(allocations, customer, payment_amount, available_credit=0):
     """Validate and clean a payment's job-card allocation rows.
 
     Each row is {job_card, amount}. Rules: job cards must belong to the customer, amounts
-    must be positive, and the allocated total can't exceed the payment. Whatever is left
-    unallocated is intentionally allowed — it becomes the customer's advance / credit."""
+    must be positive, and the allocated total can't exceed the payment plus whatever existing
+    advance/credit (`available_credit`) is on hand to cover the rest — see
+    _apply_customer_advance, which draws on exactly that credit before any new money is
+    collected. Whatever is left unallocated after that is intentionally allowed — it becomes
+    (or stays) the customer's advance / credit."""
     allocations = json.loads(allocations) if isinstance(allocations, str) else (allocations or [])
     cleaned = []
     allocated_total = 0
@@ -5501,92 +5864,43 @@ def _normalize_payment_allocations(allocations, customer, payment_amount):
         allocated_total += row_amount
         cleaned.append({"job_card": job_card, "amount": row_amount})
 
-    if allocated_total - flt(payment_amount) > 0.0001:
+    if allocated_total - (flt(payment_amount) + flt(available_credit)) > 0.0001:
         frappe.throw(
             f"Allocated amount ({frappe.utils.fmt_money(allocated_total)}) cannot exceed the "
-            f"payment amount ({frappe.utils.fmt_money(payment_amount)})."
+            f"payment amount plus available advance/credit "
+            f"({frappe.utils.fmt_money(flt(payment_amount) + flt(available_credit))})."
         )
     return cleaned
 
 
-def _get_customer_unallocated_credit(customer, quotation=None):
-    """Total unallocated advance/credit currently sitting on this customer's Payments —
-    General Payment rows not (yet) pinned to a job card, net of credit already refunded
-    directly (a Refund row with no job-card allocation of its own). Optionally scoped to
-    Payments tagged with one Quotation (its full amendment chain included)."""
-    filters = {"customer": customer}
+def _get_customer_credit_payments(customer=None, quotation=None):
+    """Oldest-first list of unallocated General Payment rows still available as advance/credit
+    (Payments filtered by `customer`, `quotation` — its full amendment chain — or both), net of
+    unallocated Refunds already drawn against them, drawn oldest-deposit-first so the returned
+    `credit` total and `payments` breakdown stay in step: whatever later applies this credit
+    (create_job_card_from_quotation, _apply_customer_advance) draws straight off
+    `payments`, so a refunded deposit left listed there would credit a Job Card with money
+    already handed back.
+
+    Shared by get_quotation_deposit_credit (quotation-scoped), _get_customer_unallocated_credit
+    (customer-scoped, optionally +quotation) and _apply_customer_advance (customer-wide) so the
+    same rules apply everywhere this credit is read or spent."""
+    filters = {}
+    if customer:
+        filters["customer"] = customer
     if quotation:
         quotation_chain = _resolve_quotation_chain(quotation) or [quotation]
         filters["quotation"] = ["in", quotation_chain]
+    if not filters:
+        return 0, []
 
-    rows = frappe.get_all("Payments", filters=filters, fields=["name", "amount", "payment_type"])
+    rows = frappe.get_all("Payments", filters=filters, fields=["name", "amount", "payment_type"], order_by="creation asc")
     if not rows:
-        return 0
+        return 0, []
 
     # Payments.autoname is "autoincrement" so get_all hands back an int name, while a child
     # table's `parent` is always varchar — compare as strings or every lookup silently misses
     # and allocations never get subtracted (same trap as _get_job_card_allocated_payments).
-    payment_names = [str(row.name) for row in rows]
-    allocation_rows = frappe.get_all(
-        "Payment Job Card Allocation",
-        filters={"parent": ["in", payment_names], "parenttype": "Payments"},
-        fields=["parent", "amount"],
-    )
-    allocated_by_payment = {}
-    for row in allocation_rows:
-        key = str(row.parent)
-        allocated_by_payment[key] = allocated_by_payment.get(key, 0) + flt(row.amount)
-
-    credit = 0
-    for row in rows:
-        unallocated = max(flt(row.amount) - flt(allocated_by_payment.get(str(row.name), 0)), 0)
-        if row.payment_type == "Refund":
-            credit -= unallocated
-        else:
-            credit += unallocated
-
-    return _round_job_card_amount(max(credit, 0))
-
-
-@frappe.whitelist()
-def get_customer_unallocated_credit(customer, quotation=None):
-    """Whitelisted read of _get_customer_unallocated_credit, for the Payments page to show
-    available credit before a customer-level (no job card) refund is submitted."""
-    if not customer or not frappe.db.exists("Customer", customer):
-        return {"credit": 0}
-    return {"credit": _get_customer_unallocated_credit(customer, quotation=quotation)}
-
-
-@frappe.whitelist()
-def get_quotation_deposit_credit(quotation):
-    """Unallocated deposit credit still held against this quotation (a payment taken via the
-    Payments page before a Job Card existed for it), net of anything already refunded back to
-    the customer. Used to auto-apply an existing deposit when the Job Card is finally created,
-    instead of asking staff to collect it again.
-
-    Scoped to the whole amendment chain, since a deposit stays tagged to the revision it was
-    taken against while the Job Card gets created from a later one. `is_latest_revision` tells
-    callers whether this is the chain's live tip — deposit actions belong there, not on the
-    superseded revisions that would otherwise all report this same shared pot of money."""
-    if not quotation or not frappe.db.exists("Quotation", quotation):
-        return {"credit": 0, "payments": [], "is_latest_revision": False}
-
-    quotation_chain = _resolve_quotation_chain(quotation) or [quotation]
-    is_latest_revision = quotation_chain[-1] == quotation
-    empty = {"credit": 0, "payments": [], "is_latest_revision": is_latest_revision}
-
-    rows = frappe.get_all(
-        "Payments",
-        filters={"quotation": ["in", quotation_chain]},
-        fields=["name", "amount", "payment_type"],
-        order_by="creation asc",
-    )
-    if not rows:
-        return empty
-
-    # str() on both sides: Payments.name comes back as an int (autoincrement naming) but a
-    # child table's `parent` is varchar, so an unnormalised lookup silently misses and the
-    # allocation never gets subtracted — see _get_job_card_allocated_payments.
     payment_names = [str(row.name) for row in rows]
     allocation_rows = frappe.get_all(
         "Payment Job Card Allocation",
@@ -5611,9 +5925,6 @@ def get_quotation_deposit_credit(quotation):
         else:
             deposits.append({"name": row.name, "unallocated": unallocated})
 
-    # Draw refunds down against the deposits, oldest first, so `credit` and `payments` stay in
-    # step: _apply_quotation_deposit_credit_to_job_card allocates straight off `payments`, so a
-    # refunded deposit left listed there would credit a Job Card with money already returned.
     payments = []
     total_credit = 0
     for row in deposits:
@@ -5627,11 +5938,47 @@ def get_quotation_deposit_credit(quotation):
             payments.append({"name": row["name"], "unallocated": remaining})
             total_credit += remaining
 
-    return {
-        "credit": _round_job_card_amount(total_credit),
-        "payments": payments,
-        "is_latest_revision": is_latest_revision,
-    }
+    return _round_job_card_amount(total_credit), payments
+
+
+def _get_customer_unallocated_credit(customer, quotation=None):
+    """Total unallocated advance/credit currently sitting on this customer's Payments —
+    General Payment rows not (yet) pinned to a job card, net of credit already refunded
+    directly (a Refund row with no job-card allocation of its own). Optionally scoped to
+    Payments tagged with one Quotation (its full amendment chain included)."""
+    credit, _payments = _get_customer_credit_payments(customer=customer, quotation=quotation)
+    return credit
+
+
+@frappe.whitelist()
+def get_customer_unallocated_credit(customer, quotation=None):
+    """Whitelisted read of _get_customer_unallocated_credit, for the Payments page to show
+    available credit before a customer-level (no job card) refund is submitted, and for the
+    Create Payment dialog's live "Customer advance" note / advance-first Save Payment flow."""
+    if not customer or not frappe.db.exists("Customer", customer):
+        return {"credit": 0}
+    return {"credit": _get_customer_unallocated_credit(customer, quotation=quotation)}
+
+
+@frappe.whitelist()
+def get_quotation_deposit_credit(quotation):
+    """Unallocated deposit credit still held against this quotation (a payment taken via the
+    Payments page before a Job Card existed for it), net of anything already refunded back to
+    the customer. Used to auto-apply an existing deposit when the Job Card is finally created,
+    instead of asking staff to collect it again.
+
+    Scoped to the whole amendment chain, since a deposit stays tagged to the revision it was
+    taken against while the Job Card gets created from a later one. `is_latest_revision` tells
+    callers whether this is the chain's live tip — deposit actions belong there, not on the
+    superseded revisions that would otherwise all report this same shared pot of money."""
+    if not quotation or not frappe.db.exists("Quotation", quotation):
+        return {"credit": 0, "payments": [], "is_latest_revision": False}
+
+    quotation_chain = _resolve_quotation_chain(quotation) or [quotation]
+    is_latest_revision = quotation_chain[-1] == quotation
+
+    credit, payments = _get_customer_credit_payments(quotation=quotation)
+    return {"credit": credit, "payments": payments, "is_latest_revision": is_latest_revision}
 
 
 def _post_customer_payment_entry(customer, amount, date, payment_method, deposit_to, reference, is_refund, payments_doc_name):
@@ -5681,7 +6028,13 @@ def _post_customer_payment_entry(customer, amount, date, payment_method, deposit
 def record_customer_payment(customer, amount, date, payment_method, deposit_to, reference=None, job_card=None, allocations=None, payment_type="General Payment", quotation=None):
     if not customer:
         frappe.throw("Customer is required.")
-    if not amount or flt(amount) <= 0:
+    if flt(amount or 0) < 0:
+        frappe.throw("Amount cannot be negative.")
+    # A zero Amount is only ever legitimate for the advance-first Create Payment flow below —
+    # explicit job-card allocations that turn out to be fully covered by existing advance/credit,
+    # so no new money actually needs to change hands. Every other case (a plain unallocated
+    # deposit, a Refund, the legacy single job_card arg) still requires real money.
+    if flt(amount or 0) <= 0 and not allocations:
         frappe.throw("Amount must be greater than zero.")
     if not date:
         frappe.throw("Date is required.")
@@ -5691,13 +6044,34 @@ def record_customer_payment(customer, amount, date, payment_method, deposit_to, 
         frappe.throw("Deposit To account is required.")
 
     payment_type = payment_type or "General Payment"
-    cleaned_allocations = _normalize_payment_allocations(allocations, customer, amount)
+    # Existing advance/credit this customer already has on file — folded into the allocation
+    # cap check below so the Job Card Allocations table can ask for more than `amount` alone
+    # covers, and drawn down first (see _apply_customer_advance) before any of `amount` is
+    # actually collected as new money. Refunds never draw on it here — see the Refund branch.
+    available_credit = _get_customer_unallocated_credit(customer) if payment_type != "Refund" else 0
+    explicit_allocations = _normalize_payment_allocations(allocations, customer, amount, available_credit=available_credit)
+    cleaned_allocations = explicit_allocations
 
-    # Backward-compatible single job_card argument: treat it as one full allocation.
+    # Backward-compatible single job_card argument: treat it as one full allocation. Kept off
+    # the advance-first path below — callers using this legacy arg (Job Card create/edit,
+    # not the Payments page dialog) still expect a plain string return and real money moved.
     if not cleaned_allocations and job_card:
         cleaned_allocations = _normalize_payment_allocations(
             [{"job_card": job_card, "amount": amount}], customer, amount
         )
+
+    # The Create Payment dialog's Job Card Allocations table is the only caller that opts into
+    # this: draw the customer's existing advance down against those rows first, oldest-Payment-
+    # first, before any of `amount` is actually collected. A row fully covered by advance drops
+    # out of cleaned_allocations entirely; a partially-covered row keeps only its shortfall.
+    use_advance_first = payment_type != "Refund" and bool(explicit_allocations)
+    advance_applied = 0
+    if use_advance_first:
+        cleaned_allocations, advance_applied = _apply_customer_advance(customer, explicit_allocations)
+        if flt(amount or 0) <= 0.0001 and not cleaned_allocations:
+            # Fully covered by advance — the draw-down above already synced every job card
+            # touched; there's no new money to post and nothing left to allocate.
+            return {"payment": None, "advance_applied": advance_applied}
 
     if payment_type == "Refund":
         if cleaned_allocations:
@@ -5720,9 +6094,10 @@ def record_customer_payment(customer, amount, date, payment_method, deposit_to, 
                     f"{frappe.utils.fmt_money(available_credit)} in unallocated credit."
                 )
 
-    mode_of_payment_type = frappe.db.get_value("Mode of Payment", payment_method, "type")
-    if mode_of_payment_type == "Bank" and not (reference or "").strip():
-        frappe.throw("Reference is required for Bank payment methods.")
+    # Reference is only a real audit trail for these two — Mpesa (Paybill), PESALINK, Cash
+    # etc. don't need one. Kept in sync with caw_payment_dialog.js's own required-ness toggle.
+    if payment_method in REFERENCE_REQUIRED_PAYMENT_METHODS and not (reference or "").strip():
+        frappe.throw("Reference is required for Bank Transfer / Cheque payment methods.")
 
     doc = frappe.get_doc({
         "doctype": "Payments",
@@ -5759,6 +6134,8 @@ def record_customer_payment(customer, amount, date, payment_method, deposit_to, 
         for row in cleaned_allocations:
             _sync_job_card_balance_from_payments(row["job_card"])
 
+    if use_advance_first:
+        return {"payment": doc.name, "advance_applied": advance_applied}
     return doc.name
 
 
@@ -5906,7 +6283,7 @@ def get_job_card_statement_balance(job_card):
     job_card_doc = frappe.db.get_value(
         "CAW Job Card",
         job_card,
-        ["quotation_amount", "payment_mode", "payment_amount"],
+        ["quotation_amount", "payment_mode", "payment_amount", "customer_name"],
         as_dict=True,
     )
     quotation_amount = flt(job_card_doc.quotation_amount)
@@ -5920,6 +6297,10 @@ def get_job_card_statement_balance(job_card):
         "quotation_amount": _round_job_card_amount(quotation_amount),
         "paid": _round_job_card_amount(paid),
         "payment_status": _job_card_payment_status(quotation_amount, paid),
+        # The job card's own customer_name — for a Cash Customer job card this is the actual
+        # walk-in's name (captured at Job Card creation), not the shared "Cash Customer"
+        # placeholder every such job card's `customer` link points to.
+        "customer_name": job_card_doc.customer_name,
     }
 
 
@@ -5993,17 +6374,147 @@ def get_customer_outstanding(customer):
 
 
 @frappe.whitelist()
-def get_customer_outstanding_job_cards(customer):
-    """Return each non-cancelled job card that still has an outstanding balance for the
-    customer, together with its balance. Used to auto-populate the allocations table in
-    the Create Payment modal without manual row entry."""
+@frappe.validate_and_sanitize_search_inputs
+def search_customer_job_cards(doctype, txt, searchfield, start, page_len, filters):
+    """Job Card search for the Create Payment / Create Refund dialog's allocation rows —
+    matches on the job card's own name *or* its customer_name, so multiple Cash Customer walk-
+    ins sharing the one "Cash Customer" record can be told apart and searched by their real
+    name (e.g. "JohnPaul"), not just by job card number."""
+    filters = frappe.parse_json(filters) if isinstance(filters, str) else (filters or {})
+    customer = filters.get("customer")
+    customer_name = filters.get("customer_name")
+    status = filters.get("status")
+
+    conditions = []
+    params = {
+        "start": frappe.utils.cint(start or 0),
+        "page_len": max(frappe.utils.cint(page_len or 20), 1),
+    }
+    if customer:
+        conditions.append("customer = %(customer)s")
+        params["customer"] = customer
+    # Narrowed to one walk-in: every cash job card shares the same customer link, so without
+    # this the list would span every walk-in that customer record covers.
+    if customer_name:
+        conditions.append("customer_name = %(customer_name)s")
+        params["customer_name"] = customer_name
+    if isinstance(status, (list, tuple)) and len(status) == 2 and status[0] == "!=":
+        conditions.append("status != %(exclude_status)s")
+        params["exclude_status"] = status[1]
+    txt = (txt or "").strip()
+    if txt:
+        conditions.append("(name LIKE %(txt)s OR customer_name LIKE %(txt)s)")
+        params["txt"] = f"%{txt}%"
+
+    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    return frappe.db.sql(f"""
+        SELECT name, customer_name
+        FROM `tabCAW Job Card`
+        {where_clause}
+        ORDER BY customer_name ASC, name ASC
+        LIMIT %(page_len)s OFFSET %(start)s
+    """, params)
+
+
+@frappe.whitelist()
+def get_customer_walkin_names(customer, txt=None):
+    """Distinct walk-in names recorded against this customer's quotations, each with the
+    phone number(s) seen against that name.
+
+    Only the shared Cash Customer record ever has these — every cash sale bills to it, and the
+    individual walk-in's name is kept per-quotation as custom_customer_name. An ordinary
+    invoice customer returns nothing, which is what tells the Create Payment dialog whether to
+    offer its Walk-in field at all.
+
+    Returns one row per *name* ({"name", "phone"}), because the name is what every downstream
+    lookup filters by (custom_customer_name) — the phone is identification for staff, not a
+    key. Two different people sharing a name therefore come back as one row carrying both
+    numbers, which is exactly the ambiguity the dialog needs to show rather than hide."""
     if not customer:
         return []
 
+    conditions = ["party_name = %(customer)s", "IFNULL(TRIM(custom_customer_name), '') != ''"]
+    params = {"customer": customer}
+    txt = (txt or "").strip()
+    if txt:
+        # Staff who remember the number rather than the spelling can search by it too.
+        conditions.append("(custom_customer_name LIKE %(txt)s OR custom_customer_phone LIKE %(txt)s)")
+        params["txt"] = f"%{txt}%"
+
+    rows = frappe.db.sql(f"""
+        SELECT
+            custom_customer_name AS name,
+            GROUP_CONCAT(DISTINCT NULLIF(TRIM(custom_customer_phone), '')
+                ORDER BY custom_customer_phone SEPARATOR ', ') AS phone
+        FROM `tabQuotation`
+        WHERE {' AND '.join(conditions)}
+        GROUP BY custom_customer_name
+        ORDER BY custom_customer_name ASC
+        LIMIT 50
+    """, params, as_dict=True)
+
+    return [{"name": row.name, "phone": row.phone or ""} for row in rows]
+
+
+@frappe.whitelist()
+@frappe.validate_and_sanitize_search_inputs
+def search_customer_quotations(doctype, txt, searchfield, start, page_len, filters):
+    """Quotation search for the Create Payment / Create Refund dialog's own Quotation field —
+    matches on the quotation's own name *or* custom_customer_name, so a Cash Customer walk-in
+    who only has a Quotation so far (no Job Card yet — e.g. taking a deposit before committing
+    to one) can still be found and tagged by their real name, the same way
+    search_customer_job_cards does for job cards once one exists."""
+    filters = frappe.parse_json(filters) if isinstance(filters, str) else (filters or {})
+    customer = filters.get("customer")
+    customer_name = filters.get("customer_name")
+
+    conditions = ["docstatus = 1"]
+    params = {
+        "start": frappe.utils.cint(start or 0),
+        "page_len": max(frappe.utils.cint(page_len or 20), 1),
+    }
+    if customer:
+        conditions.append("party_name = %(customer)s")
+        params["customer"] = customer
+    # Narrowed to one walk-in: every cash quotation shares the same party_name, so without
+    # this the list would span every walk-in that customer record covers.
+    if customer_name:
+        conditions.append("custom_customer_name = %(customer_name)s")
+        params["customer_name"] = customer_name
+    txt = (txt or "").strip()
+    if txt:
+        conditions.append("(name LIKE %(txt)s OR custom_customer_name LIKE %(txt)s)")
+        params["txt"] = f"%{txt}%"
+
+    return frappe.db.sql(f"""
+        SELECT name, IFNULL(custom_customer_name, '')
+        FROM `tabQuotation`
+        WHERE {' AND '.join(conditions)}
+        ORDER BY modified DESC
+        LIMIT %(page_len)s OFFSET %(start)s
+    """, params)
+
+
+@frappe.whitelist()
+def get_customer_outstanding_job_cards(customer, customer_name=None):
+    """Return each non-cancelled job card that still has an outstanding balance for the
+    customer, together with its balance. Used to auto-populate the allocations table in
+    the Create Payment modal without manual row entry.
+
+    customer_name narrows that to a single walk-in: every cash sale links to the one shared
+    Cash Customer record, so without it the modal would offer one walk-in's job cards while
+    staff believe they picked another."""
+    if not customer:
+        return []
+
+    job_card_filters = {"customer": customer, "status": ["!=", "Cancelled"]}
+    if customer_name:
+        job_card_filters["customer_name"] = customer_name
+
     job_cards = frappe.get_all(
         "CAW Job Card",
-        filters={"customer": customer, "status": ["!=", "Cancelled"]},
-        fields=["name", "payment_mode", "quotation_amount", "payment_amount"],
+        filters=job_card_filters,
+        fields=["name", "payment_mode", "quotation_amount", "payment_amount", "customer_name"],
         order_by="creation asc",
     )
 
@@ -6040,6 +6551,9 @@ def get_customer_outstanding_job_cards(customer):
                 "quotation_amount": _round_job_card_amount(jc.quotation_amount),
                 "paid": _round_job_card_amount(paid),
                 "payment_status": _job_card_payment_status(jc.quotation_amount, paid),
+                # For a Cash Customer job card this is the actual walk-in's name, not the
+                # shared "Cash Customer" placeholder every such job card's `customer` points to.
+                "customer_name": jc.customer_name,
             })
 
     return result
@@ -6081,13 +6595,64 @@ def get_customer_payments(customer):
 @frappe.whitelist()
 @frappe.validate_and_sanitize_search_inputs
 def get_customer_names(doctype, txt, searchfield, start, page_len, filters):
-    return frappe.db.sql("""
+    """Unrestricted Customer search for the Create Payment / Create Refund dialog — every
+    Customer type (Cash and Invoice alike) is eligible, unlike search_builder_customers which
+    filters by billing type for the Job Card creation flow. Cash Customer — the single shared
+    walk-in record every cash sale posts against — is pinned first so it stays visible instead
+    of being buried behind however many Invoice customers alphabetically precede it.
+
+    A walk-in has no Customer record of their own (every cash sale is billed to the one shared
+    Cash Customer), so their real name lives only on their Quotation as custom_customer_name.
+    Searching those names here too is what lets staff type "JohnPaul" and actually land on a
+    row — the returned value is still the shared Cash Customer, with the matched walk-in names
+    as its description, which is also what Frappe's link widget matches typed text against.
+    The phone number (custom_customer_phone) is searched and shown alongside each name, since
+    names repeat among walk-ins and the number is what actually tells two of them apart."""
+    like = f"%{txt}%"
+    rows = list(frappe.db.sql("""
         SELECT name, customer_name
         FROM `tabCustomer`
         WHERE (customer_name LIKE %(txt)s OR name LIKE %(txt)s)
-        ORDER BY customer_name ASC
+        ORDER BY (name = %(cash_customer)s) DESC, customer_name ASC
         LIMIT %(page_len)s OFFSET %(start)s
-    """, {"txt": f"%{txt}%", "start": start, "page_len": page_len})
+    """, {
+        "txt": like,
+        "start": start,
+        "page_len": page_len,
+        "cash_customer": SHARED_CASH_CUSTOMER_NAME,
+    }))
+
+    if not (txt or "").strip():
+        return rows
+
+    walkin_rows = frappe.db.sql("""
+        SELECT
+            custom_customer_name AS name,
+            GROUP_CONCAT(DISTINCT NULLIF(TRIM(custom_customer_phone), '')
+                ORDER BY custom_customer_phone SEPARATOR '/') AS phone
+        FROM `tabQuotation`
+        WHERE party_name = %(cash_customer)s
+            AND IFNULL(TRIM(custom_customer_name), '') != ''
+            AND (custom_customer_name LIKE %(txt)s OR custom_customer_phone LIKE %(txt)s)
+        GROUP BY custom_customer_name
+        ORDER BY custom_customer_name ASC
+        LIMIT 5
+    """, {"cash_customer": SHARED_CASH_CUSTOMER_NAME, "txt": like}, as_dict=True)
+    if not walkin_rows:
+        return rows
+
+    walkin_names = [
+        f"{row.name} ({row.phone})" if row.phone else row.name
+        for row in walkin_rows
+    ]
+
+    # One row per Customer record, always — the shared Cash Customer row just carries the
+    # matched walk-in names as its description. Duplicating it per walk-in would break
+    # Frappe's link widget, which keys its suggestions by value. caw_payment_dialog.js reads
+    # this prefix back to relabel the row with the names alone (WALKIN_DESCRIPTION_PREFIX).
+    description = f"{WALKIN_DESCRIPTION_PREFIX}{', '.join(walkin_names)}"
+    rows = [row for row in rows if row[0] != SHARED_CASH_CUSTOMER_NAME]
+    return [(SHARED_CASH_CUSTOMER_NAME, description)] + rows
 
 
 # ---------------------------------------------------------------------------
