@@ -4,7 +4,7 @@
  "docstatus": 0,
  "doctype": "Page",
  "idx": 0,
- "modified": "2026-04-27 12:16:21.092586",
+ "modified": "2026-09-15 14:39:39.426410",
  "modified_by": "Administrator",
  "module": "Crystal Alluminium Works",
  "name": "quotation-manager",
@@ -13,6 +13,9 @@
  "roles": [
   {
    "role": "System Manager"
+  },
+  {
+   "role": "Sales User"
   }
  ],
  "script": null,

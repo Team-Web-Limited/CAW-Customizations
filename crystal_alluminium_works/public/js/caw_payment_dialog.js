@@ -233,7 +233,7 @@
 		// that a "no payment history" job card is actually already funded. Save Payment then
 		// draws on this automatically for whatever's in the allocations table (see api.py
 		// get_customer_unallocated_credit / _apply_customer_advance).
-		function refresh_customer_credit_note(customer) {
+		function refresh_customer_credit_note(customer, customer_phone) {
 			d._customer_advance = 0;
 			if (!customer) {
 				update_allocation_balance();
@@ -241,7 +241,10 @@
 			}
 			frappe.call({
 				method: 'crystal_alluminium_works.api.get_customer_unallocated_credit',
-				args: { customer: customer },
+				// customer_phone narrows this to the walk-in in scope — every Cash Customer
+				// walk-in shares the one Customer record, so without it this would pool in
+				// whatever unrelated walk-in's deposit happens to sit oldest on that record.
+				args: { customer: customer, customer_phone: customer_phone || undefined },
 				callback: function(r) {
 					d._customer_advance = flt((r.message || {}).credit || 0);
 					// The advance now on hand may change what Amount and the balance indicator
@@ -401,7 +404,7 @@
 		// genuine customer switch via the field's own onchange always resets it, since a
 		// previously-entered amount is unlikely to still be right for a different customer.
 		function load_customer_allocations(customer, skip_autofill, preserve_amount) {
-			refresh_customer_credit_note(customer);
+			refresh_customer_credit_note(customer, get_walkin_phone(get_walkin_name()));
 			let grid = d.fields_dict.allocations && d.fields_dict.allocations.grid;
 			if (grid) {
 				grid.df.data = [];
@@ -786,7 +789,8 @@
 							reference: values.reference,
 							deposit_to: values.deposit_to,
 							allocations: JSON.stringify(allocations),
-							quotation: values.quotation || null
+							quotation: values.quotation || null,
+							customer_phone: get_walkin_phone(current_walkin) || undefined
 						},
 						freeze: true,
 						freeze_message: 'Recording Payment...',

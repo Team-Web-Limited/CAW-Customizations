@@ -4,7 +4,7 @@
  "docstatus": 0,
  "doctype": "Page",
  "idx": 0,
- "modified": "2026-04-26 15:47:50.115085",
+ "modified": "2026-09-15 14:56:39.904408",
  "modified_by": "Administrator",
  "module": "Crystal Alluminium Works",
  "name": "crystal-aluminium-wo",
@@ -13,6 +13,9 @@
  "roles": [
   {
    "role": "System Manager"
+  },
+  {
+   "role": "Sales User"
   }
  ],
  "script": null,

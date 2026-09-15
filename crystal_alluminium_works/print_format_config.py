@@ -209,7 +209,11 @@ def build_terms_html(print_format, values=None):
         terms = []
 
     terms = [term for term in terms if term]
-    return "<ol style=\"padding-left: 16px; margin: 0;\">" + "".join(f"<li>{term}</li>" for term in terms) + "</ol>"
+    return (
+        "<ol style=\"padding-left: 16px; margin: 0; word-wrap: break-word; overflow-wrap: break-word;\">"
+        + "".join(f"<li>{term}</li>" for term in terms)
+        + "</ol>"
+    )
 
 
 #: Values for "paybill_account_no" that mean "put the document's own reference
@@ -258,7 +262,7 @@ def build_payment_details_html(print_format, values=None):
     )
     return f"""
         <div style="font-size: 13px; color: #6c757d; margin: 12px 0 5px 0;">PAYMENT DETAILS</div>
-        <div style="font-size: 12.5px; color: #495057; line-height: 1.5;">{row_html}</div>
+        <div style="font-size: 14px; color: #495057; line-height: 1.5;">{row_html}</div>
     """
 
 

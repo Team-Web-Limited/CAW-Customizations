@@ -371,14 +371,22 @@ frappe.pages['quotation-manager'].on_page_show = function(wrapper) {
 	}
 
 	let route = frappe.get_route();
-	let quotation_name = route[1] || (frappe.get_route_options() ? frappe.get_route_options().quotation : null);
+	let route_options = (typeof frappe.get_route_options === 'function'
+		? frappe.get_route_options()
+		: frappe.route_options) || {};
+	let quotation_name = route[1] || route_options.quotation;
+	// A Job Card cancelled without a refund routes here asking to be reopened for editing —
+	// see confirm_and_cancel_job_card in job_card_detail.js. Consumed once so a plain revisit
+	// of this same route later doesn't re-trigger the amendment.
+	let auto_amend = !!route_options.auto_amend;
+	frappe.route_options = null;
 
 	if (!quotation_name) {
 		render_quotation_manager_empty_state(page, wrapper);
 		return;
 	}
 
-	render_quotation_dashboard(page, quotation_name, wrapper);
+	render_quotation_dashboard(page, quotation_name, wrapper, auto_amend);
 };
 
 function render_quotation_manager_empty_state(page, wrapper) {
@@ -396,7 +404,7 @@ function render_quotation_manager_empty_state(page, wrapper) {
 	`);
 }
 
-function render_quotation_dashboard(page, quotation_name, wrapper) {
+function render_quotation_dashboard(page, quotation_name, wrapper, auto_amend) {
 	let $body = page ? $(page.body) : $(wrapper).find('.layout-main-section');
 	$body.html('<div style="padding: 40px; text-align: center;"><span class="spinner"></span> Loading Quotation Details...</div>');
 
@@ -428,8 +436,10 @@ function render_quotation_dashboard(page, quotation_name, wrapper) {
 		let aluminium_items = manual_items.filter(i => i.custom_product_category === 'Aluminium');
 		let fittings_items = manual_items.filter(i => i.custom_product_category === 'Fittings');
 		let ceiling_items = manual_items.filter(i => i.custom_product_category === 'Ceiling');
+		let rubber_items = manual_items.filter(i => i.custom_product_category === 'Rubber');
+		let silicone_items = manual_items.filter(i => i.custom_product_category === 'Silicone');
 		let other_items = manual_items.filter(i =>
-			!['Glass', 'Aluminium', 'Fittings', 'Ceiling'].includes(i.custom_product_category)
+			!['Glass', 'Aluminium', 'Fittings', 'Ceiling', 'Rubber', 'Silicone'].includes(i.custom_product_category)
 		);
 
 		let service_rows_by_parent = {};
@@ -451,6 +461,8 @@ function render_quotation_dashboard(page, quotation_name, wrapper) {
 		let aluminium_total = aluminium_items.reduce((s, i) => s + get_item_total(i), 0);
 		let fittings_total = fittings_items.reduce((s, i) => s + get_item_total(i), 0);
 		let ceiling_total = ceiling_items.reduce((s, i) => s + get_item_total(i), 0);
+		let rubber_total = rubber_items.reduce((s, i) => s + get_item_total(i), 0);
+		let silicone_total = silicone_items.reduce((s, i) => s + get_item_total(i), 0);
 		let other_total = other_items.reduce((s, i) => s + get_item_total(i), 0);
 
 		let glass_html = '';
@@ -545,6 +557,66 @@ function render_quotation_dashboard(page, quotation_name, wrapper) {
 							</thead>
 							<tbody>
 								${fittings_items.map((i, index) => render_manager_review_fittings_row(i, index, doc)).join('')}
+							</tbody>
+						</table>
+					</div>
+				</div>
+			`;
+		}
+
+		let rubber_html = '';
+		if (rubber_items.length) {
+			rubber_html = `
+				<div style="margin-bottom:24px;">
+					<h5 style="margin:0 0 10px 0;font-size:15px;font-weight:600;color:#8e44ad;display:flex;align-items:center;gap:8px;">
+						<span style="background:#8e44ad20;padding:3px 10px;border-radius:10px;font-size:12px;">🟪</span> Rubber Items
+						<span style="margin-left:auto;font-size:13px;color:var(--text-muted);font-weight:500;">Subtotal: ${format_currency(rubber_total, doc.currency)}</span>
+					</h5>
+					<div class="qm-table-wrap">
+						<table class="qm-table qm-review-table" style="background:var(--card-bg); margin-bottom:0; min-width:800px;">
+							<thead>
+								<tr>
+									<th style="text-align:center;white-space:nowrap;">No</th>
+									<th style="white-space:nowrap;">Item</th>
+									<th style="white-space:nowrap;">Description</th>
+									<th style="text-align:center;white-space:nowrap;">Qty</th>
+									<th style="text-align:center;white-space:nowrap;">Price List</th>
+									<th style="text-align:right;white-space:nowrap;">Rate</th>
+									<th style="text-align:right;white-space:nowrap;">Amount</th>
+								</tr>
+							</thead>
+							<tbody>
+								${rubber_items.map((i, index) => render_manager_review_fittings_row(i, index, doc)).join('')}
+							</tbody>
+						</table>
+					</div>
+				</div>
+			`;
+		}
+
+		let silicone_html = '';
+		if (silicone_items.length) {
+			silicone_html = `
+				<div style="margin-bottom:24px;">
+					<h5 style="margin:0 0 10px 0;font-size:15px;font-weight:600;color:#16a085;display:flex;align-items:center;gap:8px;">
+						<span style="background:#16a08520;padding:3px 10px;border-radius:10px;font-size:12px;">🟢</span> Silicone Items
+						<span style="margin-left:auto;font-size:13px;color:var(--text-muted);font-weight:500;">Subtotal: ${format_currency(silicone_total, doc.currency)}</span>
+					</h5>
+					<div class="qm-table-wrap">
+						<table class="qm-table qm-review-table" style="background:var(--card-bg); margin-bottom:0; min-width:800px;">
+							<thead>
+								<tr>
+									<th style="text-align:center;white-space:nowrap;">No</th>
+									<th style="white-space:nowrap;">Item</th>
+									<th style="white-space:nowrap;">Description</th>
+									<th style="text-align:center;white-space:nowrap;">Qty</th>
+									<th style="text-align:center;white-space:nowrap;">Price List</th>
+									<th style="text-align:right;white-space:nowrap;">Rate</th>
+									<th style="text-align:right;white-space:nowrap;">Amount</th>
+								</tr>
+							</thead>
+							<tbody>
+								${silicone_items.map((i, index) => render_manager_review_fittings_row(i, index, doc)).join('')}
 							</tbody>
 						</table>
 					</div>
@@ -703,8 +775,10 @@ function render_quotation_dashboard(page, quotation_name, wrapper) {
 					${aluminium_html}
 					${fittings_html}
 					${ceiling_html}
+					${rubber_html}
+					${silicone_html}
 					${other_html}
-					${(!glass_html && !aluminium_html && !fittings_html && !ceiling_html && !other_html) ? '<p style="text-align:center;color:var(--text-muted);padding:20px;">No items in this quotation.</p>' : ''}
+					${(!glass_html && !aluminium_html && !fittings_html && !ceiling_html && !rubber_html && !silicone_html && !other_html) ? '<p style="text-align:center;color:var(--text-muted);padding:20px;">No items in this quotation.</p>' : ''}
 				</div>
 				<div class="qm-total-row" style="display:block;">
 					<div style="display:flex; justify-content:space-between; align-items:center; font-size:13px; color:var(--text-muted); text-transform:uppercase; margin-bottom:8px;">
@@ -733,6 +807,11 @@ function render_quotation_dashboard(page, quotation_name, wrapper) {
 
 		$(page.body).html(html);
 		bind_action_events(page, doc, sales_invoices, existing_job_card);
+
+		if (auto_amend) {
+			frappe.show_alert({ message: 'Job Card cancelled — reopening this Quotation for editing...', indicator: 'blue' });
+			run_amend_quotation_flow(doc, { skip_confirm: true });
+		}
 	}).catch(err => {
 		$(page.body).html(`
 			<div class="msg-box" style="padding: 40px; text-align: center; color: var(--text-muted);">
@@ -940,9 +1019,13 @@ function refresh_job_card_payment_options(dialog) {
 
 	let is_invoice = normalize_job_card_payment_mode(payment_mode) === 'invoice';
 	dialog.set_df_property('payment_amount', 'hidden', is_invoice ? 1 : 0);
-	dialog.set_df_property('balance_amount', 'hidden', is_invoice ? 1 : 0);
 	dialog.set_df_property('payment_amount', 'reqd', is_invoice ? 0 : 1);
 	dialog.set_df_property('record_payment_section', 'hidden', is_invoice ? 1 : 0);
+	// Balance stays visible for Invoice Customers too — it's what's actually left to invoice
+	// once their existing advance is applied (see refresh_job_card_customer_advance), which is
+	// exactly what staff need to know here even though they don't collect cash through this
+	// modal for an Invoice Customer.
+	dialog.set_df_property('balance_amount', 'label', is_invoice ? 'Amount to Invoice' : 'Balance');
 
 	// The chosen payment_option is the Mode of Payment, so derive its deposit account.
 	refresh_job_card_deposit_to_options(dialog);
@@ -974,7 +1057,7 @@ function refresh_job_card_payment_capture_fields(dialog) {
 	let reference_visible = is_cash && (mop_is_bank_type || mop_is_phone_type);
 	dialog.set_df_property('reference', 'label', mop_is_phone_type ? 'M-Pesa Code' : 'Reference');
 	dialog.set_df_property('reference', 'hidden', reference_visible ? 0 : 1);
-	dialog.set_df_property('reference', 'reqd', reference_visible ? 1 : 0);
+	dialog.set_df_property('reference', 'reqd', (reference_visible && mop_is_bank_type) ? 1 : 0);
 	update_job_card_save_button_visibility(dialog);
 }
 
@@ -1117,10 +1200,8 @@ function validate_job_card_payment_capture(dialog) {
 	}
 
 	let mop_type = (dialog._mode_of_payment_type || '').toLowerCase();
-	if ((mop_type === 'bank' || mop_type === 'phone') && !(dialog.get_value('reference') || '').trim()) {
-		frappe.msgprint(mop_type === 'phone'
-			? __('Please enter the M-Pesa Code to record this payment.')
-			: __('Please enter a Reference to record this payment.'));
+	if (mop_type === 'bank' && !(dialog.get_value('reference') || '').trim()) {
+		frappe.msgprint(__('Please enter a Reference to record this payment.'));
 		return false;
 	}
 
@@ -1153,16 +1234,19 @@ async function get_quotation_deposit_credit(quotation) {
 	return r.message || { credit: 0, payments: [], is_latest_revision: false };
 }
 
-async function get_customer_unallocated_credit(customer) {
+async function get_customer_unallocated_credit(customer, customer_phone) {
 	// Every General Payment on this customer that isn't pinned to a job card yet, net of
 	// refunds — see api.py get_customer_unallocated_credit. Same figure the Create Payment
 	// dialog shows as "Customer advance", and the pot create_job_card_from_quotation spends.
+	// customer_phone narrows this to one Cash Customer walk-in — every walk-in shares the one
+	// Customer record, so without it this pools in whatever unrelated walk-in's deposit is
+	// oldest on that record.
 	if (!customer) {
 		return 0;
 	}
 	let r = await frappe.call({
 		method: 'crystal_alluminium_works.api.get_customer_unallocated_credit',
-		args: { customer: customer }
+		args: { customer: customer, customer_phone: customer_phone || undefined }
 	});
 	return flt((r.message || {}).credit || 0);
 }
@@ -1199,10 +1283,16 @@ async function get_existing_job_card_for_quotation(quotation) {
 // same pot create_job_card_from_quotation now spends: it draws this quotation's own deposit
 // first, then any other credit, up to what this Job Card can absorb.
 //
-// So this both reports the advance and drives the form: Payment Amount defaults to what's
-// genuinely left to collect after the credit lands, and Save is enabled for a quotation the
-// credit already covers in full. Re-run whenever the customer (or payment mode) changes,
-// since that changes whose credit — if any — applies.
+// Shown and applied for both Cash and Invoice Customers: an Invoice Customer never pays
+// *through* this modal (their payment_amount/balance are still only ever driven by real
+// Payments-page allocations — _sync_job_card_balance_from_payments), but their existing
+// advance is real money on file either way, and staff need to see upfront what it actually
+// leaves to invoice, same as a cash customer sees what's left to collect.
+//
+// So this both reports the advance and drives the form: Balance/Amount to Invoice shows what's
+// genuinely left after the credit lands, Payment Amount (Cash only) defaults net of it, and
+// Save is enabled for a quotation the credit already covers in full. Re-run whenever the
+// customer (or payment mode) changes, since that changes whose credit — if any — applies.
 async function refresh_job_card_customer_advance(dialog) {
 	let field = dialog.fields_dict.customer_advance_note;
 	if (!field) {
@@ -1212,22 +1302,24 @@ async function refresh_job_card_customer_advance(dialog) {
 		|| (dialog.fields_dict.customer && dialog.fields_dict.customer.$input
 			? dialog.fields_dict.customer.$input.val()
 			: '');
-	// Invoice customers' money never moves through this endpoint (it's recorded on the
-	// Payments page), and the server applies no credit for them — so neither does this.
 	let is_invoice = normalize_job_card_payment_mode(dialog.get_value('payment_mode')) === 'invoice';
 	// Guards against a slow lookup for a customer the user has since switched away from
 	// landing on top of a newer one's figure.
 	let request_id = (dialog._advance_request_id || 0) + 1;
 	dialog._advance_request_id = request_id;
-	if (!customer || is_invoice) {
+	if (!customer) {
 		field.$wrapper.empty();
 		apply_job_card_customer_advance(dialog, 0);
 		return;
 	}
 
+	// Scoped to this walk-in's own phone_number — every Cash Customer walk-in shares the one
+	// Customer record, so without it this pools in whatever unrelated walk-in's deposit is
+	// oldest on that record.
+	let customer_phone = dialog.get_value('phone_number');
 	let response = await frappe.call({
 		method: 'crystal_alluminium_works.api.get_customer_unallocated_credit',
-		args: { customer: customer }
+		args: { customer: customer, customer_phone: customer_phone || undefined }
 	});
 	if (request_id !== dialog._advance_request_id) {
 		return;
@@ -1242,12 +1334,15 @@ async function refresh_job_card_customer_advance(dialog) {
 
 	let applied = Math.min(total, flt(dialog._gross_payment_limit || 0));
 	let leftover = Math.max(total - applied, 0);
+	let applied_to = is_invoice
+		? __('the Amount to Invoice above is already net of it')
+		: __('Payment Amount below is already net of it');
 	let note;
 	if (leftover > 0.0001) {
-		note = __('{0} will be applied to this Job Card on save — Payment Amount below is already net of it. The remaining {1} stays as the customer\'s credit.',
-			[format_currency(applied, 'KES'), format_currency(leftover, 'KES')]);
+		note = __('{0} will be applied to this Job Card on save — {1}. The remaining {2} stays as the customer\'s credit.',
+			[format_currency(applied, 'KES'), applied_to, format_currency(leftover, 'KES')]);
 	} else {
-		note = __('Applied to this Job Card on save — Payment Amount below is already net of it.');
+		note = __('Applied to this Job Card on save — {0}.', [applied_to]);
 	}
 
 	field.$wrapper.html(`
@@ -1349,7 +1444,7 @@ async function open_job_card_modal(page, doc) {
 	// first), so don't ask staff to collect that portion again here. Seeded for the
 	// quotation's own customer; refresh_job_card_customer_advance re-derives it if the user
 	// picks a different one.
-	let customer_credit = await get_customer_unallocated_credit(defaults.customer || quotation_customer);
+	let customer_credit = await get_customer_unallocated_credit(defaults.customer || quotation_customer, defaults.phone_number);
 	let available_credit = Math.min(customer_credit, payment_limit);
 	let remaining_after_credit = Math.max(payment_limit - available_credit, 0);
 	var d;
@@ -1560,6 +1655,64 @@ async function open_job_card_modal(page, doc) {
 		d._job_card_customer_defaults_timer = setTimeout(function() {
 			apply_job_card_customer_defaults(d);
 		}, 500);
+	});
+}
+
+// Cancel the current revision and open a fresh amendment draft in the Builder — the exact
+// sequence behind the Amend Quotation button. Factored out so job_card_detail.js's
+// "Cancel Job Card without Refund" flow can drive the same sequence automatically
+// (skip_confirm: true) once the Job Card that was blocking it is gone, landing the user
+// straight back in the Builder instead of leaving them to find and click Amend themselves.
+function run_amend_quotation_flow(doc, options) {
+	options = options || {};
+	frappe.call({
+		method: 'crystal_alluminium_works.api.get_quotation_amendment_eligibility',
+		args: { quotation: doc.name },
+		freeze: true,
+		callback: function(r) {
+			if (r.exc) return;
+			let eligibility = r.message || {};
+			if (!eligibility.can_amend) {
+				frappe.msgprint({
+					title: 'Cannot Amend Quotation',
+					indicator: 'red',
+					message: '<ul><li>' + (eligibility.reasons || ['Not eligible.']).join('</li><li>') + '</li></ul>'
+				});
+				return;
+			}
+
+			let proceed = () => {
+				frappe.call({
+					method: 'crystal_alluminium_works.api.cancel_quotation',
+					args: { quotation: doc.name },
+					freeze: true,
+					freeze_message: 'Cancelling current revision...',
+					callback: function(c) {
+						if (c.exc) return;
+						frappe.call({
+							method: 'crystal_alluminium_works.api.amend_quotation',
+							args: { quotation: doc.name },
+							freeze: true,
+							freeze_message: 'Creating amendment...',
+							callback: async function(a) {
+								if (a.exc || !a.message) return;
+								let amended = await frappe.db.get_doc('Quotation', a.message);
+								open_quotation_in_builder(amended);
+							}
+						});
+					}
+				});
+			};
+
+			if (options.skip_confirm) {
+				proceed();
+			} else {
+				frappe.confirm(
+					'<b>Amend this quotation?</b><br><br>The current revision is cancelled and a new editable revision opens in the Builder. The Job Card number stays the same.',
+					proceed
+				);
+			}
+		}
 	});
 }
 
@@ -1782,48 +1935,7 @@ function bind_action_events(page, doc, sales_invoices, existing_job_card) {
 
 	// ── Amend Quotation (Submitted/Cancelled → cancel + new amendment draft in Builder) ──
 	$('#btn-amend-quo').on('click', () => {
-		frappe.call({
-			method: 'crystal_alluminium_works.api.get_quotation_amendment_eligibility',
-			args: { quotation: doc.name },
-			freeze: true,
-			callback: function(r) {
-				if (r.exc) return;
-				let eligibility = r.message || {};
-				if (!eligibility.can_amend) {
-					frappe.msgprint({
-						title: 'Cannot Amend Quotation',
-						indicator: 'red',
-						message: '<ul><li>' + (eligibility.reasons || ['Not eligible.']).join('</li><li>') + '</li></ul>'
-					});
-					return;
-				}
-				frappe.confirm(
-					'<b>Amend this quotation?</b><br><br>The current revision is cancelled and a new editable revision opens in the Builder. The Job Card number stays the same.',
-					() => {
-						frappe.call({
-							method: 'crystal_alluminium_works.api.cancel_quotation',
-							args: { quotation: doc.name },
-							freeze: true,
-							freeze_message: 'Cancelling current revision...',
-							callback: function(c) {
-								if (c.exc) return;
-								frappe.call({
-									method: 'crystal_alluminium_works.api.amend_quotation',
-									args: { quotation: doc.name },
-									freeze: true,
-									freeze_message: 'Creating amendment...',
-									callback: async function(a) {
-										if (a.exc || !a.message) return;
-										let amended = await frappe.db.get_doc('Quotation', a.message);
-										open_quotation_in_builder(amended);
-									}
-								});
-							}
-						});
-					}
-				);
-			}
-		});
+		run_amend_quotation_flow(doc);
 	});
 
 	// ── Submit Quotation (Draft → Open) ──

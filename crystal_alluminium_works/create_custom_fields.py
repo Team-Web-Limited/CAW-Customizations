@@ -739,6 +739,23 @@ def add_custom_fields():
                 "no_copy": 1,
                 "module": "Crystal Alluminium Works",
             },
+            {
+                # A registered customer's PIN lives on the Customer record. Sales Order and
+                # Sales Invoice both already mirror it onto themselves as `tax_id`
+                # (fetch_from customer.tax_id); Quotation has no such field, so the print
+                # format had no doc-level PIN to read for non-walk-in customers. Mirrored
+                # here rather than looked up in Jinja: frappe.db.get_value is only callable
+                # from a print template while an HTTP request is in scope, so it breaks
+                # background/server-side PDF rendering.
+                "fieldname": "custom_customer_tax_id",
+                "label": "Customer KRA PIN (Registered)",
+                "fieldtype": "Data",
+                "fetch_from": "party_name.tax_id",
+                "insert_after": "custom_customer_pin",
+                "read_only": 1,
+                "no_copy": 1,
+                "module": "Crystal Alluminium Works",
+            },
         ],
         # Read-only view of what this entry did to the foreign-currency lot
         # ledger. Nothing is stored on the document — the panel calls

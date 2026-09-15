@@ -212,17 +212,23 @@ def _job_card_predates_quotation(job_card_name, quotation_name):
 
 
 def _resolve_job_card_for_quotation(quotation_name):
-    """Find the single owning Job Card across a quotation's amendment chain.
+    """Find the single owning, still-live Job Card across a quotation's amendment chain.
 
     Job Cards are named after their Quotation (see _get_job_card_name_for_quotation) and keep
     that link, so a quotation number reissued after the original was deleted would otherwise
     inherit the deleted quotation's Job Card — along with its amounts and payment history. A
     Job Card created before the quotation cannot document it, so it is ignored here rather
-    than silently adopted."""
+    than silently adopted.
+
+    A Cancelled Job Card is excluded too: cancelling it without a refund (see cancel_job_card)
+    is meant to undo the whole commitment, cancelling the Quotation back to an editable Draft
+    right along with it (see confirm_and_cancel_job_card on the client) — so the next Job Card
+    created against that Quotation's next submission must be a fresh one, not a resurrection of
+    the dead one under the same number."""
     chain = _resolve_quotation_chain(quotation_name) or ([quotation_name] if quotation_name else [])
     if not chain:
         return None
-    filters = {"quotation": ["in", chain]}
+    filters = {"quotation": ["in", chain], "status": ["!=", "Cancelled"]}
     earliest_created = _earliest_quotation_creation(chain)
     if earliest_created:
         filters["creation"] = [">=", earliest_created]
@@ -265,7 +271,10 @@ def _job_card_invoice_amendment_pending(job_card):
 
 
 def _assert_job_card_not_frozen(job_card):
-    """Block money/release/edit actions while a quotation or invoice amendment is pending."""
+    """Block money/release/edit actions while a quotation or invoice amendment is pending,
+    or once the Job Card itself has been cancelled."""
+    if job_card.status == "Cancelled":
+        frappe.throw("This Job Card is cancelled. No further payments, invoices or releases can be recorded against it.")
     if _job_card_quotation_amendment_pending(job_card):
         frappe.throw(
             "This Job Card has a pending Quotation amendment. Submit or discard the amended "
@@ -1777,16 +1786,23 @@ def create_job_card_from_quotation(quotation, customer, customer_name=None, paym
 
     # Money may already be on file for this customer as unallocated credit — a deposit taken
     # against this quotation before the Job Card existed, or any other General Payment never
-    # pinned to a job card. Apply it here instead of asking staff to collect it twice.
+    # pinned to a job card. Apply it here instead of asking staff to collect it twice — for
+    # both customer types now: an invoice customer never pays *through* this endpoint (their
+    # payment_amount/balance still come only from real Payments-page allocations, kept in sync
+    # by _sync_job_card_balance_from_payments), but their existing advance is real money too and
+    # staff still need to see, upfront, what it actually leaves to invoice — so it gets applied
+    # here exactly like a cash customer's, via the same _draw_advance_pool draw-down below.
     #
     # The pool is customer-wide, the same scope Save Payment draws on (_apply_customer_advance
     # / get_customer_unallocated_credit), so the "Customer advance" figure the Create Job Card
-    # modal shows is the figure that actually gets spent. Only cash customers pay through this
-    # endpoint at all — invoice customers' money is recorded on the Payments page.
-    if payment_mode == "Cash Customer":
-        customer_credit, credit_payments = _get_customer_credit_payments(customer=customer_doc.name)
-    else:
-        customer_credit, credit_payments = 0, []
+    # modal shows is the figure that actually gets spent.
+    #
+    # Scoped to this walk-in's own phone_number when the shared Cash Customer record is in
+    # play (see _get_customer_credit_payments) — otherwise this would spend whichever unrelated
+    # walk-in's deposit happened to be oldest on the shared record's Payments.
+    customer_credit, credit_payments = _get_customer_credit_payments(
+        customer=customer_doc.name, customer_phone=phone_number or None
+    )
     available_credit = _round_job_card_amount(customer_credit)
     credit_to_apply = min(available_credit, max(payment_limit - payment_amount, 0))
 
@@ -1795,8 +1811,7 @@ def create_job_card_from_quotation(quotation, customer, customer_name=None, paym
     # on its Job Card — and it's what the stranded-credit warning below reports on.
     credit_pool = _order_credit_pool_quotation_first(credit_payments, quotation_doc.name)
     quotation_credit = min(
-        _round_job_card_amount((get_quotation_deposit_credit(quotation_doc.name).get("credit") or 0)
-                               if payment_mode == "Cash Customer" else 0),
+        _round_job_card_amount(get_quotation_deposit_credit(quotation_doc.name).get("credit") or 0),
         available_credit,
     )
 
@@ -1908,17 +1923,21 @@ def _order_credit_pool_quotation_first(credit_payments, quotation):
     return pool
 
 
-def _apply_customer_advance(customer, cleaned_allocations):
+def _apply_customer_advance(customer, cleaned_allocations, customer_phone=None):
     """Draw down this customer's existing unallocated advance/credit (oldest Payments first,
     customer-wide — same scope as get_customer_unallocated_credit) against the given job-card
     allocation rows before any new money is collected. The Create Payment dialog's own
     "Customer advance" note shows staff this same figure live, so Save Payment honours it
     instead of quietly asking for money that's already on file.
 
+    `customer_phone` narrows this to one Cash Customer walk-in — see
+    _get_customer_credit_payments — so this can't draw down a different walk-in's deposit just
+    because they share the one Cash Customer record.
+
     Returns (remaining_allocations, advance_applied): remaining_allocations holds only the
     shortfall still needing a fresh Payments/Payment Entry for each row (a row fully covered
     by advance is dropped); advance_applied is how much of the existing credit was used."""
-    credit, advance_payments = _get_customer_credit_payments(customer=customer)
+    credit, advance_payments = _get_customer_credit_payments(customer=customer, customer_phone=customer_phone)
     pool = [dict(row) for row in advance_payments]
     remaining_credit = flt(credit)
     remaining_rows = []
@@ -2304,27 +2323,169 @@ def get_job_card_cancel_eligibility(job_card_name):
     refund_amount = _round_job_card_amount(job_card.payment_amount)
     needs_refund = refund_amount > 0
     return {
-        "can_cancel": not reasons and not needs_refund,
+        # A recorded payment is no longer a hard block — it's surfaced to the caller
+        # (needs_refund/refund_amount) so the UI can offer a choice: cancel and refund it,
+        # or cancel and leave it recorded, the same way amending a Quotation leaves its
+        # deposit sitting rather than forcing a refund up front.
+        "can_cancel": not reasons,
         "reasons": reasons,
         "needs_refund": needs_refund,
         "refund_amount": refund_amount,
     }
 
 
+def _release_job_card_payment_allocations(job_card_name):
+    """Free every real Payments allocation pinned to job_card_name back to the customer's
+    unallocated advance/credit, and return the total released.
+
+    Covers both explicit `Payment Job Card Allocation` rows (an invoice customer's own
+    payment, or a cash customer's deposit drawn from the advance pool via
+    _draw_advance_pool) and legacy single-field Payments (job_card set directly, no
+    allocation rows) — see _get_job_card_allocated_payments for the same two shapes.
+    Reused for cancelling a Job Card without a refund, so that money doesn't get stranded,
+    unusable, against a Job Card that will never be fulfilled — it becomes ordinary
+    unallocated advance/credit instead, visible and spendable on the customer's next
+    quotation/job card exactly like any other deposit (see _get_customer_credit_payments).
+
+    A raw amount typed straight into Create/Edit Job Card by a Cash Customer has no
+    Payments doc behind it at all, so there's nothing here to release for it.
+
+    Refund-type Payments are skipped entirely: a Refund's own allocation row records which
+    job card it paid back, already netted out of the credit pool by
+    _get_customer_credit_payments — unpinning it here would misrepresent already-refunded
+    money as fresh spendable credit."""
+    released_total = 0
+
+    allocation_rows = frappe.get_all(
+        "Payment Job Card Allocation",
+        filters={"job_card": job_card_name, "parenttype": "Payments"},
+        fields=["parent"],
+    )
+    payments_with_allocations = {str(row.parent) for row in allocation_rows}
+    for payment_name in payments_with_allocations:
+        payment_doc = frappe.get_doc("Payments", payment_name)
+        if payment_doc.payment_type == "Refund":
+            continue
+        remaining = []
+        for row in payment_doc.allocations or []:
+            if row.job_card == job_card_name:
+                released_total += flt(row.amount)
+            else:
+                remaining.append({"job_card": row.job_card, "amount": flt(row.amount)})
+        set_payment_allocations(payment_name, json.dumps(remaining))
+
+    # Legacy single-field payments: the whole payment was implicitly "allocated" to the one
+    # job card named directly on it, with no allocation rows at all.
+    legacy_payments = frappe.get_all(
+        "Payments",
+        filters={
+            "job_card": job_card_name,
+            "name": ["not in", list(payments_with_allocations) or [""]],
+            "payment_type": ["!=", "Refund"],
+        },
+        fields=["name", "amount"],
+    )
+    for payment in legacy_payments:
+        released_total += flt(payment.amount)
+        set_payment_allocations(payment.name, "[]")
+
+    return _round_job_card_amount(released_total)
+
+
 @frappe.whitelist()
 def cancel_job_card(job_card_name):
+    """Cancel a Job Card without demanding a refund first. Any money actually collected
+    through the Payments page — an invoice customer's own payment, or a cash customer's
+    deposit drawn from their advance pool — is released back to the customer's unallocated
+    advance/credit rather than left stranded against a dead Job Card; see
+    _release_job_card_payment_allocations. A raw amount typed straight into Create/Edit Job
+    Card by a Cash Customer has no Payments doc behind it, so it simply lapses with the
+    cancellation — the same way Amend Quotation leaves a cancelled Quotation's own numbers
+    behind rather than reversing them.
+
+    A caller wanting the money refunded to the customer instead records a refund first (see
+    open_job_card_refund_modal on the client) and then calls this."""
     eligibility = get_job_card_cancel_eligibility(job_card_name)
     if eligibility["reasons"]:
         frappe.throw("Cannot cancel this Job Card: " + " ".join(eligibility["reasons"]))
-    if eligibility["needs_refund"]:
-        frappe.throw("Refund the recorded payment before cancelling this Job Card.")
 
     job_card = frappe.get_doc("CAW Job Card", job_card_name)
+    refund_amount = eligibility["refund_amount"]
     job_card.status = "Cancelled"
     job_card.flags.ignore_permissions = True
     job_card.save(ignore_permissions=True)
-    _write_job_card_amendment_event(job_card, "Cancelled")
+
+    released = _release_job_card_payment_allocations(job_card.name)
+    lapsed = _round_job_card_amount(refund_amount - released)
+
+    note_parts = []
+    if released > 0.0001:
+        note_parts.append(
+            f"{frappe.utils.fmt_money(released)} released back to "
+            f"{job_card.customer_name or job_card.customer}'s unallocated advance/credit."
+        )
+    if lapsed > 0.0001:
+        note_parts.append(
+            f"{frappe.utils.fmt_money(lapsed)} had no Payments record behind it and lapsed "
+            "with the cancellation."
+        )
+    _write_job_card_amendment_event(job_card, "Cancelled", note=" ".join(note_parts) or None)
+
+    if released > 0.0001:
+        frappe.msgprint(
+            f"{frappe.utils.fmt_money(released)} has been released back to "
+            f"{job_card.customer_name or job_card.customer}'s advance/credit and can be "
+            "applied to another Quotation or Job Card.",
+            title="Payment Released to Advance",
+            indicator="blue",
+        )
     return job_card.name
+
+
+def _assert_cash_customer_phone_identity(phone, name, pin, exclude_quotation=None):
+    """A walk-in's phone number is the identity key for cash-mode quotations —
+    the same number should always resolve back to the same person. This
+    doesn't stop a returning customer from reusing their number (see
+    search_cash_customer_history for the auto-fill flow that's meant to
+    handle that); it only blocks a *different* name/PIN being stamped
+    against a phone number that's already on file for someone else, which
+    would otherwise silently fork one person's history in two.
+    """
+    rows = frappe.db.sql(
+        """
+        SELECT name, custom_customer_name AS customer_name, custom_customer_pin AS customer_pin
+        FROM `tabQuotation`
+        WHERE custom_customer_phone = %(phone)s
+        ORDER BY modified DESC
+        """,
+        {"phone": phone},
+        as_dict=True,
+    )
+
+    submitted_name = (name or "").strip()
+    submitted_pin = (pin or "").strip()
+
+    for row in rows:
+        if exclude_quotation and row.name == exclude_quotation:
+            continue
+        on_file_name = (row.customer_name or "").strip()
+        on_file_pin = (row.customer_pin or "").strip()
+
+        if submitted_name and on_file_name and submitted_name.lower() != on_file_name.lower():
+            frappe.throw(
+                f"Phone Number {phone} is already on file for '{on_file_name}' "
+                f"(from {row.name}). Please use that name, or search customer "
+                f"history to reuse the existing record."
+            )
+        if submitted_pin and on_file_pin and submitted_pin.upper() != on_file_pin.upper():
+            frappe.throw(
+                f"Phone Number {phone} is already on file under KRA PIN '{on_file_pin}' "
+                f"(from {row.name}). Please use that PIN, or search customer "
+                f"history to reuse the existing record."
+            )
+        # One matching prior record is enough to confirm identity — stop here
+        # rather than comparing against every historical row for this phone.
+        break
 
 
 @frappe.whitelist()
@@ -2374,6 +2535,9 @@ def create_quotation_from_builder(
             frappe.throw("Phone Number is required for Cash Customer quotations.")
         if not re.fullmatch(r"\d{10}", customer_phone):
             frappe.throw("Phone Number must be exactly 10 digits.")
+        _assert_cash_customer_phone_identity(
+            customer_phone, customer_name, customer_pin, exclude_quotation=quotation_name
+        )
         # Resolve server-side rather than trusting the client's customer value —
         # every cash quotation belongs to the one shared walk-in Customer record.
         customer = get_or_create_shared_cash_customer().name
@@ -2811,6 +2975,7 @@ def make_sales_invoice_from_job_card(job_card_name):
         frappe.throw("Please select a valid Job Card.")
 
     job_card = frappe.get_doc("CAW Job Card", job_card_name)
+    _assert_job_card_not_frozen(job_card)
     _validate_glass_consumption(job_card)
 
     if not job_card.quotation or not frappe.db.exists("Quotation", job_card.quotation):
@@ -5491,7 +5656,11 @@ def delete_aluminium_items_and_related_docs(item_codes=None):
 
 @frappe.whitelist()
 def get_all_glass_items():
-    items = frappe.get_all("Item", filters={"item_group": "Glass"}, fields=["name", "item_code", "item_name", "stock_uom"])
+    items = frappe.get_all(
+        "Item",
+        filters={"item_group": "Glass", "custom_glass_type": ["!=", "Laminated"]},
+        fields=["name", "item_code", "item_name", "stock_uom"],
+    )
     service_keywords = ["Polishing", "Drilling", "Sandblasting", "Hole", "Notching", "Notch"]
     return [i for i in items if not any(k in (i.item_name or "") for k in service_keywords)]
 
@@ -5900,7 +6069,7 @@ def _normalize_payment_allocations(allocations, customer, payment_amount, availa
     return cleaned
 
 
-def _get_customer_credit_payments(customer=None, quotation=None):
+def _get_customer_credit_payments(customer=None, quotation=None, customer_phone=None):
     """Oldest-first list of unallocated General Payment rows still available as advance/credit
     (Payments filtered by `customer`, `quotation` — its full amendment chain — or both), net of
     unallocated Refunds already drawn against them, drawn oldest-deposit-first so the returned
@@ -5911,13 +6080,21 @@ def _get_customer_credit_payments(customer=None, quotation=None):
 
     Shared by get_quotation_deposit_credit (quotation-scoped), _get_customer_unallocated_credit
     (customer-scoped, optionally +quotation) and _apply_customer_advance (customer-wide) so the
-    same rules apply everywhere this credit is read or spent."""
+    same rules apply everywhere this credit is read or spent.
+
+    `customer_phone`: every Cash Customer walk-in shares the one SHARED_CASH_CUSTOMER_NAME
+    Customer record, so `customer` alone can't tell two unrelated walk-ins apart — without this,
+    one walk-in's leftover deposit reads as "advance" on every other cash sale. Only applied for
+    that shared record; a real (Invoice) Customer is already unique on `customer` alone, so a
+    stray phone value passed for one is ignored rather than narrowing it further."""
     filters = {}
     if customer:
         filters["customer"] = customer
     if quotation:
         quotation_chain = _resolve_quotation_chain(quotation) or [quotation]
         filters["quotation"] = ["in", quotation_chain]
+    if customer_phone and customer == SHARED_CASH_CUSTOMER_NAME:
+        filters["customer_phone"] = customer_phone
     if not filters:
         return 0, []
 
@@ -5968,23 +6145,28 @@ def _get_customer_credit_payments(customer=None, quotation=None):
     return _round_job_card_amount(total_credit), payments
 
 
-def _get_customer_unallocated_credit(customer, quotation=None):
+def _get_customer_unallocated_credit(customer, quotation=None, customer_phone=None):
     """Total unallocated advance/credit currently sitting on this customer's Payments —
     General Payment rows not (yet) pinned to a job card, net of credit already refunded
     directly (a Refund row with no job-card allocation of its own). Optionally scoped to
-    Payments tagged with one Quotation (its full amendment chain included)."""
-    credit, _payments = _get_customer_credit_payments(customer=customer, quotation=quotation)
+    Payments tagged with one Quotation (its full amendment chain included), and — for the
+    shared Cash Customer record only — to one walk-in's own `customer_phone` (see
+    _get_customer_credit_payments)."""
+    credit, _payments = _get_customer_credit_payments(customer=customer, quotation=quotation, customer_phone=customer_phone)
     return credit
 
 
 @frappe.whitelist()
-def get_customer_unallocated_credit(customer, quotation=None):
+def get_customer_unallocated_credit(customer, quotation=None, customer_phone=None):
     """Whitelisted read of _get_customer_unallocated_credit, for the Payments page to show
     available credit before a customer-level (no job card) refund is submitted, and for the
-    Create Payment dialog's live "Customer advance" note / advance-first Save Payment flow."""
+    Create Payment dialog's live "Customer advance" note / advance-first Save Payment flow.
+
+    Pass `customer_phone` whenever the caller knows which Cash Customer walk-in is in scope —
+    without it, every walk-in ever billed to the shared Cash Customer record pools together."""
     if not customer or not frappe.db.exists("Customer", customer):
         return {"credit": 0}
-    return {"credit": _get_customer_unallocated_credit(customer, quotation=quotation)}
+    return {"credit": _get_customer_unallocated_credit(customer, quotation=quotation, customer_phone=customer_phone)}
 
 
 @frappe.whitelist()
@@ -6052,7 +6234,12 @@ def _post_customer_payment_entry(customer, amount, date, payment_method, deposit
 
 
 @frappe.whitelist()
-def record_customer_payment(customer, amount, date, payment_method, deposit_to, reference=None, job_card=None, allocations=None, payment_type="General Payment", quotation=None):
+def record_customer_payment(customer, amount, date, payment_method, deposit_to, reference=None, job_card=None, allocations=None, payment_type="General Payment", quotation=None, customer_phone=None):
+    # Every Cash Customer walk-in shares the one SHARED_CASH_CUSTOMER_NAME Customer record, so
+    # `customer` alone can't tell two unrelated walk-ins apart for advance/credit purposes — see
+    # _get_customer_credit_payments. Callers that know which walk-in is in scope should pass
+    # this; it's a no-op for a real (Invoice) Customer, already unique on `customer`.
+    customer_phone = (customer_phone or "").strip() or None
     if not customer:
         frappe.throw("Customer is required.")
     if flt(amount or 0) < 0:
@@ -6075,7 +6262,7 @@ def record_customer_payment(customer, amount, date, payment_method, deposit_to, 
     # cap check below so the Job Card Allocations table can ask for more than `amount` alone
     # covers, and drawn down first (see _apply_customer_advance) before any of `amount` is
     # actually collected as new money. Refunds never draw on it here — see the Refund branch.
-    available_credit = _get_customer_unallocated_credit(customer) if payment_type != "Refund" else 0
+    available_credit = _get_customer_unallocated_credit(customer, customer_phone=customer_phone) if payment_type != "Refund" else 0
     explicit_allocations = _normalize_payment_allocations(allocations, customer, amount, available_credit=available_credit)
     cleaned_allocations = explicit_allocations
 
@@ -6094,7 +6281,7 @@ def record_customer_payment(customer, amount, date, payment_method, deposit_to, 
     use_advance_first = payment_type != "Refund" and bool(explicit_allocations)
     advance_applied = 0
     if use_advance_first:
-        cleaned_allocations, advance_applied = _apply_customer_advance(customer, explicit_allocations)
+        cleaned_allocations, advance_applied = _apply_customer_advance(customer, explicit_allocations, customer_phone=customer_phone)
         if flt(amount or 0) <= 0.0001 and not cleaned_allocations:
             # Fully covered by advance — the draw-down above already synced every job card
             # touched; there's no new money to post and nothing left to allocate.
@@ -6114,7 +6301,7 @@ def record_customer_payment(customer, amount, date, payment_method, deposit_to, 
             # unallocated advance/credit (e.g. an unconfirmed quotation deposit) — validate
             # it against what's actually sitting as credit, or nothing stops staff from
             # posting an unbacked cash-out Payment Entry here.
-            available_credit = _get_customer_unallocated_credit(customer)
+            available_credit = _get_customer_unallocated_credit(customer, customer_phone=customer_phone)
             if flt(amount) - available_credit > 0.0001:
                 frappe.throw(
                     f"Cannot refund {frappe.utils.fmt_money(amount)} — this customer only has "
@@ -6129,6 +6316,7 @@ def record_customer_payment(customer, amount, date, payment_method, deposit_to, 
     doc = frappe.get_doc({
         "doctype": "Payments",
         "customer": customer,
+        "customer_phone": customer_phone,
         "payment_type": payment_type,
         # Mirror a single allocation into the legacy field so the Payments list view / search
         # still surfaces the job card; splits leave it blank (the allocations table is truth).
@@ -6356,15 +6544,19 @@ def get_customer_outstanding(customer):
         fields=["parent", "job_card", "amount"],
     ) if payment_names else []
 
+    # Payments.autoname is "autoincrement", so frappe.get_all returns Payments.name as an int
+    # while a child table's `parent` column is always a string — normalize both to str before
+    # comparing, or an already-allocated payment silently fails the exclude check below and
+    # gets counted twice (once via its allocation row, once again as "legacy").
     paid_by_job_card = {}
     parents_with_allocations = set()
     for row in allocation_rows:
-        parents_with_allocations.add(row.parent)
+        parents_with_allocations.add(str(row.parent))
         if row.job_card:
             paid_by_job_card[row.job_card] = paid_by_job_card.get(row.job_card, 0) + flt(row.amount)
     # Legacy single-field payments (no allocation rows) count the whole amount on that job card.
     for payment in payments:
-        if payment.name not in parents_with_allocations and payment.job_card:
+        if str(payment.name) not in parents_with_allocations and payment.job_card:
             paid_by_job_card[payment.job_card] = paid_by_job_card.get(payment.job_card, 0) + flt(payment.amount)
 
     accounted_quotations = set()
@@ -6554,14 +6746,18 @@ def get_customer_outstanding_job_cards(customer, customer_name=None):
         fields=["parent", "job_card", "amount"],
     ) if payment_names else []
 
+    # Payments.autoname is "autoincrement", so frappe.get_all returns Payments.name as an int
+    # while a child table's `parent` column is always a string — normalize both to str before
+    # comparing, or an already-allocated payment silently fails the exclude check below and
+    # gets counted twice (once via its allocation row, once again as "legacy").
     paid_by_job_card = {}
     parents_with_allocations = set()
     for row in allocation_rows:
-        parents_with_allocations.add(row.parent)
+        parents_with_allocations.add(str(row.parent))
         if row.job_card:
             paid_by_job_card[row.job_card] = paid_by_job_card.get(row.job_card, 0) + flt(row.amount)
     for payment in payments:
-        if payment.name not in parents_with_allocations and payment.job_card:
+        if str(payment.name) not in parents_with_allocations and payment.job_card:
             paid_by_job_card[payment.job_card] = paid_by_job_card.get(payment.job_card, 0) + flt(payment.amount)
 
     result = []
@@ -7123,9 +7319,12 @@ def save_jc_operations_consumption(job_card_name, consumption_json):
     repacks in the background for any Laminated Glass rows that haven't been repacked yet.
     """
     import json
-    frappe.db.set_value("CAW Job Card", job_card_name, "custom_sheet_consumption_json", consumption_json)
-    
+
     job_card = frappe.get_doc("CAW Job Card", job_card_name)
+    _assert_job_card_not_frozen(job_card)
+
+    frappe.db.set_value("CAW Job Card", job_card_name, "custom_sheet_consumption_json", consumption_json)
+
     if not job_card.quotation:
         return
         

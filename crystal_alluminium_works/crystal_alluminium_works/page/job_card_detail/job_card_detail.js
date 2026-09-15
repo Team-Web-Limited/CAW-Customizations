@@ -421,10 +421,11 @@ function open_jc_operations_modal(page, job_card, quotation) {
 							let rows_html = items.map(item => {
 								let existing_sheets = saved_data[item.name] || [];
 								let show_placeholder = existing_sheets.length === 0;
+								let is_laminated_item = item.custom_glass_type === 'Laminated';
 
 								let sheets_html = existing_sheets.map(sheet => {
 									let is_cutoff = !!sheet.is_cutoff || jc_is_cutoff_item(sheet.item_consumed);
-									let current_item_consumed = is_cutoff ? JC_CUTOFF_ITEM_CONSUMED : (sheet.item_consumed || item.item_code);
+									let current_item_consumed = is_cutoff ? JC_CUTOFF_ITEM_CONSUMED : (sheet.item_consumed || (is_laminated_item ? '' : item.item_code));
 									let size_for_row = is_cutoff ? JC_CUTOFF_SIZE_VALUE : sheet.size;
 									let row_options = jc_sheet_size_options_html(configs, size_for_row);
 
@@ -444,7 +445,7 @@ function open_jc_operations_modal(page, job_card, quotation) {
 								}).join('');
 								
 								return `
-									<tr class="jc-glass-item-row" data-row-name="${jc_escape(item.name)}">
+									<tr class="jc-glass-item-row" data-row-name="${jc_escape(item.name)}" data-glass-type="${jc_escape(item.custom_glass_type || '')}">
 										<td>${jc_escape(item.item_code)}</td>
 										<td>${jc_escape(item.item_name)}</td>
 										<td style="text-align:right;">${jc_number(item.custom_numbering, 0)}</td>
@@ -538,9 +539,12 @@ function open_jc_operations_modal(page, job_card, quotation) {
 								let $list = $cell.find('.sheets-list');
 								let row_options = jc_sheet_size_options_html(configs, '');
 
-								// Find parent row to get default item code
+								// Find parent row to get default item code. Laminated glass is the
+								// end product of this operation, not a raw sheet, so never default
+								// the consumed item to the laminated glass item itself.
 								let $row = $(this).closest('.jc-glass-item-row');
-								let default_item = $row.find('td:first').text().trim();
+								let is_laminated_row = $row.attr('data-glass-type') === 'Laminated';
+								let default_item = is_laminated_row ? '' : $row.find('td:first').text().trim();
 
 								let new_row = `
 									<div class="sheet-entry-row" style="display: flex; gap: 8px; margin-bottom: 6px; align-items: center;">
@@ -818,8 +822,85 @@ async function open_edit_job_card_modal(page, job_card, quotation) {
 	});
 }
 
+// Cancels the Job Card outright, then reverses the same steps Amend Quotation runs forward
+// (cancel_quotation → amend_quotation → open in Builder) so the Quotation itself goes back to
+// an editable Draft and the user lands straight back in the Builder — the whole commitment
+// (Job Card + submitted Quotation) is undone in one flow, not just the Job Card half of it.
+// Any money actually recorded via the Payments page (an invoice customer's own payment, or a
+// cash customer's deposit drawn from their advance pool) is auto-released server-side back to
+// the customer's unallocated advance/credit — see cancel_job_card /
+// _release_job_card_payment_allocations — so it stays real, reusable money instead of getting
+// stranded against a dead Job Card. A raw amount typed straight into Create/Edit Job Card has
+// no Payments record behind it and simply lapses, the same way Amend Quotation leaves a
+// cancelled Quotation's own numbers behind.
+function confirm_and_cancel_job_card(page, job_card) {
+	frappe.confirm(
+		`<b>Cancel Job Card ${frappe.utils.escape_html(job_card.name)}?</b><br><br>The linked Quotation will be reopened as an editable draft in the Builder. This cannot be undone.`,
+		() => {
+			frappe.call({
+				method: 'crystal_alluminium_works.api.cancel_job_card',
+				args: { job_card_name: job_card.name },
+				freeze: true,
+				freeze_message: 'Cancelling Job Card...',
+				callback: function(r) {
+					if (r.exc || !r.message) {
+						return;
+					}
+					frappe.show_alert({ message: 'Job Card Cancelled', indicator: 'green' });
+
+					if (job_card.quotation) {
+						// Quotation Manager's on_page_show reads and consumes this flag to run
+						// the same cancel_quotation → amend_quotation → open_quotation_in_builder
+						// sequence as its own Amend Quotation button (see
+						// run_amend_quotation_flow in quotation_manager.js), just without asking
+						// for a second confirmation.
+						frappe.route_options = { auto_amend: true };
+						frappe.set_route('quotation-manager', job_card.quotation);
+					} else {
+						load_single_job_card_detail(page, job_card.name);
+					}
+				}
+			});
+		}
+	);
+}
+
+// A recorded payment no longer forces a refund before cancelling — offer both paths and let
+// staff decide: release the payment back to the customer's advance/credit for reuse, or
+// refund it to the customer instead.
+function open_job_card_cancel_choice_modal(page, job_card, refund_amount) {
+	let d = new frappe.ui.Dialog({
+		title: 'Cancel Job Card',
+		fields: [
+			{
+				fieldtype: 'HTML',
+				fieldname: 'info',
+				options: `
+					<p>This Job Card has a recorded payment of <b>${format_currency(refund_amount)}</b>.</p>
+					<p><b>Cancel without Refund</b> releases that payment back to the customer's
+					unallocated advance/credit — it stays on file and can be applied to another
+					Quotation or Job Card later. <b>Cancel &amp; Refund</b> instead hands the money
+					back to the customer before cancelling.</p>
+				`
+			}
+		],
+		primary_action_label: 'Cancel without Refund',
+		primary_action: function() {
+			d.hide();
+			confirm_and_cancel_job_card(page, job_card);
+		},
+		secondary_action_label: 'Cancel & Refund',
+		secondary_action: function() {
+			d.hide();
+			open_job_card_refund_modal(page, job_card, refund_amount);
+		}
+	});
+	d.show();
+}
+
 // Refunds the full amount already paid on this Job Card, then immediately completes the
-// cancellation — the only way to cancel a Job Card that has a recorded payment against it.
+// cancellation — offered from open_job_card_cancel_choice_modal as the alternative to
+// releasing the payment back to the customer's advance/credit.
 function open_job_card_refund_modal(page, job_card, refund_amount) {
 	let d = new frappe.ui.Dialog({
 		title: 'Refund & Cancel Job Card',
@@ -1523,27 +1604,11 @@ function bind_single_job_card_detail_events(page, $body, job_card, quotation, hi
 				}
 
 				if (eligibility.needs_refund) {
-					open_job_card_refund_modal(page, job_card, eligibility.refund_amount);
+					open_job_card_cancel_choice_modal(page, job_card, eligibility.refund_amount);
 					return;
 				}
 
-				frappe.confirm(
-					`<b>Cancel Job Card ${frappe.utils.escape_html(job_card.name)}?</b><br><br>This cannot be undone.`,
-					() => {
-						frappe.call({
-							method: 'crystal_alluminium_works.api.cancel_job_card',
-							args: { job_card_name: job_card.name },
-							freeze: true,
-							freeze_message: 'Cancelling Job Card...',
-							callback: function(r) {
-								if (!r.exc && r.message) {
-									frappe.show_alert({ message: 'Job Card Cancelled', indicator: 'green' });
-									load_single_job_card_detail(page, job_card.name);
-								}
-							}
-						});
-					}
-				);
+				confirm_and_cancel_job_card(page, job_card);
 			}
 		});
 	});
@@ -2169,6 +2234,14 @@ function render_single_job_card_detail(job_card, quotation, history, sales_invoi
 		can_create_invoice = false;
 		can_create_partial_invoice = false;
 	}
+
+	// A cancelled Job Card is a dead end — no further transactions of any kind against it.
+	let is_cancelled = job_card.status === 'Cancelled';
+	if (is_cancelled) {
+		can_edit_job_card = false;
+		can_create_invoice = false;
+		can_create_partial_invoice = false;
+	}
 	let primary_invoice_action = !has_sales_invoice && can_create_invoice
 		? '<button class="btn btn-primary" data-action="create-sales-invoice">Create Sales Invoice</button>'
 		: '';
@@ -2187,7 +2260,7 @@ function render_single_job_card_detail(job_card, quotation, history, sales_invoi
 
 	// Matches the item filter in open_jc_operations_modal — hide the button entirely
 	// when there's nothing for it to configure, instead of opening it just to msgprint.
-	let has_jc_operations_items = ((quotation || {}).items || []).some(item =>
+	let has_jc_operations_items = !is_cancelled && ((quotation || {}).items || []).some(item =>
 		item.custom_product_category === 'Glass' &&
 		(item.custom_glass_sale_mode === 'Resized' || item.custom_glass_type === 'Laminated')
 	);

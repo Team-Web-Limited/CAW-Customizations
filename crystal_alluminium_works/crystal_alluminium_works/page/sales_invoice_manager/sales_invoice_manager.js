@@ -883,6 +883,13 @@ function get_sales_invoice_action_buttons(doc, quotation_name) {
 		const paid_amount = get_sales_invoice_paid_amount(doc);
 		const outstanding = flt(doc.outstanding_amount || 0);
 		const is_job_card_invoice = !!doc.custom_source_job_card;
+		// Same condition that renders the JC Operations card on /desk/job-card-detail/ —
+		// cut-size glass items carry sheet-consumption data that cancelling the invoice
+		// does not unwind, so cancellation is blocked here.
+		const has_cutsize_glass_items = (doc.items || []).some(item =>
+			item.custom_product_category === 'Glass' &&
+			(item.custom_glass_sale_mode === 'Resized' || item.custom_glass_type === 'Laminated')
+		);
 
 		// Credit Note / Return button hidden by user request
 		/*
@@ -903,20 +910,31 @@ function get_sales_invoice_action_buttons(doc, quotation_name) {
 			`;
 		}
 
-		if (is_job_card_invoice || paid_amount <= 0) {
-			// Job-card invoices (incl. fully-paid POS-settled ones) can be cancelled —
-			// cancel_sales_invoice reverses the GL and the job-card payment impact.
-			buttons += `
-				<button class="btn btn-danger" id="btn-cancel-invoice" style="margin-left: auto;">
-					<i class="fa fa-ban" style="margin-right:6px;"></i>Cancel Invoice
-				</button>
-			`;
-		} else if (outstanding > 0) {
-			buttons += `
-				<button class="btn btn-danger" id="btn-cancel-blocked" title="Cancel linked payments before cancelling this invoice." style="margin-left: auto;">
-					<i class="fa fa-ban" style="margin-right:6px;"></i>Cancel Invoice
-				</button>
-			`;
+		// Cancelling an invoice is rare and consequential (reverses GL, may touch a linked
+		// Job Card's payment) — restricted to System Manager / Administrator so the sales
+		// team, who'd use this only rarely, don't see it as a routine action.
+		if (frappe.user.has_role('System Manager')) {
+			if (has_cutsize_glass_items) {
+				buttons += `
+					<button class="btn btn-danger" id="btn-cancel-blocked-cutsize" title="This invoice has Cut Size / Laminated glass items with sheet-consumption data (JC Operations) — it cannot be cancelled from here." style="margin-left: auto;">
+						<i class="fa fa-ban" style="margin-right:6px;"></i>Cancel Invoice
+					</button>
+				`;
+			} else if (is_job_card_invoice || paid_amount <= 0) {
+				// Job-card invoices (incl. fully-paid POS-settled ones) can be cancelled —
+				// cancel_sales_invoice reverses the GL and the job-card payment impact.
+				buttons += `
+					<button class="btn btn-danger" id="btn-cancel-invoice" style="margin-left: auto;">
+						<i class="fa fa-ban" style="margin-right:6px;"></i>Cancel Invoice
+					</button>
+				`;
+			} else if (outstanding > 0) {
+				buttons += `
+					<button class="btn btn-danger" id="btn-cancel-blocked" title="Cancel linked payments before cancelling this invoice." style="margin-left: auto;">
+						<i class="fa fa-ban" style="margin-right:6px;"></i>Cancel Invoice
+					</button>
+				`;
+			}
 		}
 	} else if (doc.docstatus === 2) {
 		buttons += `
@@ -982,6 +1000,14 @@ function bind_sales_invoice_action_events(page, doc) {
 			title: __('Cannot Cancel Invoice Yet'),
 			indicator: 'orange',
 			message: __('Cancel linked payments before cancelling this invoice.'),
+		});
+	});
+
+	$body.find('#btn-cancel-blocked-cutsize').on('click', () => {
+		frappe.msgprint({
+			title: __('Cannot Cancel Invoice'),
+			indicator: 'orange',
+			message: __('This invoice has Cut Size / Laminated glass items with sheet-consumption data (JC Operations) and cannot be cancelled from here.'),
 		});
 	});
 

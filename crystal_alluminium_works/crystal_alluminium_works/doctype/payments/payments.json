@@ -8,6 +8,7 @@
  "engine": "InnoDB",
  "field_order": [
   "customer",
+  "customer_phone",
   "payment_type",
   "job_card",
   "quotation",
@@ -27,6 +28,13 @@
    "label": "Customer",
    "options": "Customer",
    "reqd": 1
+  },
+  {
+   "description": "The walk-in's own phone number, captured at payment time. All Cash Customer walk-ins share the one Customer record (see SHARED_CASH_CUSTOMER_NAME), so this is what keeps their unallocated advance/credit from pooling across unrelated people. Blank for Invoice Customers, who already have their own distinct Customer record.",
+   "fieldname": "customer_phone",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Customer Phone"
   },
   {
    "default": "General Payment",

@@ -83,6 +83,10 @@ function get_shared_cash_customer() {
 	return qb_shared_cash_customer_promise;
 }
 const QB_VAT_RATE = 0.16;
+
+function qb_user_can_edit_rate() {
+	return frappe.user.has_role('System Manager') || frappe.session.user === 'Administrator';
+}
 const QB_POLISH_TYPE_OPTIONS = '4-6\n8-10\n14-35';
 const QB_DEFAULT_POLISH_TYPE = '4-6';
 const QB_HOLE_TYPE_OPTIONS = '5mm\n6mm\n8mm\n10mm\n15mm\n20mm';
@@ -1378,6 +1382,15 @@ function setup_customer_step(page) {
 		render_input: true
 	});
 	customer_phone_field.$input.css({ 'font-size': '15px', 'padding': '10px' });
+	customer_phone_field.$input.attr('maxlength', 10);
+	// Strip anything non-digit and hard-cap at 10 characters as the customer types
+	// (or pastes) — the 10-digit format is still re-checked on submit server-side.
+	customer_phone_field.$input.on('input', function () {
+		let digits_only = ($(this).val() || '').replace(/\D/g, '').slice(0, 10);
+		if ($(this).val() !== digits_only) {
+			$(this).val(digits_only);
+		}
+	});
 	page.qb_customer_phone_field = customer_phone_field;
 
 	let customer_pin_field = frappe.ui.form.make_control({
@@ -2049,7 +2062,7 @@ function open_item_editor(page, item, is_new = false) {
 				? 'Rate Per Piece'
 				: (is_ceiling ? (is_ceiling_bundle ? 'Rate Per Sqm' : 'Rate Per Piece') : 'Rate'),
 			default: item.rate || 0,
-			read_only: item.category === 'Aluminium' || is_sheet_glass ? 1 : 0
+			read_only: (item.category === 'Aluminium' || is_sheet_glass || !qb_user_can_edit_rate()) ? 1 : 0
 		}
 	];
 
@@ -2919,28 +2932,41 @@ function open_glass_batch_details_dialog(page, items) {
 		}).join('');
 	}
 
-	let rows_html = items.map(function (it, index) {
+	// Shared by the initial render and by "duplicate row" below, so a clone
+	// picks up the exact same markup/behaviour as an item that came in
+	// through the multi-select. Values default from `it` so a clone can carry
+	// over whatever the source row already had (polish/holes/notches/qty etc.)
+	// while width/height/numbering start blank — those are what actually vary
+	// between pieces of the same item.
+	function build_row_html(it, row_number) {
 		return `
 			<tr data-id="${it.id}">
-				<td style="text-align:center;white-space:nowrap;">${index + 1}</td>
+				<td style="text-align:center;white-space:nowrap;" class="qb-batch-row-no">${row_number}</td>
 				<td style="white-space:nowrap;">${frappe.utils.escape_html(it.item_name || it.item_code)}</td>
-				<td><input type="number" min="0" step="any" class="form-control input-sm qb-batch-input" data-field="width_mm" value="0" style="width:80px;"></td>
-				<td><input type="number" min="0" step="any" class="form-control input-sm qb-batch-input" data-field="height_mm" value="0" style="width:80px;"></td>
-				<td><input type="number" min="0" step="any" class="form-control input-sm qb-batch-input" data-field="width_allowance" value="0" style="width:70px;"></td>
-				<td><input type="number" min="0" step="any" class="form-control input-sm qb-batch-input" data-field="height_allowance" value="0" style="width:70px;"></td>
-				<td><input type="number" min="0" max="2" step="1" class="form-control input-sm qb-batch-input" data-field="polish_width_sides" value="0" style="width:60px;"></td>
-				<td><input type="number" min="0" max="2" step="1" class="form-control input-sm qb-batch-input" data-field="polish_height_sides" value="0" style="width:60px;"></td>
-				<td><select class="form-control input-sm qb-batch-input" data-field="polish_type" style="width:80px;">${option_list(QB_POLISH_TYPE_OPTIONS, QB_DEFAULT_POLISH_TYPE)}</select></td>
-				<td><input type="number" min="0" step="1" class="form-control input-sm qb-batch-input" data-field="holes" value="0" style="width:60px;"></td>
-				<td><select class="form-control input-sm qb-batch-input" data-field="hole_type" style="width:80px;">${option_list(QB_HOLE_TYPE_OPTIONS, QB_DEFAULT_HOLE_TYPE)}</select></td>
-				<td><input type="number" min="0" step="1" class="form-control input-sm qb-batch-input" data-field="notches" value="0" style="width:60px;"></td>
-				<td><select class="form-control input-sm qb-batch-input" data-field="notch_type" style="width:100px;">${option_list(QB_NOTCH_TYPE_OPTIONS, QB_DEFAULT_NOTCH_TYPE)}</select></td>
-				<td><select class="form-control input-sm qb-batch-input" data-field="sandblast_type" style="width:80px;">${option_list('None\nHalf\nFull', 'None')}</select></td>
-				<td><input type="number" min="1" step="1" class="form-control input-sm qb-batch-input" data-field="qty" value="1" style="width:60px;"></td>
-				<td><input type="text" class="form-control input-sm qb-batch-input" data-field="numbering" value="" style="width:90px;"></td>
-				<td><input type="text" class="form-control input-sm qb-batch-input" data-field="description" value="" style="width:130px;"></td>
+				<td><input type="text" class="form-control input-sm qb-batch-input" data-field="numbering" value="${frappe.utils.escape_html(it.numbering || '')}" style="width:90px;"></td>
+				<td><input type="number" min="0" step="any" class="form-control input-sm qb-batch-input" data-field="width_mm" value="${flt(it.width_mm || 0)}" style="width:80px;"></td>
+				<td><input type="number" min="0" step="any" class="form-control input-sm qb-batch-input" data-field="height_mm" value="${flt(it.height_mm || 0)}" style="width:80px;"></td>
+				<td><input type="number" min="1" step="1" class="form-control input-sm qb-batch-input" data-field="qty" value="${flt(it.qty || 1) || 1}" style="width:60px;"></td>
+				<td><input type="number" min="0" step="any" class="form-control input-sm qb-batch-input" data-field="width_allowance" value="${flt(it.width_allowance || 0)}" style="width:70px;"></td>
+				<td><input type="number" min="0" step="any" class="form-control input-sm qb-batch-input" data-field="height_allowance" value="${flt(it.height_allowance || 0)}" style="width:70px;"></td>
+				<td><input type="number" min="0" step="1" class="form-control input-sm qb-batch-input" data-field="holes" value="${cint(it.holes || 0)}" style="width:60px;"></td>
+				<td><select class="form-control input-sm qb-batch-input" data-field="hole_type" style="width:80px;">${option_list(QB_HOLE_TYPE_OPTIONS, it.hole_type || QB_DEFAULT_HOLE_TYPE)}</select></td>
+				<td><input type="number" min="0" step="1" class="form-control input-sm qb-batch-input" data-field="notches" value="${cint(it.notches || 0)}" style="width:60px;"></td>
+				<td><select class="form-control input-sm qb-batch-input" data-field="notch_type" style="width:100px;">${option_list(QB_NOTCH_TYPE_OPTIONS, it.notch_type || QB_DEFAULT_NOTCH_TYPE)}</select></td>
+				<td><select class="form-control input-sm qb-batch-input" data-field="sandblast_type" style="width:80px;">${option_list('None\nHalf\nFull', it.sandblast_type || 'None')}</select></td>
+				<td><input type="number" min="0" max="2" step="1" class="form-control input-sm qb-batch-input" data-field="polish_width_sides" value="${cint(it.polish_width_sides || 0)}" style="width:60px;"></td>
+				<td><input type="number" min="0" max="2" step="1" class="form-control input-sm qb-batch-input" data-field="polish_height_sides" value="${cint(it.polish_height_sides || 0)}" style="width:60px;"></td>
+				<td><select class="form-control input-sm qb-batch-input" data-field="polish_type" style="width:80px;">${option_list(QB_POLISH_TYPE_OPTIONS, it.polish_type || QB_DEFAULT_POLISH_TYPE)}</select></td>
+				<td><input type="text" class="form-control input-sm qb-batch-input" data-field="description" value="${frappe.utils.escape_html(it.description || '')}" style="width:130px;"></td>
+				<td style="text-align:center;white-space:nowrap;">
+					<button type="button" class="btn btn-xs btn-default qb-duplicate-row" title="Duplicate row — same item, new size">⧉</button>
+				</td>
 			</tr>
 		`;
+	}
+
+	let rows_html = items.map(function (it, index) {
+		return build_row_html(it, index + 1);
 	}).join('');
 
 	let table_html = `
@@ -2950,21 +2976,22 @@ function open_glass_batch_details_dialog(page, items) {
 					<tr>
 						<th style="text-align:center;white-space:nowrap;">No</th>
 						<th style="white-space:nowrap;">Item</th>
+						<th style="white-space:nowrap;">Numbering</th>
 						<th style="white-space:nowrap;">Width (${dimension_label})</th>
 						<th style="white-space:nowrap;">Height (${dimension_label})</th>
+						<th style="white-space:nowrap;">Pcs</th>
 						<th style="white-space:nowrap;">W+</th>
 						<th style="white-space:nowrap;">H+</th>
-						<th style="white-space:nowrap;">PW</th>
-						<th style="white-space:nowrap;">PH</th>
-						<th style="white-space:nowrap;">Polish Type</th>
 						<th style="white-space:nowrap;">Holes</th>
 						<th style="white-space:nowrap;">Hole Type</th>
 						<th style="white-space:nowrap;">Notches</th>
 						<th style="white-space:nowrap;">Notch Type</th>
 						<th style="white-space:nowrap;">Sandblast</th>
-						<th style="white-space:nowrap;">Pcs</th>
-						<th style="white-space:nowrap;">Numbering</th>
+						<th style="white-space:nowrap;">PW</th>
+						<th style="white-space:nowrap;">PH</th>
+						<th style="white-space:nowrap;">Polish Type</th>
 						<th style="white-space:nowrap;">Description</th>
+						<th style="white-space:nowrap;"></th>
 					</tr>
 				</thead>
 				<tbody>${rows_html}</tbody>
@@ -3064,6 +3091,52 @@ function open_glass_batch_details_dialog(page, items) {
 
 	d.show();
 	bind_batch_table_keynav(d);
+
+	// Same item, different size — clone whatever is currently in the row
+	// (including anything the user has already typed, e.g. polish/holes/
+	// notches/qty that tend to repeat across pieces) right below it, blank
+	// out width/height/numbering so the new row visibly needs its own size,
+	// and push it into `items` so Save picks it up like any other row.
+	let $batch_wrapper = d.fields_dict.batch_table.$wrapper;
+	$batch_wrapper.on('click', '.qb-duplicate-row', function () {
+		let $row = $(this).closest('tr');
+		let source_id = $row.data('id');
+		let source = items.find(function (it) { return it.id === source_id; });
+		if (!source) {
+			return;
+		}
+
+		function val(field) {
+			return $row.find(`[data-field="${field}"]`).val();
+		}
+
+		let clone = Object.assign({}, source, {
+			id: frappe.utils.get_random(8),
+			width_mm: 0,
+			height_mm: 0,
+			width_allowance: flt(val('width_allowance') || 0),
+			height_allowance: flt(val('height_allowance') || 0),
+			polish_width_sides: cint(val('polish_width_sides') || 0),
+			polish_height_sides: cint(val('polish_height_sides') || 0),
+			polish_type: val('polish_type') || QB_DEFAULT_POLISH_TYPE,
+			holes: cint(val('holes') || 0),
+			hole_type: val('hole_type') || QB_DEFAULT_HOLE_TYPE,
+			notches: cint(val('notches') || 0),
+			notch_type: val('notch_type') || QB_DEFAULT_NOTCH_TYPE,
+			sandblast_type: val('sandblast_type') || 'None',
+			qty: flt(val('qty') || 1) || 1,
+			numbering: '',
+			description: val('description') || ''
+		});
+		items.push(clone);
+
+		$row.after(build_row_html(clone, 0));
+		let $clone_row = $batch_wrapper.find(`tr[data-id="${clone.id}"]`);
+		$batch_wrapper.find('tbody tr').each(function (idx) {
+			$(this).find('.qb-batch-row-no').text(idx + 1);
+		});
+		$clone_row.find('[data-field="width_mm"]').trigger('focus');
+	});
 }
 
 // Same idea as open_glass_batch_details_dialog, sized to what Aluminium

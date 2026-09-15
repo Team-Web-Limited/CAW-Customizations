@@ -52,17 +52,34 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
 </div>
 <hr style="border-top: 2px solid #ecf0f1; margin-bottom: 20px;">
 <div class="row" style="margin-bottom: 30px;">
-    <div class="col-xs-6">
+    <div class="col-xs-4">
         <!-- Cash quotations all share the one walk-in Customer record, so customer_name/
              party_name is always "Cash Customer" - custom_customer_name (Quotation only,
              captured in Quotation Builder's cash-mode step) carries the walk-in's own name. -->
         <div style="color: #7f8c8d; font-size: 12px; text-transform: uppercase;">Customer Name:</div>
         <div style="font-size: 16px; font-weight: bold;">{{{{ doc.get('custom_customer_name') or doc.customer_name or doc.party_name or doc.customer }}}}</div>
-    </div>
-    <div class="col-xs-6 text-right">
-        {{% if doc.doctype == 'Sales Invoice' %}}
-        <div style="font-size: 26px; font-weight: bold; color: #2c3e50; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px;">Invoice</div>
+        <!-- Walk-ins carry their own PIN on the Quotation (custom_customer_pin); a registered
+             customer's is mirrored onto the document from Customer.tax_id - natively as
+             `tax_id` on Sales Order/Invoice, via custom_customer_tax_id on Quotation. Read
+             from the doc only: frappe.db.get_value is not callable from a print template
+             unless an HTTP request is in scope, which breaks server-side PDF rendering.
+             Hidden entirely when there is no PIN. -->
+        {{% set customer_pin = doc.get('custom_customer_pin') or doc.get('custom_customer_tax_id') or doc.get('tax_id') %}}
+        {{% if customer_pin %}}
+        <div style="margin-top: 6px;">
+            <span style="color: #7f8c8d; font-size: 12px; text-transform: uppercase;">PIN:</span>
+            <span style="font-size: 14px; font-weight: bold;">{{{{ customer_pin }}}}</span>
+        </div>
         {{% endif %}}
+    </div>
+    <div class="col-xs-4 text-center">
+        {{% if doc.doctype == 'Sales Invoice' %}}
+        <div style="font-size: 26px; font-weight: bold; color: #2c3e50; text-transform: uppercase; letter-spacing: 1px;">Invoice</div>
+        {{% elif doc.doctype == 'Quotation' %}}
+        <div style="font-size: 26px; font-weight: bold; color: #2c3e50; text-transform: uppercase; letter-spacing: 1px;">Quotation</div>
+        {{% endif %}}
+    </div>
+    <div class="col-xs-4 text-right">
         <div style="color: #7f8c8d; font-size: 12px; text-transform: uppercase;">Date:</div>
         <div style="font-size: 16px; font-weight: bold;">{{{{ frappe.utils.formatdate(doc.posting_date or doc.transaction_date) }}}}</div>
         {{% if doc.doctype != 'Sales Invoice' and doc.due_date %}}
@@ -398,9 +415,9 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
 
 <div class="row" style="margin-top: 30px;">
     <div class="col-xs-7">
-        <div style="padding: 15px; background: #f8f9fa; border-radius: 4px;">
-            <div style="font-size: 12px; color: #6c757d; margin-bottom: 5px;">Terms & Conditions</div>
-            <div style="font-size: 11px; color: #495057;">
+        <div style="padding: 15px; background: #f8f9fa; border-radius: 4px; overflow: hidden; box-sizing: border-box;">
+            <div style="font-size: 13px; color: #6c757d; margin-bottom: 5px;">Terms & Conditions</div>
+            <div style="font-size: 16px; color: #495057;">
                 {terms}
             </div>
             {payment_details}
