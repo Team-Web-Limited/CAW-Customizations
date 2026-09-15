@@ -1209,6 +1209,22 @@ function validate_job_card_payment_capture(dialog) {
 }
 
 function validate_job_card_phone_number(dialog) {
+	let is_invoice = normalize_job_card_payment_mode(dialog.get_value('payment_mode')) === 'invoice';
+
+	// An Invoice Customer is a registered, billable entity — their PIN is what's actually
+	// required (e.g. for the eTIMS invoice); Phone Number is just a contact detail and may
+	// legitimately be left blank. A Cash walk-in has no PIN, so Phone Number is what
+	// identifies them instead (see the Payments/Job Card pages, which key a walk-in's
+	// records off it) and stays mandatory there.
+	if (is_invoice) {
+		let pin = (dialog.get_value('customer_pin') || '').trim();
+		if (!pin) {
+			frappe.msgprint(__('Please enter the customer\'s PIN.'));
+			return false;
+		}
+		return true;
+	}
+
 	let phone = (dialog.get_value('phone_number') || '').trim();
 	if (!phone) {
 		frappe.msgprint(__('Please enter the customer\'s Phone Number.'));
