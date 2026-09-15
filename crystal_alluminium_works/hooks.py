@@ -32,6 +32,11 @@ fixtures = [
 			]
 		],
 	},
+	# Role permission overrides (Role Permissions Manager) live in Custom DocPerm and are
+	# NOT captured by any doctype's own JSON — without this they silently diverge between
+	# local and staging/prod. Covers permissions granted to the Sales User role on any
+	# doctype (core or custom), e.g. Sales Invoice, CAW Job Card, Payments.
+	{"dt": "Custom DocPerm", "filters": [["role", "=", "Sales User"]]},
 ]
 
 # Each item in the list will be shown as an app in the apps page
