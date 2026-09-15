@@ -5758,7 +5758,26 @@ def get_payments_page(search=None, payment_method=None, from_date=None, to_date=
             customer_names[c.name] = c.customer_name
             customer_phones[c.name] = c.mobile_no
 
+    # A payment recorded through Create/Edit Job Card (the common case for a Cash
+    # Customer — record_customer_payment is called with job_card, no quotation) has no
+    # Quotation link of its own to resolve the walk-in's name/phone from; the Job
+    # Card's own customer_name is the real captured name there instead (see Job Card
+    # Detail / Sales Invoice Manager, which already prefer it the same way). Its
+    # phone_number field, though, is often blank even when its own linked Quotation
+    # does have one on custom_customer_phone (captured in Quotation Builder's cash-mode
+    # step) — so fetch each job card's `quotation` link too and fall through to that.
+    job_card_ids = {row["job_card"] for row in rows if row.get("job_card")}
+    job_cards_by_name = {}
+    if job_card_ids:
+        for jc in frappe.get_all(
+            "CAW Job Card",
+            filters={"name": ["in", list(job_card_ids)]},
+            fields=["name", "customer_name", "phone_number", "quotation"],
+        ):
+            job_cards_by_name[jc.name] = jc
+
     quotation_ids = {row["quotation"] for row in rows if row.get("quotation")}
+    quotation_ids |= {jc.quotation for jc in job_cards_by_name.values() if jc.quotation}
     quotation_walkin_names = {}
     quotation_walkin_phones = {}
     if quotation_ids:
@@ -5772,24 +5791,12 @@ def get_payments_page(search=None, payment_method=None, from_date=None, to_date=
             if q.custom_customer_phone:
                 quotation_walkin_phones[q.name] = q.custom_customer_phone
 
-    # A payment recorded through Create/Edit Job Card (the common case for a Cash
-    # Customer — record_customer_payment is called with job_card, no quotation) has no
-    # Quotation to resolve the walk-in's name from at all; the Job Card's own
-    # customer_name is the real captured name there instead (see Job Card Detail /
-    # Sales Invoice Manager, which already prefer it the same way).
-    job_card_ids = {row["job_card"] for row in rows if row.get("job_card")}
     job_card_walkin_names = {}
     job_card_walkin_phones = {}
-    if job_card_ids:
-        for jc in frappe.get_all(
-            "CAW Job Card",
-            filters={"name": ["in", list(job_card_ids)]},
-            fields=["name", "customer_name", "phone_number"],
-        ):
-            if jc.customer_name and jc.customer_name != SHARED_CASH_CUSTOMER_NAME:
-                job_card_walkin_names[jc.name] = jc.customer_name
-            if jc.phone_number:
-                job_card_walkin_phones[jc.name] = jc.phone_number
+    for jc in job_cards_by_name.values():
+        if jc.customer_name and jc.customer_name != SHARED_CASH_CUSTOMER_NAME:
+            job_card_walkin_names[jc.name] = jc.customer_name
+        job_card_walkin_phones[jc.name] = jc.phone_number or quotation_walkin_phones.get(jc.quotation)
 
     for row in rows:
         is_cash = row.get("customer") == SHARED_CASH_CUSTOMER_NAME
