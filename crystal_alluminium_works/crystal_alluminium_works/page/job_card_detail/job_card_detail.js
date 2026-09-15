@@ -290,9 +290,24 @@ async function apply_job_card_customer_defaults(dialog) {
 	}
 	if (!customer) return;
 	let customer_defaults = await get_job_card_customer_defaults(customer);
-	await dialog.set_value('customer_name', customer_defaults.customer_name || '');
-	await dialog.set_value('customer_pin', customer_defaults.customer_pin || '');
-	await dialog.set_value('phone_number', customer_defaults.phone_number || '');
+	let customer_name = customer_defaults.customer_name || '';
+	let phone = customer_defaults.phone_number || '';
+	let pin = customer_defaults.customer_pin || '';
+	// Cash job cards all share the same walk-in Customer record, so the Customer doctype
+	// itself carries no name/phone/PIN — as long as the Customer field still points at
+	// this job card's own customer, prefer the real walk-in details already on the job
+	// card (captured from the quotation) instead of the shared record's generic ones.
+	// This handler also fires when the dialog sets its own initial default value, so
+	// without this guard it silently overwrites the job card's real name with "Cash
+	// Customer" the moment the dialog opens.
+	if (customer === dialog._quotation_customer) {
+		customer_name = dialog._quotation_customer_name || customer_name;
+		phone = dialog._quotation_customer_phone || phone;
+		pin = dialog._quotation_customer_pin || pin;
+	}
+	await dialog.set_value('customer_name', customer_name);
+	await dialog.set_value('customer_pin', pin);
+	await dialog.set_value('phone_number', phone);
 }
 
 function queue_job_card_customer_defaults(dialog) {
@@ -793,6 +808,15 @@ async function open_edit_job_card_modal(page, job_card, quotation) {
 	});
 
 	d._payment_limit = payment_limit;
+	// See apply_job_card_customer_defaults: lets it (and the Payment Mode handler below)
+	// tell "still this job card's own customer" apart from "user picked a different
+	// customer", so they know when to keep the real walk-in details already on the job
+	// card instead of the shared Cash Customer record's generic ones.
+	d._quotation_customer = job_card.customer || defaults.customer || quotation_customer;
+	d._quotation_customer_name = job_card.customer_name || defaults.customer_name || '';
+	d._quotation_customer_phone = job_card.phone_number || defaults.phone_number || '';
+	d._quotation_customer_pin = job_card.customer_pin || defaults.customer_pin || '';
+	d._quotation_payment_mode = job_card.payment_mode || get_job_card_payment_mode_label(defaults.payment_mode);
 	d.show();
 	refresh_job_card_payment_options(d, job_card.payment_option);
 	if (job_card.customer || defaults.customer || quotation_customer) {
@@ -808,10 +832,20 @@ async function open_edit_job_card_modal(page, job_card, quotation) {
 	d.fields_dict.payment_mode.$input.on('change', function() {
 		// refresh_job_card_payment_options resets payment_option and re-derives deposit_to.
 		refresh_job_card_payment_options(d);
-		d.set_value('customer', '');
-		d.set_value('customer_name', '');
-		d.set_value('customer_pin', '');
-		d.set_value('phone_number', '');
+		let selected_mode = d.get_value('payment_mode');
+		if (d._quotation_customer && selected_mode === d._quotation_payment_mode) {
+			// Still this job card's own customer (the mode just got toggled back to what
+			// it already was) — restore its real details instead of leaving them blank.
+			d.set_value('customer', d._quotation_customer);
+			d.set_value('customer_name', d._quotation_customer_name);
+			d.set_value('customer_pin', d._quotation_customer_pin);
+			d.set_value('phone_number', d._quotation_customer_phone);
+		} else {
+			d.set_value('customer', '');
+			d.set_value('customer_name', '');
+			d.set_value('customer_pin', '');
+			d.set_value('phone_number', '');
+		}
 	});
 
 	d.fields_dict.customer.$input.on('awesomplete-selectcomplete', function() {
