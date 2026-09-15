@@ -5767,11 +5767,31 @@ def get_payments_page(search=None, payment_method=None, from_date=None, to_date=
             if q.custom_customer_name:
                 quotation_walkin_names[q.name] = q.custom_customer_name
 
+    # A payment recorded through Create/Edit Job Card (the common case for a Cash
+    # Customer — record_customer_payment is called with job_card, no quotation) has no
+    # Quotation to resolve the walk-in's name from at all; the Job Card's own
+    # customer_name is the real captured name there instead (see Job Card Detail /
+    # Sales Invoice Manager, which already prefer it the same way).
+    job_card_ids = {row["job_card"] for row in rows if row.get("job_card")}
+    job_card_walkin_names = {}
+    if job_card_ids:
+        for jc in frappe.get_all(
+            "CAW Job Card",
+            filters={"name": ["in", list(job_card_ids)]},
+            fields=["name", "customer_name"],
+        ):
+            if jc.customer_name and jc.customer_name != SHARED_CASH_CUSTOMER_NAME:
+                job_card_walkin_names[jc.name] = jc.customer_name
+
     for row in rows:
         is_cash = row.get("customer") == SHARED_CASH_CUSTOMER_NAME
         row["customer_type"] = "Cash" if is_cash else "Invoice"
         if is_cash:
-            row["display_name"] = quotation_walkin_names.get(row.get("quotation")) or SHARED_CASH_CUSTOMER_NAME
+            row["display_name"] = (
+                quotation_walkin_names.get(row.get("quotation"))
+                or job_card_walkin_names.get(row.get("job_card"))
+                or SHARED_CASH_CUSTOMER_NAME
+            )
         else:
             row["display_name"] = customer_names.get(row.get("customer")) or row.get("customer")
 
@@ -5855,13 +5875,26 @@ def _get_payments_report_data(search, payment_method, from_date, to_date):
             if q.custom_customer_name:
                 quotation_walkin_names[q.name] = q.custom_customer_name
 
+    # See get_payments_page: a job-card-only payment (no Quotation) has to fall back to
+    # the Job Card's own customer_name for the walk-in's real name instead.
+    job_card_ids = {row["job_card"] for row in rows if row.get("job_card")}
+    job_card_walkin_names = {}
+    if job_card_ids:
+        for jc in frappe.get_all("CAW Job Card", filters={"name": ["in", list(job_card_ids)]}, fields=["name", "customer_name"]):
+            if jc.customer_name and jc.customer_name != SHARED_CASH_CUSTOMER_NAME:
+                job_card_walkin_names[jc.name] = jc.customer_name
+
     totals_by_method = {}
     grand_total = 0
     for row in rows:
         is_cash = row.get("customer") == SHARED_CASH_CUSTOMER_NAME
         row["customer_type"] = "Cash" if is_cash else "Invoice"
         row["display_name"] = (
-            (quotation_walkin_names.get(row.get("quotation")) or SHARED_CASH_CUSTOMER_NAME) if is_cash
+            (
+                quotation_walkin_names.get(row.get("quotation"))
+                or job_card_walkin_names.get(row.get("job_card"))
+                or SHARED_CASH_CUSTOMER_NAME
+            ) if is_cash
             else (customer_names.get(row.get("customer")) or row.get("customer"))
         )
         method = row.get("payment_method") or "Unspecified"
