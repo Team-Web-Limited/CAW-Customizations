@@ -4055,8 +4055,8 @@ def _repost_invoice_income_gl(invoice, old_income_map):
 def edit_submitted_invoice_items(name, items):
     """Edit a SUBMITTED Sales Invoice's manual item rows in place (no cancel/amend).
     The grand total must remain exactly the same; stock and release bookkeeping are
-    auto-corrected for categories deducted at invoice time. System Manager only."""
-    frappe.only_for("System Manager")
+    auto-corrected for categories deducted at invoice time. System Manager / Sales User only."""
+    frappe.only_for(["System Manager", "Sales User"])
     if not name or not frappe.db.exists("Sales Invoice", name):
         frappe.throw("Please select a valid Sales Invoice.")
 

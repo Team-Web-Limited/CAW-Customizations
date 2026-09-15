@@ -902,7 +902,7 @@ function get_sales_invoice_action_buttons(doc, quotation_name) {
 		}
 		*/
 
-		if (frappe.user.has_role('System Manager') && !doc.is_return && !doc.amended_from) {
+		if ((frappe.user.has_role('System Manager') || frappe.user.has_role('Sales User')) && !doc.is_return && !doc.amended_from) {
 			buttons += `
 				<button class="btn btn-default" id="btn-edit-invoice-items">
 					<i class="fa fa-pencil" style="margin-right:6px;"></i>Edit Items
