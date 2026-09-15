@@ -1922,6 +1922,11 @@ function bind_action_events(page, doc, sales_invoices, existing_job_card) {
 			payment_type: 'General Payment',
 			lockPaymentType: true,
 			amount: prefill_amount,
+			// Cash quotations share the one "Cash Customer" record, so the dialog has no way
+			// to tell which walk-in this is from the Customer field alone — pass the real
+			// name already captured on this quotation instead of leaving it to guess from
+			// typed search text that was never actually typed here.
+			walkinName: doc.custom_customer_name || '',
 			onSaved: () => render_quotation_dashboard(page, doc.name, page.wrapper)
 		});
 	});
@@ -1949,6 +1954,7 @@ function bind_action_events(page, doc, sales_invoices, existing_job_card) {
 			payment_type: 'Refund',
 			lockPaymentType: true,
 			amount: refundable,
+			walkinName: doc.custom_customer_name || '',
 			onSaved: () => render_quotation_dashboard(page, doc.name, page.wrapper)
 		});
 	});

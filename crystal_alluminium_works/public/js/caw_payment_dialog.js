@@ -109,7 +109,13 @@
 			// Optional — lets the deposit-credit note below call out how much of the credit
 			// held against this quotation is actually excess over its own total, instead of
 			// just showing one undifferentiated number.
-			quotationTotal: options.quotationTotal || route_prefill.quotationTotal || 0
+			quotationTotal: options.quotationTotal || route_prefill.quotationTotal || 0,
+			// Optional — the walk-in this deposit/refund is already known to be for (e.g.
+			// Quotation Manager's Record/Refund Deposit already has the quotation's own
+			// custom_customer_name in hand). Without this, refresh_walkin_field has nothing
+			// to go on but whatever was typed into Customer — blank for a caller that set the
+			// field programmatically — and silently leaves Name blank instead.
+			walkinName: options.walkinName || route_prefill.walkinName || ''
 		};
 		// e.g. Quotation Manager's Record Deposit locks this to General Payment (and Refund
 		// Deposit to Refund) so staff can't accidentally flip the direction of the money.
@@ -346,6 +352,17 @@
 					d.fields_dict.walkin_name.df.options = options;
 					if (d.fields_dict.walkin_name.set_data) {
 						d.fields_dict.walkin_name.set_data(options);
+					}
+					// A caller who already knows exactly which walk-in this is (Quotation
+					// Manager's Record/Refund Deposit, pinned to one quotation) beats guessing
+					// from typed text — there is none to guess from when Customer was set
+					// programmatically, which otherwise left Name silently blank. Only trusted
+					// for that same pinned customer, and only until the user actually changes
+					// Name themselves (loaded_walkin tracks that).
+					if (prefill.walkinName && customer === prefill.customer && !loaded_walkin) {
+						set_walkin_name(prefill.walkinName);
+						done();
+						return;
 					}
 					// What was typed into Customer is what the user meant — adopt it when it
 					// identifies exactly one walk-in, so the scoping below matches what they
