@@ -5948,23 +5948,22 @@ def download_payments_report(search=None, payment_method=None, from_date=None, t
     data = _get_payments_report_data(search, payment_method, from_date, to_date)
 
     sheet_rows = [["Payments Report"]]
-    range_bits = []
-    if from_date:
-        range_bits.append(f"From {from_date}")
-    if to_date:
-        range_bits.append(f"To {to_date}")
-    if range_bits:
-        sheet_rows.append([" ".join(range_bits)])
+    # A single-day report (the page's own default) reads as one date, not a "From X To X"
+    # range that just repeats itself.
+    if from_date and to_date and from_date == to_date:
+        sheet_rows.append([f"Date: {from_date}"])
+    else:
+        range_bits = []
+        if from_date:
+            range_bits.append(f"From {from_date}")
+        if to_date:
+            range_bits.append(f"To {to_date}")
+        if range_bits:
+            sheet_rows.append([" ".join(range_bits)])
     if payment_method:
         sheet_rows.append([f"Payment Method: {payment_method}"])
     if data["search"]:
         sheet_rows.append([f"Search: {data['search']}"])
-    sheet_rows.append([])
-
-    sheet_rows.append(["Totals by Payment Method"])
-    for row in data["by_method"]:
-        sheet_rows.append([row["payment_method"], row["total"]])
-    sheet_rows.append(["Total", data["total"]])
     sheet_rows.append([])
 
     sheet_rows.append(["Date", "C.Type", "Name", "Customer", "Amount", "Method", "Deposit To", "Reference", "Quotation", "Job Card"])
@@ -5981,6 +5980,12 @@ def download_payments_report(search=None, payment_method=None, from_date=None, t
             row.get("quotation") or "",
             row.get("job_card") or "",
         ])
+    sheet_rows.append([])
+
+    sheet_rows.append(["Totals by Payment Method"])
+    for row in data["by_method"]:
+        sheet_rows.append([row["payment_method"], row["total"]])
+    sheet_rows.append(["Total", data["total"]])
 
     filename_bits = ["Payments"]
     if from_date or to_date:
@@ -5999,11 +6004,21 @@ def download_payments_report_pdf(search=None, payment_method=None, from_date=Non
 
     data = _get_payments_report_data(search, payment_method, from_date, to_date)
 
-    range_bits = []
-    if from_date:
-        range_bits.append(f"From {frappe.utils.formatdate(from_date)}")
-    if to_date:
-        range_bits.append(f"To {frappe.utils.formatdate(to_date)}")
+    # A single-day report (the page's own default) reads as one date, not a "From X · To X"
+    # range that just repeats itself.
+    single_day = from_date and to_date and from_date == to_date
+    if single_day:
+        date_label = "Date"
+        date_value = frappe.utils.formatdate(from_date)
+    else:
+        date_label = "Period"
+        range_bits = []
+        if from_date:
+            range_bits.append(frappe.utils.formatdate(from_date))
+        if to_date:
+            range_bits.append(frappe.utils.formatdate(to_date))
+        date_value = " – ".join(range_bits) if range_bits else "All time"
+
     filter_bits = []
     if payment_method:
         filter_bits.append(f"Payment Method: {payment_method}")
@@ -6034,13 +6049,15 @@ def download_payments_report_pdf(search=None, payment_method=None, from_date=Non
     <style>
         {get_print_style()}
         body {{ font-family: 'Helvetica Neue', Arial, sans-serif; color: #2c3e50; }}
-        .ppr-header {{ display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; }}
-        .ppr-letterhead {{ flex: 0 0 60%; max-width: 60%; }}
-        .ppr-letterhead img {{ width: 100%; height: auto; }}
-        .ppr-header-right {{ text-align: right; flex: 1; }}
-        .ppr-title {{ font-size: 22px; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; margin: 0 0 6px; color: #000; }}
-        .ppr-date-range {{ font-weight: bold; font-size: 13px; color: #000; }}
-        .ppr-filters {{ color: #7f8c8d; font-size: 12px; margin-top: 2px; }}
+        .ppr-letterhead {{ margin-bottom: 20px; }}
+        .ppr-letterhead img {{ max-width: 100%; height: auto; }}
+        .ppr-info-row {{ display: flex; justify-content: space-between; margin-bottom: 30px; }}
+        .ppr-info-col {{ flex: 1; }}
+        .ppr-info-col.ppr-info-right {{ text-align: right; }}
+        .ppr-info-col.ppr-info-center {{ text-align: center; }}
+        .ppr-info-label {{ color: #7f8c8d; font-size: 12px; text-transform: uppercase; }}
+        .ppr-info-value {{ font-size: 16px; font-weight: bold; }}
+        .ppr-title {{ font-size: 26px; font-weight: bold; color: #2c3e50; text-transform: uppercase; letter-spacing: 1px; }}
         .ppr-section-title {{ font-size: 13px; font-weight: bold; text-transform: uppercase; color: #000; margin: 18px 0 8px; }}
         table.ppr-table {{ width: 100%; border-collapse: collapse; margin-bottom: 10px; table-layout: auto; }}
         table.ppr-table th {{ text-align: left; font-size: 11px; text-transform: uppercase; color: #000; border-bottom: 2px solid #ecf0f1; padding: 6px 8px; white-space: nowrap; }}
@@ -6050,25 +6067,23 @@ def download_payments_report_pdf(search=None, payment_method=None, from_date=Non
     </style>
     </head>
     <body>
-        <div class="ppr-header">
-            <div class="ppr-letterhead">
-                <img src="{get_letterhead_data_uri()}" alt="Crystal Aluminium Works">
+        <div class="ppr-letterhead">
+            <img src="{get_letterhead_data_uri()}" alt="Crystal Aluminium Works">
+        </div>
+        <hr style="border-top: 2px solid #ecf0f1; margin-bottom: 20px;">
+
+        <div class="ppr-info-row">
+            <div class="ppr-info-col">
+                {f'<div class="ppr-info-label">Filters</div><div class="ppr-info-value" style="font-size:13px;">{frappe.utils.escape_html(" · ".join(filter_bits))}</div>' if filter_bits else ""}
             </div>
-            <div class="ppr-header-right">
+            <div class="ppr-info-col ppr-info-center">
                 <div class="ppr-title">Payment Report</div>
-                <div class="ppr-date-range">{frappe.utils.escape_html(" · ".join(range_bits))}</div>
-                {f'<div class="ppr-filters">{frappe.utils.escape_html(" · ".join(filter_bits))}</div>' if filter_bits else ""}
+            </div>
+            <div class="ppr-info-col ppr-info-right">
+                <div class="ppr-info-label">{date_label}:</div>
+                <div class="ppr-info-value">{frappe.utils.escape_html(date_value)}</div>
             </div>
         </div>
-        <hr style="border-top: 2px solid #ecf0f1; margin: 12px 0 0;">
-
-        <div class="ppr-section-title">Totals by Payment Method</div>
-        <table class="ppr-table ppr-totals-table">
-            <tbody>
-                {totals_rows_html}
-                <tr class="ppr-grand-total"><td>Total</td><td style="text-align:right;">{frappe.utils.fmt_money(data['total'], currency='KES')}</td></tr>
-            </tbody>
-        </table>
 
         <table class="ppr-table">
             <thead>
@@ -6079,6 +6094,14 @@ def download_payments_report_pdf(search=None, payment_method=None, from_date=Non
             </thead>
             <tbody>
                 {payment_rows_html}
+            </tbody>
+        </table>
+
+        <div class="ppr-section-title">Totals by Payment Method</div>
+        <table class="ppr-table ppr-totals-table">
+            <tbody>
+                {totals_rows_html}
+                <tr class="ppr-grand-total"><td>Total</td><td style="text-align:right;">{frappe.utils.fmt_money(data['total'], currency='KES')}</td></tr>
             </tbody>
         </table>
     </body>
