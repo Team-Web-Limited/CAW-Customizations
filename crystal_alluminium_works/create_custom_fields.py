@@ -608,11 +608,27 @@ def add_custom_fields():
         ],
         "Sales Invoice": [
             {
+                # Cash quotations all share the one walk-in Customer record, so
+                # customer_name/party_name/customer are always "Cash Customer" — this
+                # mirrors the real name from Quotation.custom_customer_name at invoice
+                # creation time (see make_sales_invoice_from_quotation), so both Sales
+                # Invoice Manager and the Crystal Sales Invoice print format (which
+                # already checks this field name first) show it correctly, even after
+                # the source Job Card/Quotation is later amended or edited.
+                "fieldname": "custom_customer_name",
+                "label": "Customer Name (Walk-in)",
+                "fieldtype": "Data",
+                "insert_after": "customer_name",
+                "read_only": 1,
+                "no_copy": 1,
+                "hidden": 1,
+            },
+            {
                 "fieldname": "custom_source_quotation",
                 "label": "Source Quotation",
                 "fieldtype": "Link",
                 "options": "Quotation",
-                "insert_after": "customer_name",
+                "insert_after": "custom_customer_name",
                 "read_only": 1,
                 "no_copy": 1,
                 "hidden": 1,

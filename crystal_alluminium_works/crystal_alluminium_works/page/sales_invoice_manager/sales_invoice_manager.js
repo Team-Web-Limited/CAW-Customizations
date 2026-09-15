@@ -776,7 +776,13 @@ async function render_sales_invoice_dashboard(page, invoice_name, wrapper, defau
 					<div class="sim-info-grid">
 						<div>
 							<div class="sim-info-label">Customer</div>
-							<div class="sim-info-val">${doc.customer || '—'}</div>
+							<!-- Cash quotations all share the one "Cash Customer" party record — doc.customer
+							     (and doc.customer_name, fetched from that same record) carries no walk-in
+							     identity. custom_customer_name is captured onto the invoice itself at creation
+							     time (same field name the Crystal Sales Invoice print format already checks
+							     first); the Job Card's own customer_name is the fallback for invoices made
+							     before that field existed. -->
+							<div class="sim-info-val">${frappe.utils.escape_html(doc.custom_customer_name || (source_job_card && source_job_card.customer_name) || doc.customer_name || doc.customer || '—')}</div>
 						</div>
 						<div>
 							<div class="sim-info-label">Grand Total</div>

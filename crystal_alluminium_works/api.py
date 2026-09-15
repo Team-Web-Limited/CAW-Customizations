@@ -2914,6 +2914,8 @@ def make_sales_invoice_from_quotation(source_name, releases=None):
 
     if hasattr(invoice, "custom_source_quotation"):
         invoice.custom_source_quotation = source_name
+    if hasattr(invoice, "custom_customer_name") and source_doc.get("custom_customer_name"):
+        invoice.custom_customer_name = source_doc.custom_customer_name
 
     _copy_aluminium_color_between_rows(source_doc.items, invoice.items)
 
