@@ -139,6 +139,7 @@ async function render_payments_page(page) {
 							<th>Date</th>
 							<th style="text-align:center;">C.Type</th>
 							<th>Name</th>
+							<th>Phone</th>
 							<th style="text-align:right;">Amount</th>
 							<th>Method</th>
 							<th>Deposit To</th>
@@ -183,7 +184,7 @@ function render_payment_record_rows(records) {
 	if (!records.length) {
 		return `
 			<tr>
-				<td colspan="8" class="pay-muted" style="text-align:center;padding:24px;">
+				<td colspan="9" class="pay-muted" style="text-align:center;padding:24px;">
 					No payments recorded yet.
 				</td>
 			</tr>
@@ -209,6 +210,7 @@ function render_payment_record_rows(records) {
 					</span>
 				</td>
 				<td style="font-weight:500;">${frappe.utils.escape_html(row.display_name || '-')}</td>
+				<td>${frappe.utils.escape_html(row.display_phone || '-')}</td>
 				<td style="text-align:right;font-weight:600;">${format_currency(row.amount || 0, 'KES')}</td>
 				<td>${frappe.utils.escape_html(row.payment_method || '-')}</td>
 				<td>${frappe.utils.escape_html(row.deposit_to || '-')}</td>
@@ -366,7 +368,7 @@ function load_payment_records(page, page_number) {
 	}
 
 	$body.find('.pay-table-body').html(`
-		<tr><td colspan="8" class="pay-muted" style="text-align:center;padding:32px;">Loading payments...</td></tr>
+		<tr><td colspan="9" class="pay-muted" style="text-align:center;padding:32px;">Loading payments...</td></tr>
 	`);
 
 	frappe.call({

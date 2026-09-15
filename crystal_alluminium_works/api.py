@@ -5736,7 +5736,7 @@ def get_payments_page(search=None, payment_method=None, from_date=None, to_date=
         "Payments",
         filters=filters,
         or_filters=or_filters,
-        fields=["name", "customer", "amount", "date", "payment_method", "deposit_to", "reference", "job_card", "quotation", "payment_type"],
+        fields=["name", "customer", "customer_phone", "amount", "date", "payment_method", "deposit_to", "reference", "job_card", "quotation", "payment_type"],
         order_by="creation desc",
         start=start,
         page_length=page_length,
@@ -5748,24 +5748,29 @@ def get_payments_page(search=None, payment_method=None, from_date=None, to_date=
     # from that Quotation's custom_customer_name instead.
     customer_ids = {row["customer"] for row in rows if row.get("customer")}
     customer_names = {}
+    customer_phones = {}
     if customer_ids:
         for c in frappe.get_all(
             "Customer",
             filters={"name": ["in", list(customer_ids)]},
-            fields=["name", "customer_name"],
+            fields=["name", "customer_name", "mobile_no"],
         ):
             customer_names[c.name] = c.customer_name
+            customer_phones[c.name] = c.mobile_no
 
     quotation_ids = {row["quotation"] for row in rows if row.get("quotation")}
     quotation_walkin_names = {}
+    quotation_walkin_phones = {}
     if quotation_ids:
         for q in frappe.get_all(
             "Quotation",
             filters={"name": ["in", list(quotation_ids)]},
-            fields=["name", "custom_customer_name"],
+            fields=["name", "custom_customer_name", "custom_customer_phone"],
         ):
             if q.custom_customer_name:
                 quotation_walkin_names[q.name] = q.custom_customer_name
+            if q.custom_customer_phone:
+                quotation_walkin_phones[q.name] = q.custom_customer_phone
 
     # A payment recorded through Create/Edit Job Card (the common case for a Cash
     # Customer — record_customer_payment is called with job_card, no quotation) has no
@@ -5774,14 +5779,17 @@ def get_payments_page(search=None, payment_method=None, from_date=None, to_date=
     # Sales Invoice Manager, which already prefer it the same way).
     job_card_ids = {row["job_card"] for row in rows if row.get("job_card")}
     job_card_walkin_names = {}
+    job_card_walkin_phones = {}
     if job_card_ids:
         for jc in frappe.get_all(
             "CAW Job Card",
             filters={"name": ["in", list(job_card_ids)]},
-            fields=["name", "customer_name"],
+            fields=["name", "customer_name", "phone_number"],
         ):
             if jc.customer_name and jc.customer_name != SHARED_CASH_CUSTOMER_NAME:
                 job_card_walkin_names[jc.name] = jc.customer_name
+            if jc.phone_number:
+                job_card_walkin_phones[jc.name] = jc.phone_number
 
     for row in rows:
         is_cash = row.get("customer") == SHARED_CASH_CUSTOMER_NAME
@@ -5792,8 +5800,19 @@ def get_payments_page(search=None, payment_method=None, from_date=None, to_date=
                 or job_card_walkin_names.get(row.get("job_card"))
                 or SHARED_CASH_CUSTOMER_NAME
             )
+            # The Payments row's own customer_phone (captured directly for the Create
+            # Payment / Record Deposit dialog) is the most specific source — falls back
+            # to the Job Card / Quotation only for payments recorded before that field
+            # existed, or via Create/Edit Job Card, which doesn't pass it through.
+            row["display_phone"] = (
+                row.get("customer_phone")
+                or job_card_walkin_phones.get(row.get("job_card"))
+                or quotation_walkin_phones.get(row.get("quotation"))
+                or ""
+            )
         else:
             row["display_name"] = customer_names.get(row.get("customer")) or row.get("customer")
+            row["display_phone"] = customer_phones.get(row.get("customer")) or ""
 
     count_result = frappe.get_all(
         "Payments",
