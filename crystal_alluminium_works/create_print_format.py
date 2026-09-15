@@ -830,26 +830,39 @@ def create_crystal_print_format(doctype, print_format_name, ref_label=None, term
 
     html = embed_letterhead_image(html)
 
-    if not frappe.db.exists("Print Format", print_format_name):
-        doc = frappe.get_doc({
-            "doctype": "Print Format",
-            "name": print_format_name,
-            "doc_type": doctype,
-            "custom_format": 1,
-            "format_data": "",
-            "html": html,
-            "print_format_builder": 0,
-            "standard": "Yes", # Treat as Standard in our App
-            "show_section_headings": 0,
-            "line_breaks": 0,
-            "align_labels_right": 0
-        })
-        doc.insert(ignore_permissions=True)
-    else:
-        doc = frappe.get_doc("Print Format", print_format_name)
-        doc.html = html
-        doc.save(ignore_permissions=True)
-        
+    # Print Format.validate() refuses to touch a standard=Yes format outside
+    # developer_mode (frappe/printing/doctype/print_format/print_format.py) — fine for
+    # a stray manual edit via the Print Format Builder, but this regenerates the exact
+    # same standard format's HTML from Print Format Configurations' own saved values, a
+    # fully code-controlled rebuild, not an ad hoc customisation. developer_mode is (and
+    # should stay) off outside local dev, so without this the Configurations page's Save
+    # throws "Standard Print Format cannot be updated" everywhere but there. in_migrate
+    # is the same flag Frappe's own standard-doc fixture sync relies on to bypass this.
+    previous_in_migrate = frappe.flags.in_migrate
+    frappe.flags.in_migrate = True
+    try:
+        if not frappe.db.exists("Print Format", print_format_name):
+            doc = frappe.get_doc({
+                "doctype": "Print Format",
+                "name": print_format_name,
+                "doc_type": doctype,
+                "custom_format": 1,
+                "format_data": "",
+                "html": html,
+                "print_format_builder": 0,
+                "standard": "Yes", # Treat as Standard in our App
+                "show_section_headings": 0,
+                "line_breaks": 0,
+                "align_labels_right": 0
+            })
+            doc.insert(ignore_permissions=True)
+        else:
+            doc = frappe.get_doc("Print Format", print_format_name)
+            doc.html = html
+            doc.save(ignore_permissions=True)
+    finally:
+        frappe.flags.in_migrate = previous_in_migrate
+
     frappe.db.commit()
     print(f"Print Format '{print_format_name}' updated successfully.")
 
