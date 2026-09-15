@@ -4,13 +4,17 @@
  "docstatus": 0,
  "doctype": "Page",
  "idx": 0,
- "modified": "2026-07-13 17:08:51.497596",
+ "modified": "2026-09-15 16:14:57.183778",
  "modified_by": "Administrator",
  "module": "Crystal Alluminium Works",
  "name": "stock_adjustment",
  "owner": "Administrator",
  "page_name": "stock_adjustment",
- "roles": [],
+ "roles": [
+  {
+   "role": "System Manager"
+  }
+ ],
  "script": null,
  "standard": "Yes",
  "style": null,

@@ -279,7 +279,7 @@ def get_print_format_context(print_format):
 
 @frappe.whitelist()
 def get_print_format_configuration_schema():
-    frappe.only_for("System Manager")
+    frappe.only_for(["System Manager", "Sales User"])
     ensure_default_print_format_configurations()
     return [
         {
@@ -293,14 +293,14 @@ def get_print_format_configuration_schema():
 
 @frappe.whitelist()
 def get_print_format_configuration_values(print_format):
-    frappe.only_for("System Manager")
+    frappe.only_for(["System Manager", "Sales User"])
     ensure_default_print_format_configurations()
     return get_print_format_configuration(print_format)
 
 
 @frappe.whitelist()
 def save_print_format_configuration(print_format, values):
-    frappe.only_for("System Manager")
+    frappe.only_for(["System Manager", "Sales User"])
     if print_format not in PRINT_FORMAT_CONFIGS:
         frappe.throw(f"Unsupported print format: {print_format}")
 
