@@ -2805,6 +2805,12 @@ def _create_multi_item_deduction_stock_entry(items_to_deduct, company, job_card_
             "item_code": item["item_code"],
             "s_warehouse": item["s_warehouse"],
             "qty": round(flt(item["qty"]), 4),
+            # These deductions exist to keep stock quantity accurate for cheap
+            # hardware (ceiling grid pieces, aluminium offcuts, etc.) that have never
+            # been costed via a purchase — this app's Job Card, not stock valuation,
+            # is the real source of truth for what a job actually cost/collected, so
+            # don't block the deduction on a Valuation Rate these items don't have.
+            "allow_zero_valuation_rate": 1,
         })
     entry.flags.ignore_permissions = True
     entry.insert()
