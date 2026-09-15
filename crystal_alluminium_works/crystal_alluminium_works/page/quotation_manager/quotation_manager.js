@@ -1623,6 +1623,11 @@ async function open_job_card_modal(page, doc) {
 	d._quotation_customer_name = doc.custom_customer_name || '';
 	d._quotation_customer_phone = doc.custom_customer_phone || '';
 	d._quotation_customer_pin = doc.custom_customer_pin || '';
+	// The payment mode this quotation's own customer actually belongs to — lets the
+	// Payment Mode change handler below tell "still this quotation's customer, just
+	// re-confirming the mode" apart from "user is switching to a genuinely different
+	// customer", the same distinction apply_job_card_customer_defaults already makes.
+	d._quotation_payment_mode = get_job_card_payment_mode_label(defaults.payment_mode);
 	d.show();
 	refresh_job_card_payment_options(d);
 	if (defaults.customer || quotation_customer) {
@@ -1639,12 +1644,27 @@ async function open_job_card_modal(page, doc) {
 
 	d.fields_dict.payment_mode.$input.on('change', function() {
 		refresh_job_card_payment_options(d);
-		d.set_value('customer', '');
-		d.set_value('customer_name', '');
-		d.set_value('customer_pin', '');
-		d.set_value('phone_number', '');
-		// Customer just went blank — clear the advance with it rather than leaving the
-		// previous customer's figure sitting above the payment fields.
+		let selected_mode = d.get_value('payment_mode');
+		if (d._quotation_customer && selected_mode === d._quotation_payment_mode) {
+			// Still this quotation's own customer (e.g. the mode just got toggled back
+			// to what it already was, or re-selected without actually changing anything)
+			// — restore its captured name/phone/PIN instead of leaving them blank. Blindly
+			// blanking here previously left a walk-in's real name (custom_customer_name)
+			// stranded until the user happened to re-pick the customer from the
+			// autocomplete dropdown, the only path that reapplied it; if that never
+			// happened, the job card was saved with the generic "Cash Customer" name.
+			d.set_value('customer', d._quotation_customer);
+			d.set_value('customer_name', d._quotation_customer_name);
+			d.set_value('customer_pin', d._quotation_customer_pin);
+			d.set_value('phone_number', d._quotation_customer_phone);
+		} else {
+			d.set_value('customer', '');
+			d.set_value('customer_name', '');
+			d.set_value('customer_pin', '');
+			d.set_value('phone_number', '');
+		}
+		// Customer just changed (or was confirmed) — recompute the advance for whichever
+		// customer is now selected rather than leaving the previous figure on screen.
 		refresh_job_card_customer_advance(d);
 	});
 
