@@ -2885,22 +2885,23 @@ function bind_batch_table_keynav(d) {
 			}
 		});
 
+		let $row = $(this).closest('tr');
+		let $rows = $wrapper.find('tbody tr');
+		let row_index = $rows.index($row);
 		let field = $(this).data('field');
-		let $column = $wrapper.find(`.qb-batch-input[data-field="${field}"]:visible`);
-		let row_index = $column.index(this);
 		let step = e.shiftKey ? -1 : 1;
-		let next_row = row_index + step;
+		let next_field_index = fields.indexOf(field) + step;
 
-		if (next_row >= 0 && next_row < $column.length) {
-			focus_input($column.eq(next_row));
+		if (next_field_index >= 0 && next_field_index < fields.length) {
+			focus_input($row.find(`.qb-batch-input[data-field="${fields[next_field_index]}"]:visible`));
 			return;
 		}
 
-		// Rolled off the end of this column — continue at the top (or bottom) of the neighbouring one.
-		let next_field = fields[fields.indexOf(field) + step];
-		if (next_field) {
-			let $next_column = $wrapper.find(`.qb-batch-input[data-field="${next_field}"]:visible`);
-			focus_input($next_column.eq(step > 0 ? 0 : $next_column.length - 1));
+		// Rolled off the end of this row — continue at the start (or end) of the neighbouring one.
+		let next_row_index = row_index + step;
+		if (next_row_index >= 0 && next_row_index < $rows.length) {
+			let target_field = step > 0 ? fields[0] : fields[fields.length - 1];
+			focus_input($rows.eq(next_row_index).find(`.qb-batch-input[data-field="${target_field}"]:visible`));
 			return;
 		}
 
@@ -2960,6 +2961,7 @@ function open_glass_batch_details_dialog(page, items) {
 				<td><input type="text" class="form-control input-sm qb-batch-input" data-field="description" value="${frappe.utils.escape_html(it.description || '')}" style="width:130px;"></td>
 				<td style="text-align:center;white-space:nowrap;">
 					<button type="button" class="btn btn-xs btn-default qb-duplicate-row" title="Duplicate row — same item, new size">⧉</button>
+					<button type="button" class="btn btn-xs btn-danger qb-remove-row" title="Remove row">✕</button>
 				</td>
 			</tr>
 		`;
@@ -3137,6 +3139,19 @@ function open_glass_batch_details_dialog(page, items) {
 		});
 		$clone_row.find('[data-field="width_mm"]').trigger('focus');
 	});
+
+	// Drop a row the user added by mistake — remove it from `items` so Save
+	// doesn't pick it up, and remove the <tr> so the numbering can be redone.
+	$batch_wrapper.on('click', '.qb-remove-row', function () {
+		let $row = $(this).closest('tr');
+		let source_id = $row.data('id');
+		items = items.filter(function (it) { return it.id !== source_id; });
+
+		$row.remove();
+		$batch_wrapper.find('tbody tr').each(function (idx) {
+			$(this).find('.qb-batch-row-no').text(idx + 1);
+		});
+	});
 }
 
 // Same idea as open_glass_batch_details_dialog, sized to what Aluminium
@@ -3169,6 +3184,7 @@ function open_aluminium_batch_details_dialog(page, items) {
 					<td><input type="text" class="form-control input-sm qb-batch-input" data-field="description" value="${frappe.utils.escape_html(it.description || '')}" style="width:150px;"></td>
 					<td style="text-align:center;white-space:nowrap;">
 						<button type="button" class="btn btn-xs btn-default qb-duplicate-row" title="Duplicate row — same item, new color">⧉</button>
+						<button type="button" class="btn btn-xs btn-danger qb-remove-row" title="Remove row">✕</button>
 					</td>
 				</tr>
 			`;
@@ -3303,6 +3319,20 @@ function open_aluminium_batch_details_dialog(page, items) {
 				$(this).find('.qb-batch-row-no').text(idx + 1);
 			});
 			$clone_row.find('.qb-aluminium-color-input').trigger('focus');
+		});
+
+		// Drop a row the user added by mistake — remove it from `items` so Save
+		// doesn't pick it up, and remove the <tr> so the numbering can be redone.
+		$color_cells.on('click', '.qb-remove-row', function () {
+			let $wrapper = d.fields_dict.batch_table.$wrapper;
+			let $row = $(this).closest('tr');
+			let source_id = $row.data('id');
+			items = items.filter(function (it) { return it.id !== source_id; });
+
+			$row.remove();
+			$wrapper.find('tbody tr').each(function (idx) {
+				$(this).find('.qb-batch-row-no').text(idx + 1);
+			});
 		});
 	});
 }

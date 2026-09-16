@@ -991,5 +991,219 @@
 		retarget_hrefs();
 	}
 
-	window.CAWPaymentDialog = { open: open };
+	// ---------------------------------------------------------------------------
+	// Correct Payment
+	// ---------------------------------------------------------------------------
+
+	/**
+	 * Correct a mis-keyed payment: amount, method and deposit account only.
+	 *
+	 * A sibling of open() rather than a mode of it. open() is built end to end around choosing a
+	 * customer, loading their outstanding job cards, the allocations grid and the live advance
+	 * note, and it calls record_customer_payment. A correction edits three fields on one fixed
+	 * row and calls correct_payment, so bending open() to it would mean switching most of its own
+	 * logic off. Living in this file keeps the shared pieces shared — get_payment_mode_options,
+	 * is_reference_required_method and the payment_method -> deposit_to derivation below are the
+	 * same ones the create dialog uses — and lets the Job Card / Quotation pages offer Correct
+	 * later without duplicating any of it.
+	 *
+	 * options: { payment, eligibility, onSaved }
+	 */
+	async function open_correction(options) {
+		options = options || {};
+		let eligibility = options.eligibility;
+		let payment = options.payment;
+
+		if (!eligibility || !eligibility.can_correct) {
+			frappe.msgprint({
+				title: __('Cannot correct this payment'),
+				indicator: 'red',
+				message: '<ul><li>' + ((eligibility && eligibility.reasons) || [__('Unknown reason.')])
+					.map(frappe.utils.escape_html).join('</li><li>') + '</li></ul>'
+			});
+			return;
+		}
+
+		let current = eligibility.current || {};
+		let mode_of_payments = await get_payment_mode_options();
+		let min_amount = flt(eligibility.min_amount || 0);
+
+		let context_rows = [
+			['Customer', current.customer],
+			['Date', current.date ? frappe.datetime.str_to_user(current.date) : '-'],
+			['Payment Entry', current.payment_entry || '-']
+		];
+		if ((eligibility.job_cards || []).length) {
+			context_rows.push(['Job Cards', eligibility.job_cards.join(', ')]);
+		}
+
+		let warnings_html = (eligibility.warnings || []).length
+			? '<div style="margin-top:10px;padding:8px 10px;background:#f39c1215;border-left:3px solid #f39c12;font-size:12px;">'
+				+ (eligibility.warnings || []).map(frappe.utils.escape_html).join('<br>') + '</div>'
+			: '';
+
+		let d = new frappe.ui.Dialog({
+			title: __('Correct Payment #{0}', [payment]),
+			size: 'small',
+			fields: [
+				{
+					fieldtype: 'HTML',
+					fieldname: 'context',
+					options: '<div style="font-size:12px;line-height:1.7;">'
+						+ context_rows.map(function(pair) {
+							return '<div><span style="color:var(--text-muted);display:inline-block;min-width:104px;">'
+								+ frappe.utils.escape_html(pair[0]) + '</span>'
+								+ frappe.utils.escape_html(String(pair[1] == null ? '-' : pair[1])) + '</div>';
+						}).join('')
+						+ '<div style="margin-top:10px;padding:8px 10px;background:var(--subtle-fg);border-radius:4px;">'
+						+ __('Correcting this cancels Payment Entry {0} and posts a new one. The original payment stays on record.',
+							[frappe.utils.escape_html(String(current.payment_entry || ''))])
+						+ '</div>' + warnings_html + '</div>'
+				},
+				{ fieldtype: 'Section Break' },
+				{
+					fieldtype: 'Currency',
+					fieldname: 'amount',
+					label: __('Amount'),
+					reqd: 1,
+					default: flt(current.amount),
+					description: min_amount > 0
+						? __('Cannot go below {0}, already allocated to job cards.', [format_currency(min_amount, 'KES')])
+						: ''
+				},
+				{ fieldtype: 'Column Break' },
+				{
+					fieldtype: 'Select',
+					fieldname: 'payment_method',
+					label: __('Payment Method'),
+					options: [''].concat(mode_of_payments).join('\n'),
+					reqd: 1,
+					default: current.payment_method,
+					onchange: function() {
+						// Same derivation as the create dialog: the account follows the method, so a
+						// correction can't post to an account that contradicts how the money came in.
+						let payment_method = d.get_value('payment_method');
+						if (!payment_method) {
+							d.set_value('deposit_to', '');
+							return;
+						}
+						// Reference is only mandatory for Bank Transfer / Cheque — same rule, same
+						// constant, as the create dialog and api.py.
+						d.set_df_property('reference', 'reqd', is_reference_required_method(payment_method) ? 1 : 0);
+						frappe.call({
+							method: 'crystal_alluminium_works.api.get_mode_of_payment_account_info',
+							args: { payment_method: payment_method },
+							callback: function(r) {
+								d.set_value('deposit_to', ((r && r.message) || {}).default_account || '');
+							}
+						});
+					}
+				},
+				{ fieldtype: 'Section Break' },
+				{
+					fieldtype: 'Link',
+					fieldname: 'deposit_to',
+					label: __('Deposit To'),
+					options: 'Account',
+					reqd: 1,
+					read_only: 1,
+					default: current.deposit_to
+				},
+				{ fieldtype: 'Column Break' },
+				{
+					fieldtype: 'Data',
+					fieldname: 'reference',
+					label: __('Reference'),
+					default: current.reference,
+					// Toggled by payment_method's onchange above, and seeded here for the method
+					// the payment already has.
+					reqd: is_reference_required_method(current.payment_method) ? 1 : 0
+				},
+				{ fieldtype: 'Section Break' },
+				{
+					fieldtype: 'Small Text',
+					fieldname: 'reason',
+					label: __('Reason for correction'),
+					reqd: 1,
+					description: __('Recorded against both payments — it is the only record of why the original was wrong.')
+				}
+			],
+			primary_action_label: __('Correct Payment'),
+			primary_action: function(values) {
+				let amount = flt(values.amount);
+				let changes = [];
+				if (Math.abs(amount - flt(current.amount)) > 0.0001) {
+					changes.push(__('Amount') + ': ' + format_currency(current.amount, 'KES') + ' → ' + format_currency(amount, 'KES'));
+				}
+				if (values.payment_method !== current.payment_method) {
+					changes.push(__('Method') + ': ' + current.payment_method + ' → ' + values.payment_method);
+				}
+				if (values.deposit_to !== current.deposit_to) {
+					changes.push(__('Deposit To') + ': ' + current.deposit_to + ' → ' + values.deposit_to);
+				}
+				if ((values.reference || '') !== (current.reference || '')) {
+					changes.push(__('Reference') + ': ' + (current.reference || __('(none)')) + ' → ' + (values.reference || __('(none)')));
+				}
+
+				if (!changes.length) {
+					frappe.msgprint(__('Nothing to correct — amount, method, account and reference are unchanged.'));
+					return;
+				}
+				if (amount <= 0) {
+					frappe.msgprint(__('Amount must be greater than zero.'));
+					return;
+				}
+				if (min_amount > 0 && amount - min_amount < -0.0001) {
+					frappe.msgprint(__('Amount cannot be less than {0}, which is already allocated to job cards.',
+						[format_currency(min_amount, 'KES')]));
+					return;
+				}
+				// Mirrors the same check in api.py correct_payment, against the same constant —
+				// tested on the CORRECTED reference, since a mis-keyed reference is one of the
+				// things a correction exists to fix.
+				if (is_reference_required_method(values.payment_method) && !(values.reference || '').trim()) {
+					frappe.msgprint(__('Reference is required for {0} payments.', [values.payment_method]));
+					return;
+				}
+				if (!(values.reason || '').trim()) {
+					frappe.msgprint(__('Please give a reason for this correction.'));
+					return;
+				}
+
+				frappe.confirm(
+					'<div style="font-size:13px;">' + __('This will cancel the original Payment Entry and post a replacement.')
+						+ '<ul style="margin-top:8px;"><li>' + changes.map(frappe.utils.escape_html).join('</li><li>') + '</li></ul></div>',
+					function() {
+						frappe.call({
+							method: 'crystal_alluminium_works.api.correct_payment',
+							args: {
+								payment: payment,
+								amount: amount,
+								payment_method: values.payment_method,
+								deposit_to: values.deposit_to,
+								reference: values.reference || '',
+								reason: values.reason
+							},
+							freeze: true,
+							freeze_message: __('Correcting payment...'),
+							callback: function(r) {
+								if (!r || !r.message) return;
+								d.hide();
+								frappe.show_alert({
+									message: __('Payment #{0} corrected — replacement is Payment #{1}.',
+										[r.message.corrected, r.message.payment]),
+									indicator: 'green'
+								});
+								if (typeof options.onSaved === 'function') options.onSaved(r.message);
+							}
+						});
+					}
+				);
+			}
+		});
+
+		d.show();
+	}
+
+	window.CAWPaymentDialog = { open: open, openCorrection: open_correction };
 })();

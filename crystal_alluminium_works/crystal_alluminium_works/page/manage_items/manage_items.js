@@ -49,6 +49,18 @@ const MI_TABS = [
 	{ category: 'Silicone', label: 'Silicone' }
 ];
 
+// Sales User gets the page only to maintain aluminium colours: Aluminium tab, read-only
+// list, Configure Color. The write endpoints enforce the same split server-side.
+function mi_is_color_only_user() {
+	return !frappe.user.has_role('System Manager');
+}
+
+function get_visible_tabs() {
+	return mi_is_color_only_user()
+		? MI_TABS.filter(tab => tab.category === 'Aluminium')
+		: MI_TABS;
+}
+
 function is_glass_category(category) {
 	return MI_CONFIGURABLE_GLASS_CATEGORIES.has(category);
 }
@@ -116,6 +128,10 @@ frappe.pages['manage-items'].on_page_load = function(wrapper) {
 
 function bind_manage_items_events(page) {
 	let update_config_buttons = function(category) {
+		if (mi_is_color_only_user()) {
+			$(page.body).find('.mi-color-btn').toggle(category === 'Aluminium');
+			return;
+		}
 		let is_glass = is_glass_category(category);
 		let is_aluminium = category === 'Aluminium';
 		let is_standard_export_category = ['Ceiling', 'Rubber', 'Fittings', 'Silicone'].includes(category);
@@ -277,6 +293,15 @@ function bind_manage_items_events(page) {
 			});
 		});
 	});
+
+	if (mi_is_color_only_user()) {
+		// Handlers above stay bound for System Manager; drop every write action here.
+		['.mi-add-btn', '.mi-edit-btn', '.mi-delete-btn', '.mi-mass-delete-btn',
+			'.mi-config-btn', '.mi-service-btn', '.mi-sheets-btn',
+			'.mi-export-aluminium-btn', '.mi-export-glass-btn', '.mi-export-standard-btn'
+		].forEach(selector => $(page.body).off('click', selector));
+		$(page.body).find('.mi-add-btn, .mi-mass-delete-btn, .mi-select-all').remove();
+	}
 
 	update_config_buttons(page.mi_current_category || 'Aluminium');
 }
@@ -474,6 +499,7 @@ function render_items_table(page, items) {
 	let show_code = true;
 	let colspan = show_code ? 9 : 8;
 	let is_aluminium = page.mi_current_category === 'Aluminium';
+	let can_edit = !mi_is_color_only_user();
 
 	if (!items || items.length === 0) {
 		$body.html(`<tr><td colspan="${colspan}" style="text-align:center;padding:24px;color:var(--text-muted);">No items found in this category.</td></tr>`);
@@ -486,7 +512,7 @@ function render_items_table(page, items) {
 		$body.append(`
 			<tr>
 				<td style="padding:12px 16px; text-align:center;">
-					<input type="checkbox" class="mi-select-item" data-item-code="${item_code_esc}">
+					${can_edit ? `<input type="checkbox" class="mi-select-item" data-item-code="${item_code_esc}">` : ''}
 				</td>
 				<td style="padding:12px 16px; font-weight:500;">
 					${item.item_name || item.item_code}
@@ -511,8 +537,10 @@ function render_items_table(page, items) {
 					}
 				</td>
 				<td style="padding:12px 16px; text-align:center;">
-					<button class="btn btn-xs btn-default mi-edit-btn" data-item="${item_json}">Edit</button>
-					<button class="btn btn-xs btn-danger mi-delete-btn" data-item-code="${item_code_esc}" style="margin-left:4px;">Delete</button>
+					${can_edit ? `
+						<button class="btn btn-xs btn-default mi-edit-btn" data-item="${item_json}">Edit</button>
+						<button class="btn btn-xs btn-danger mi-delete-btn" data-item-code="${item_code_esc}" style="margin-left:4px;">Delete</button>
+					` : ''}
 				</td>
 			</tr>
 		`);
@@ -1500,7 +1528,7 @@ function get_manage_items_html() {
 			</div>
 
 		<div class="mi-tabs">
-			${MI_TABS.map((tab, index) => `
+			${get_visible_tabs().map((tab, index) => `
 				<div class="mi-tab ${index === 0 ? 'active' : ''}" data-category="${tab.category}">${tab.label}</div>
 			`).join('')}
 		</div>

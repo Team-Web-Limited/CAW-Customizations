@@ -18,7 +18,15 @@
   "deposit_to",
   "reference",
   "allocations",
-  "payment_entry"
+  "payment_entry",
+  "correction_section",
+  "is_corrected",
+  "corrected_by_payment",
+  "corrected_on",
+  "corrected_by",
+  "correction_column",
+  "corrects_payment",
+  "correction_reason"
  ],
  "fields": [
   {
@@ -109,6 +117,62 @@
    "fieldtype": "Link",
    "label": "Payment Entry",
    "options": "Payment Entry",
+   "read_only": 1
+  },
+  {
+   "fieldname": "correction_section",
+   "fieldtype": "Section Break",
+   "label": "Correction"
+  },
+  {
+   "default": "0",
+   "description": "Set on the ORIGINAL row once it has been superseded by a correction. Its Payment Entry is cancelled and it is excluded from every balance, credit and total computation, but the row itself is never edited — it stays as the immutable record of what was first captured. See correct_payment in api.py.",
+   "fieldname": "is_corrected",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Is Corrected",
+   "read_only": 1
+  },
+  {
+   "description": "The replacement Payments row that supersedes this one. NOTE: Payments.autoname is \"autoincrement\", so a Payments name is an int while this Link column is varchar — str() both sides on every write and filter (same trap as _get_job_card_allocated_payments).",
+   "fieldname": "corrected_by_payment",
+   "fieldtype": "Link",
+   "label": "Corrected By Payment",
+   "options": "Payments",
+   "read_only": 1
+  },
+  {
+   "description": "When the correction was made. Explicit rather than relying on `modified`, because the flagging write uses update_modified=False so this row's `modified` keeps reading as the moment the payment was originally captured.",
+   "fieldname": "corrected_on",
+   "fieldtype": "Datetime",
+   "label": "Corrected On",
+   "read_only": 1
+  },
+  {
+   "description": "Who made the correction. Explicit for the same reason as Corrected On — `modified_by` is deliberately left untouched.",
+   "fieldname": "corrected_by",
+   "fieldtype": "Link",
+   "label": "Corrected By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "correction_column",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Set on the REPLACEMENT row: the original payment this one corrects. Its presence is what marks a row as a correction. Same int-vs-varchar trap as Corrected By Payment — str() both sides.",
+   "fieldname": "corrects_payment",
+   "fieldtype": "Link",
+   "label": "Corrects Payment",
+   "options": "Payments",
+   "read_only": 1
+  },
+  {
+   "description": "Why the original was wrong. Mandatory at correction time — it is the only record of the reason, since neither Payments row carries the before/after diff on its own.",
+   "fieldname": "correction_reason",
+   "fieldtype": "Small Text",
+   "label": "Correction Reason",
    "read_only": 1
   }
  ],

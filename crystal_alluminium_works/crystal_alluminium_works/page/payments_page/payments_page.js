@@ -53,11 +53,16 @@ async function render_payments_page(page) {
 		.pay-card-header .pay-icon { font-size: 18px; }
 		.pay-method-totals { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 		.pay-method-pill { background: var(--fg-color); border: 1px solid var(--border-color); border-radius: 14px; padding: 5px 12px; font-size: 12px; font-weight: 600; color: var(--text-color); white-space: nowrap; }
+		/* Compact correction marker, inline with the amount so a corrected row stays the same
+		   height as every other one and the Amount column keeps its natural width. */
+		.pay-cbadge { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; margin-right: 6px; border-radius: 50%; font-size: 10px; font-weight: 700; line-height: 1; cursor: help; vertical-align: middle; }
+		.pay-cbadge-corrected { background: #e74c3c; color: #fff; }
+		.pay-cbadge-correction { background: #f39c12; color: #fff; }
 		.pay-method-pill .pay-method-pill-label { color: var(--text-muted); font-weight: 600; margin-right: 5px; }
 		.pay-method-pill-total { background: #2c3e50; border-color: #2c3e50; color: #fff; }
 		.pay-method-pill-total .pay-method-pill-label { color: rgba(255,255,255,.75); }
 		.pay-filters { padding:16px 18px; border-bottom:1px solid var(--border-color); background:var(--fg-color); }
-		.pay-filter-grid { display:grid; grid-template-columns:minmax(260px, 2fr) minmax(180px, 1fr) minmax(150px, .8fr) minmax(150px, .8fr) auto; gap:12px; align-items:end; }
+		.pay-filter-grid { display:grid; grid-template-columns:minmax(220px, 2fr) minmax(170px, 1fr) minmax(150px, .9fr) minmax(140px, .8fr) minmax(140px, .8fr) auto; gap:12px; align-items:end; }
 		.pay-filter-field label { display:block; margin-bottom:6px; color:var(--text-muted); font-size:12px; font-weight:600; }
 		.pay-filter-actions { display:flex; gap:8px; }
 		.pay-download-dropdown { position: relative; display: inline-block; }
@@ -67,7 +72,7 @@ async function render_payments_page(page) {
 		.pay-table-scroll { height:560px; overflow:auto; }
 		.pay-table { width: 100%; min-width: 1250px; border-collapse: separate; border-spacing:0; }
 		.pay-table th { position:sticky; top:0; z-index:2; padding: 11px 14px; font-size: 12px; font-weight: 700; color: var(--text-muted); text-align: left; border-bottom: 1px solid var(--border-color); background: var(--subtle-fg); }
-		.pay-table td { padding: 12px 14px; font-size: 13px; color: var(--text-color); border-bottom: 1px solid var(--border-color); vertical-align: top; }
+		.pay-table td { padding: 12px 14px; font-size: 13px; color: var(--text-color); border-bottom: 1px solid var(--border-color); vertical-align: middle; }
 		.pay-table tbody tr:last-child td { border-bottom: 0; }
 		.pay-muted { color: var(--text-muted); }
 		.pay-pagination { padding:14px 18px; border-top:1px solid var(--border-color); }
@@ -103,6 +108,15 @@ async function render_payments_page(page) {
 						<select class="form-control" data-filter="payment_method">
 							<option value="">All methods</option>
 							${mode_of_payments.map(method => `<option value="${frappe.utils.escape_html(method)}">${frappe.utils.escape_html(method)}</option>`).join('')}
+						</select>
+					</div>
+					<div class="pay-filter-field">
+						<label>Correction</label>
+						<select class="form-control" data-filter="correction_view">
+							<option value="all">All payments</option>
+							<option value="active">Active only</option>
+							<option value="corrections">Corrections only</option>
+							<option value="corrected">Superseded only</option>
 						</select>
 					</div>
 					<div class="pay-filter-field">
@@ -145,6 +159,7 @@ async function render_payments_page(page) {
 							<th>Deposit To</th>
 							<th>Reference</th>
 							<th>Quotation</th>
+							<th style="text-align:center;">Actions</th>
 						</tr>
 					</thead>
 					<tbody class="pay-table-body"></tbody>
@@ -184,7 +199,7 @@ function render_payment_record_rows(records) {
 	if (!records.length) {
 		return `
 			<tr>
-				<td colspan="9" class="pay-muted" style="text-align:center;padding:24px;">
+				<td colspan="10" class="pay-muted" style="text-align:center;padding:24px;">
 					No payments recorded yet.
 				</td>
 			</tr>
@@ -192,6 +207,7 @@ function render_payment_record_rows(records) {
 	}
 
 	return records.map(row => {
+		let correction = build_correction_display(row);
 		let quotation_cell = '<span class="pay-muted">-</span>';
 		if (row.quotation) {
 			quotation_cell = frappe.utils.escape_html(row.quotation);
@@ -211,14 +227,69 @@ function render_payment_record_rows(records) {
 				</td>
 				<td style="font-weight:500;">${frappe.utils.escape_html(row.display_name || '-')}</td>
 				<td>${frappe.utils.escape_html(row.display_phone || '-')}</td>
-				<td style="text-align:right;font-weight:600;">${format_currency(row.amount || 0, 'KES')}</td>
+				<td style="text-align:right;font-weight:600;white-space:nowrap;">${correction.badge}<span${correction.amount_style}>${format_currency(row.amount || 0, 'KES')}</span></td>
 				<td>${frappe.utils.escape_html(row.payment_method || '-')}</td>
 				<td>${frappe.utils.escape_html(row.deposit_to || '-')}</td>
 				<td>${frappe.utils.escape_html(row.reference || '-')}</td>
 				<td>${quotation_cell}</td>
+			<td style="text-align:center;">${correction.action}</td>
 			</tr>
 		`;
 	}).join('');
+}
+
+function build_correction_display(row) {
+	// The two halves of a correction (see api.py correct_payment) both stay listed — that
+	// visibility IS the correction log, so the superseded original is struck through and badged
+	// rather than hidden. `correction_counterpart` is pre-resolved server-side
+	// (_attach_payment_correction_context) so this stays a pure render with no extra fetch.
+	let counterpart = row.correction_counterpart || null;
+	let display = { badge: '', amount_style: '', action: '<span class="pay-muted">-</span>' };
+
+	if (row.is_corrected) {
+		let bits = [];
+		if (counterpart) {
+			bits.push(`Replaced by Payment #${counterpart.name}`);
+			if (Math.abs(flt(counterpart.amount) - flt(row.amount)) > 0.0001) {
+				bits.push(`${format_currency(row.amount || 0, 'KES')} → ${format_currency(counterpart.amount || 0, 'KES')}`);
+			}
+			if (counterpart.payment_method && counterpart.payment_method !== row.payment_method) {
+				bits.push(`${row.payment_method} → ${counterpart.payment_method}`);
+			}
+			if (counterpart.correction_reason) bits.push(`Reason: ${counterpart.correction_reason}`);
+		}
+		if (row.corrected_on) bits.push(`Corrected ${frappe.datetime.str_to_user(row.corrected_on)} by ${row.corrected_by || '—'}`);
+		display.badge = `<span class="pay-cbadge pay-cbadge-corrected" title="${frappe.utils.escape_html('Corrected — ' + bits.join(' · '))}">C</span>`;
+		// Struck through because this row is history, not money — it is excluded from the totals
+		// pills and from both report downloads.
+		display.amount_style = ' style="text-decoration:line-through;opacity:.55;"';
+		return display;
+	}
+
+	if (row.corrects_payment) {
+		let bits = [`Replaces Payment #${row.corrects_payment}`];
+		if (counterpart) {
+			if (Math.abs(flt(counterpart.amount) - flt(row.amount)) > 0.0001) {
+				bits.push(`was ${format_currency(counterpart.amount || 0, 'KES')}`);
+			}
+			if (counterpart.payment_method && counterpart.payment_method !== row.payment_method) {
+				bits.push(`was ${counterpart.payment_method}`);
+			}
+		}
+		if (row.correction_reason) bits.push(`Reason: ${row.correction_reason}`);
+		display.badge = `<span class="pay-cbadge pay-cbadge-correction" title="${frappe.utils.escape_html('Correction — ' + bits.join(' · '))}">C</span>`;
+	}
+
+	// Only the CHEAP half of the gate: age, type and whether there is a Payment Entry to reverse.
+	// The expensive constraints — released items, JC Operations stock entries, invoices, closed
+	// periods — are far too costly to evaluate for every row, so they run on click via
+	// get_payment_correction_eligibility, the same way the Job Card cancel flow does.
+	let correctable = !row.is_corrected && row.payment_type !== 'Refund'
+		&& row.correction_window_open && row.payment_entry;
+	if (correctable) {
+		display.action = `<button class="btn btn-xs btn-default pay-correct-btn" data-payment="${frappe.utils.escape_html(String(row.name))}" title="Correct a mis-keyed amount, method or account">Correct</button>`;
+	}
+	return display;
 }
 
 function render_method_totals_pills(data) {
@@ -294,6 +365,8 @@ function bind_payments_page_events(page, $body) {
 
 	$body.on('click.paymentsPage', '.pay-filter-clear', function() {
 		$body.find('[data-filter]').val('');
+		// Correction view has no meaningful blank state — reset it to its default instead.
+		$body.find('[data-filter="correction_view"]').val('all');
 		// Search / Payment Method clear to blank, but the date range goes back to today —
 		// that's the page's default, not "all time".
 		let today = frappe.datetime.get_today();
@@ -322,6 +395,14 @@ function bind_payments_page_events(page, $body) {
 		if (event.key === 'Enter') {
 			load_payment_records(page, 1);
 		}
+	});
+
+	$body.on('change.paymentsPage', '[data-filter="correction_view"], [data-filter="payment_method"]', function() {
+		load_payment_records(page, 1);
+	});
+
+	$body.on('click.paymentsPage', '.pay-correct-btn', function() {
+		open_correct_payment_modal(page, $(this).attr('data-payment'));
 	});
 
 	$body.on('input.paymentsPage', '[data-filter="search"]', function() {
@@ -368,13 +449,14 @@ function load_payment_records(page, page_number) {
 	}
 
 	$body.find('.pay-table-body').html(`
-		<tr><td colspan="9" class="pay-muted" style="text-align:center;padding:32px;">Loading payments...</td></tr>
+		<tr><td colspan="10" class="pay-muted" style="text-align:center;padding:32px;">Loading payments...</td></tr>
 	`);
 
 	frappe.call({
 		method: 'crystal_alluminium_works.api.get_payments_page',
 		args: {
 			search: $body.find('[data-filter="search"]').val() || '',
+			correction_view: $body.find('[data-filter="correction_view"]').val() || 'all',
 			payment_method: $body.find('[data-filter="payment_method"]').val() || '',
 			from_date: from_date,
 			to_date: to_date,
@@ -428,6 +510,32 @@ function open_create_payment_modal(page) {
 	}
 	window.CAWPaymentDialog.open({
 		onSaved: () => load_payment_records(page, 1)
+	});
+}
+
+function open_correct_payment_modal(page, payment) {
+	if (!window.CAWPaymentDialog || !window.CAWPaymentDialog.openCorrection) {
+		frappe.msgprint(__('Payment dialog failed to load. Please refresh the page.'));
+		return;
+	}
+	// The real gate runs here, on click, not when the row was rendered: checking releases, JC
+	// Operations stock entries, invoices and closed periods for all 30 rows of a page would be
+	// far too costly. Same pattern as the Job Card cancel flow, which consults its own
+	// eligibility at the moment of action.
+	frappe.call({
+		method: 'crystal_alluminium_works.api.get_payment_correction_eligibility',
+		args: { payment: payment },
+		freeze: true,
+		freeze_message: __('Checking...'),
+		callback: function(r) {
+			if (!r || !r.message) return;
+			window.CAWPaymentDialog.openCorrection({
+				payment: payment,
+				eligibility: r.message,
+				// Back to page 1, which also refreshes the per-method totals pills.
+				onSaved: () => load_payment_records(page, 1)
+			});
+		}
 	});
 }
 
