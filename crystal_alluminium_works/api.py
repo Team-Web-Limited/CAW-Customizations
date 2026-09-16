@@ -4540,7 +4540,7 @@ def get_items_with_prices(category):
     elif category == "Ceiling":
         _ensure_ceiling_configuration_storage()
     glass_type_field_exists = _item_has_field("custom_glass_type")
-    filters = {"item_group": storage_category}
+    filters = {"item_group": storage_category, "disabled": 0}
     if category in GLASS_CATEGORY_TO_TYPE and glass_type_field_exists:
         filters["custom_glass_type"] = GLASS_CATEGORY_TO_TYPE[category]
 
