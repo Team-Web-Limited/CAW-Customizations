@@ -821,6 +821,12 @@ function open_item_modal(page, category, existing_item) {
 	bind_exclusive_calc('special_rate', 'special_exclusive');
 }
 
+function mi_mm_to_inches(mm) {
+	mm = parseFloat(mm);
+	if (isNaN(mm)) return '';
+	return (mm / 25.4).toFixed(2);
+}
+
 function open_intervals_modal(page) {
 	let active_category = $(page.body).find('.mi-tab.active').data('category');
 	let default_interval_set = get_interval_set_for_category(active_category);
@@ -901,15 +907,17 @@ function open_intervals_modal(page) {
 		`;
 
 		rows.forEach(i => {
-			let minInches = i.equivalent_inches_min || i.equivalent_inches || '';
-			let maxInches = i.equivalent_inches_max || i.equivalent_inches || ((i.equivalent_ft || 0) * 12);
+			let minMm = i.min_mm || '';
+			let maxMm = i.max_mm || '';
+			let minInches = minMm !== '' ? mi_mm_to_inches(minMm) : (i.equivalent_inches_min || i.equivalent_inches || '');
+			let maxInches = maxMm !== '' ? mi_mm_to_inches(maxMm) : (i.equivalent_inches_max || i.equivalent_inches || '');
 			html += `
 				<tr class="mi-interval-row">
-					<td><input type="number" class="form-control min_mm" value="${i.min_mm || ''}"></td>
-					<td><input type="number" class="form-control max_mm" value="${i.max_mm || ''}"></td>
+					<td><input type="number" class="form-control min_mm" value="${minMm}"></td>
+					<td><input type="number" class="form-control max_mm" value="${maxMm}"></td>
 					<td><input type="number" step="0.5" class="form-control equivalent_ft" value="${i.equivalent_ft || ''}"></td>
-					<td><input type="number" step="0.01" class="form-control equivalent_inches_min" value="${minInches}"></td>
-					<td><input type="number" step="0.01" class="form-control equivalent_inches_max" value="${maxInches}"></td>
+					<td><input type="number" step="0.01" class="form-control equivalent_inches_min" value="${minInches}" readonly></td>
+					<td><input type="number" step="0.01" class="form-control equivalent_inches_max" value="${maxInches}" readonly></td>
 					<td style="text-align:center;"><button class="btn btn-xs btn-danger mi-del-row">✕</button></td>
 				</tr>
 			`;
@@ -948,8 +956,8 @@ function open_intervals_modal(page) {
 				<td><input type="number" class="form-control min_mm"></td>
 				<td><input type="number" class="form-control max_mm"></td>
 				<td><input type="number" step="0.5" class="form-control equivalent_ft"></td>
-				<td><input type="number" step="0.01" class="form-control equivalent_inches_min"></td>
-				<td><input type="number" step="0.01" class="form-control equivalent_inches_max"></td>
+				<td><input type="number" step="0.01" class="form-control equivalent_inches_min" readonly></td>
+				<td><input type="number" step="0.01" class="form-control equivalent_inches_max" readonly></td>
 				<td style="text-align:center;"><button class="btn btn-xs btn-danger mi-del-row">✕</button></td>
 			</tr>
 		`);
@@ -957,6 +965,14 @@ function open_intervals_modal(page) {
 
 	d.$wrapper.on('click', '.mi-del-row', function() {
 		$(this).closest('tr').remove();
+	});
+
+	d.$wrapper.on('input', '.min_mm', function() {
+		$(this).closest('tr').find('.equivalent_inches_min').val(mi_mm_to_inches($(this).val()));
+	});
+
+	d.$wrapper.on('input', '.max_mm', function() {
+		$(this).closest('tr').find('.equivalent_inches_max').val(mi_mm_to_inches($(this).val()));
 	});
 }
 
