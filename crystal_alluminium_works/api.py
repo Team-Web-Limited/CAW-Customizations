@@ -537,18 +537,13 @@ def download_crystal_job_card_pdf(name):
     )
 
 
-@frappe.whitelist(methods=["GET"])
-def export_job_card_layout(name):
-    """Cut-list xlsx for the workshop floor: just Code/Item/No/Width/Height/Pcs,
+def _build_layout_rows(items):
+    """Cut-list rows for the workshop floor: just Code/Item/No/Width/Height/Pcs,
     one row per quotation line — the same rows the Crystal Job Card PDF's main
     items table shows (auto-generated service rows and Ceiling items excluded),
     without the Qty/UOM/Color/Polish/Holes/Notches columns the PDF also carries."""
-    job_card = frappe.get_doc("CAW Job Card", name)
-    quotation = frappe.get_doc("Quotation", job_card.quotation) if job_card.quotation else None
-    print_items = quotation.items if quotation else []
-
     rows = [["Code", "Item", "No", "Width", "Height", "Pcs"]]
-    for row in print_items:
+    for row in items:
         if row.custom_auto_generated or (row.custom_product_category or "") == "Ceiling":
             continue
 
@@ -559,8 +554,8 @@ def export_job_card_layout(name):
 
         if category == "Glass":
             numbering = row.custom_numbering or "-"
-            width = flt(row.custom_width_mm or 0, 0) or "-"
-            height = flt(row.custom_height_mm or 0, 0) or "-"
+            width = _mm_to_dimension_display(row.custom_width_mm, row.get("custom_dimension_uom"))
+            height = _mm_to_dimension_display(row.custom_height_mm, row.get("custom_dimension_uom"))
         else:
             numbering = "-"
             width = "-"
@@ -575,8 +570,25 @@ def export_job_card_layout(name):
             flt(pieces, 2),
         ])
 
+    return rows
+
+
+@frappe.whitelist(methods=["GET"])
+def export_job_card_layout(name):
+    job_card = frappe.get_doc("CAW Job Card", name)
+    quotation = frappe.get_doc("Quotation", job_card.quotation) if job_card.quotation else None
+    print_items = quotation.items if quotation else []
+
     filename = f"{name.replace(' ', '-').replace('/', '-')}-layout"
-    return _stream_xlsx_file(filename, rows)
+    return _stream_xlsx_file(filename, _build_layout_rows(print_items))
+
+
+@frappe.whitelist(methods=["GET"])
+def export_quotation_layout(name):
+    quotation = frappe.get_doc("Quotation", name)
+
+    filename = f"{name.replace(' ', '-').replace('/', '-')}-layout"
+    return _stream_xlsx_file(filename, _build_layout_rows(quotation.items))
 
 
 @frappe.whitelist()
@@ -2640,6 +2652,7 @@ def create_quotation_from_builder(
             row_data.update({
                 "custom_product_category": "Glass",
                 "custom_glass_sale_mode": sale_mode,
+                "custom_dimension_uom": _normalize_glass_dimension_uom(item.get("dimension_uom")),
                 "custom_width_mm": item.get("width_mm", 0),
                 "custom_height_mm": item.get("height_mm", 0),
                 "custom_base_width_ft": item.get("base_width_ft", 0),
@@ -5217,6 +5230,17 @@ def _normalize_glass_dimension_uom(dimension_uom=None):
 def _dimension_to_mm(value, dimension_uom=None):
     value = frappe.utils.flt(value or 0)
     return value * 25.4 if _normalize_glass_dimension_uom(dimension_uom) == "inches" else value
+
+
+def _mm_to_dimension_display(value_mm, dimension_uom=None):
+    """Render a stored mm dimension back in whatever unit it was entered in, with
+    the unit suffixed so a print/export can't be misread as the other unit."""
+    value_mm = frappe.utils.flt(value_mm or 0)
+    if not value_mm:
+        return "-"
+    if _normalize_glass_dimension_uom(dimension_uom) == "inches":
+        return f'{frappe.utils.flt(value_mm / 25.4, 2)}"'
+    return f"{frappe.utils.flt(value_mm, 0):.0f}mm"
 
 
 @frappe.whitelist()

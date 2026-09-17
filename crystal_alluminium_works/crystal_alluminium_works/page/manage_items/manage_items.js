@@ -892,15 +892,16 @@ function open_intervals_modal(page) {
 			}];
 
 		let html = `
-			<table class="table table-bordered mi-intervals-table">
+			<div class="mi-intervals-scroll" style="max-height: 520px; overflow-y: auto; border: 1px solid var(--border-color); margin-bottom: 8px;">
+			<table class="table table-bordered mi-intervals-table" style="margin-bottom: 0;">
 				<thead>
 					<tr>
-						<th>Min (mm)</th>
-						<th>Max (mm)</th>
-						<th>Equivalent (ft)</th>
-						<th>Min (in)</th>
-						<th>Max (in)</th>
-						<th style="width: 40px;"></th>
+						<th style="position: sticky; top: 0; background: var(--fg-color); z-index: 1;">Min (mm)</th>
+						<th style="position: sticky; top: 0; background: var(--fg-color); z-index: 1;">Max (mm)</th>
+						<th style="position: sticky; top: 0; background: var(--fg-color); z-index: 1;">Equivalent (ft)</th>
+						<th style="position: sticky; top: 0; background: var(--fg-color); z-index: 1;">Min (in)</th>
+						<th style="position: sticky; top: 0; background: var(--fg-color); z-index: 1;">Max (in)</th>
+						<th style="position: sticky; top: 0; background: var(--fg-color); z-index: 1; width: 40px;"></th>
 					</tr>
 				</thead>
 				<tbody>
@@ -926,6 +927,7 @@ function open_intervals_modal(page) {
 		html += `
 				</tbody>
 			</table>
+			</div>
 			<button class="btn btn-default btn-xs mi-add-row">+ Add Row</button>
 		`;
 

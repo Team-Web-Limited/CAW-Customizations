@@ -82,10 +82,27 @@ def _get_crystal_item_fields(read_only=False):
             "depends_on": "eval:doc.custom_product_category=='Glass' && doc.custom_glass_sale_mode=='Resized'",
         },
         {
+            # The unit the width/height were originally keyed in as (mm or inches) in
+            # the Quotation Builder / CAW Item Builder. custom_width_mm/custom_height_mm
+            # always store the mm-converted value; this is the only record of which
+            # unit to convert back to when re-editing or printing the row, so print
+            # formats and exports can show the figure the user actually typed instead
+            # of always forcing mm.
+            "fieldname": "custom_dimension_uom",
+            "label": "Dimension UOM",
+            "fieldtype": "Select",
+            "options": "mm\ninches",
+            "default": "mm",
+            "insert_after": "custom_glass_dimensions",
+            "depends_on": "eval:doc.custom_product_category=='Glass' && doc.custom_glass_sale_mode=='Resized'",
+            "hidden": 1,
+            "read_only": ro,
+        },
+        {
             "fieldname": "custom_width_mm",
             "label": "Width (mm)",
             "fieldtype": "Float",
-            "insert_after": "custom_glass_dimensions",
+            "insert_after": "custom_dimension_uom",
             "depends_on": "eval:doc.custom_product_category=='Glass' && doc.custom_glass_sale_mode=='Resized'",
             "read_only": ro,
         },

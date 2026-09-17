@@ -350,6 +350,22 @@ function bind_events(page) {
 		if (step) render_step(page, step);
 	});
 
+	$(page.body).on('click.qbbuilder', '.qb-edit-aluminium-details-btn', function () {
+		let aluminium_items = (window.qb_state.items || []).filter(function (it) { return it.category === 'Aluminium'; });
+		if (!aluminium_items.length) return;
+		open_aluminium_batch_details_dialog(page, aluminium_items);
+	});
+
+	$(page.body).on('click.qbbuilder', '.qb-edit-glass-details-btn', function () {
+		// Sheet-mode glass goes through its own single-item editor (no batch
+		// grid of its own), so only resized pieces belong back in this dialog.
+		let glass_items = (window.qb_state.items || []).filter(function (it) {
+			return it.category === 'Glass' && it.glass_mode !== 'Sheet' && it.sale_mode !== 'Sheet';
+		});
+		if (!glass_items.length) return;
+		open_glass_batch_details_dialog(page, glass_items);
+	});
+
 	$(page.body).on('click.qbbuilder', '.qb-add-btn', function () {
 		let category = $(this).data('category');
 		let glassType = $(this).data('glass-type');
@@ -1033,7 +1049,12 @@ function update_customer_next_button_visibility(page, selected_customer = null) 
 	let is_cash = normalize_customer_payment_mode(window.qb_state && window.qb_state.payment_mode) === 'cash';
 	let ready;
 	if (is_cash) {
-		let phone = page.qb_customer_phone_field ? page.qb_customer_phone_field.get_value() : (window.qb_state && window.qb_state.customer_phone);
+		// qb_state is authoritative when a suggestion row sets it directly (see the
+		// customer-name-suggestion mousedown handler) — the phone field's own control
+		// doesn't always reflect a programmatic set_value() by the time this runs, so
+		// checking qb_state first avoids a stale "not ready" read right after selection.
+		let phone = (window.qb_state && window.qb_state.customer_phone) ||
+			(page.qb_customer_phone_field ? page.qb_customer_phone_field.get_value() : '');
 		ready = !!phone;
 	} else {
 		let customer = selected_customer;
@@ -1874,6 +1895,14 @@ function render_items_table(page) {
 	$tbody.empty();
 	update_review_button_visibility(page);
 
+	let has_aluminium_items = (window.qb_state.items || []).some(function (it) { return it.category === 'Aluminium'; });
+	$(page.body).find('.qb-edit-aluminium-details-btn').toggle(has_aluminium_items);
+
+	let has_resized_glass_items = (window.qb_state.items || []).some(function (it) {
+		return it.category === 'Glass' && it.glass_mode !== 'Sheet' && it.sale_mode !== 'Sheet';
+	});
+	$(page.body).find('.qb-edit-glass-details-btn').toggle(has_resized_glass_items);
+
 	if (window.qb_state.items.length === 0) {
 		$tbody.html('<tr><td colspan="10" style="padding:20px;text-align:center;color:var(--text-muted);">No items added yet. Use the buttons above to add products.</td></tr>');
 		return;
@@ -2107,6 +2136,7 @@ function open_item_editor(page, item, is_new = false) {
 				fieldtype: 'Currency',
 				fieldname: 'aluminium_rate_per_kg',
 				label: 'Rate / Kg',
+				read_only: 1,
 				default: item.aluminium_rate_per_kg || 0
 			},
 			{ fieldtype: 'Column Break' },
@@ -2114,6 +2144,7 @@ function open_item_editor(page, item, is_new = false) {
 				fieldtype: 'Float',
 				fieldname: 'aluminium_weight_per_length',
 				label: 'Weight / Length',
+				read_only: 1,
 				default: item.aluminium_weight_per_length || 0
 			},
 			{ fieldtype: 'Section Break' },
@@ -2122,6 +2153,7 @@ function open_item_editor(page, item, is_new = false) {
 				fieldname: 'aluminium_powder_coating_charge',
 				label: 'Powder Coating Charges',
 				description: 'Added on top of the computed Rate Per Piece.',
+				read_only: 1,
 				default: item.aluminium_powder_coating_charge || 0
 			},
 			{ fieldtype: 'Section Break', label: 'Item Details' },
@@ -2890,18 +2922,19 @@ function bind_batch_table_keynav(d) {
 		let row_index = $rows.index($row);
 		let field = $(this).data('field');
 		let step = e.shiftKey ? -1 : 1;
-		let next_field_index = fields.indexOf(field) + step;
+		let next_row_index = row_index + step;
 
-		if (next_field_index >= 0 && next_field_index < fields.length) {
-			focus_input($row.find(`.qb-batch-input[data-field="${fields[next_field_index]}"]:visible`));
+		if (next_row_index >= 0 && next_row_index < $rows.length) {
+			focus_input($rows.eq(next_row_index).find(`.qb-batch-input[data-field="${field}"]:visible`));
 			return;
 		}
 
-		// Rolled off the end of this row — continue at the start (or end) of the neighbouring one.
-		let next_row_index = row_index + step;
-		if (next_row_index >= 0 && next_row_index < $rows.length) {
-			let target_field = step > 0 ? fields[0] : fields[fields.length - 1];
-			focus_input($rows.eq(next_row_index).find(`.qb-batch-input[data-field="${target_field}"]:visible`));
+		// Rolled off the top/bottom of this column — continue at the bottom
+		// (or top) of the neighbouring one.
+		let next_field_index = fields.indexOf(field) + step;
+		if (next_field_index >= 0 && next_field_index < fields.length) {
+			let target_row_index = step > 0 ? 0 : $rows.length - 1;
+			focus_input($rows.eq(target_row_index).find(`.qb-batch-input[data-field="${fields[next_field_index]}"]:visible`));
 			return;
 		}
 
@@ -2924,6 +2957,14 @@ function open_glass_batch_details_dialog(page, items) {
 		return;
 	}
 
+	// Snapshot which of these ids were already in qb_state.items (i.e. this is
+	// a re-edit via "Edit Glass Details", not a fresh add) — used on Save to
+	// drop any row the user removed from the grid instead of leaving it
+	// stranded in qb_state.items.
+	let original_ids = items.filter(function (it) {
+		return window.qb_state.items.some(function (existing) { return existing.id === it.id; });
+	}).map(function (it) { return it.id; });
+
 	let dimension_uom = normalize_glass_dimension_uom(items[0].dimension_uom);
 	let dimension_label = get_glass_dimension_label(dimension_uom);
 
@@ -2945,8 +2986,8 @@ function open_glass_batch_details_dialog(page, items) {
 				<td style="text-align:center;white-space:nowrap;" class="qb-batch-row-no">${row_number}</td>
 				<td style="white-space:nowrap;">${frappe.utils.escape_html(it.item_name || it.item_code)}</td>
 				<td><input type="text" class="form-control input-sm qb-batch-input" data-field="numbering" value="${frappe.utils.escape_html(it.numbering || '')}" style="width:90px;"></td>
-				<td><input type="number" min="0" step="any" class="form-control input-sm qb-batch-input" data-field="width_mm" value="${flt(it.width_mm || 0)}" style="width:80px;"></td>
-				<td><input type="number" min="0" step="any" class="form-control input-sm qb-batch-input" data-field="height_mm" value="${flt(it.height_mm || 0)}" style="width:80px;"></td>
+				<td><input type="number" min="0" step="any" class="form-control input-sm qb-batch-input" data-field="width_mm" value="${mm_to_dimension_input(it.width_mm || 0, dimension_uom)}" style="width:80px;"></td>
+				<td><input type="number" min="0" step="any" class="form-control input-sm qb-batch-input" data-field="height_mm" value="${mm_to_dimension_input(it.height_mm || 0, dimension_uom)}" style="width:80px;"></td>
 				<td><input type="number" min="1" step="1" class="form-control input-sm qb-batch-input" data-field="qty" value="${flt(it.qty || 1) || 1}" style="width:60px;"></td>
 				<td><input type="number" min="0" step="any" class="form-control input-sm qb-batch-input" data-field="width_allowance" value="${flt(it.width_allowance || 0)}" style="width:70px;"></td>
 				<td><input type="number" min="0" step="any" class="form-control input-sm qb-batch-input" data-field="height_allowance" value="${flt(it.height_allowance || 0)}" style="width:70px;"></td>
@@ -3084,7 +3125,26 @@ function open_glass_batch_details_dialog(page, items) {
 			frappe.dom.freeze('Calculating...');
 			Promise.all(calls).then(function (finished_items) {
 				frappe.dom.unfreeze();
-				window.qb_state.items.push(...finished_items);
+				// Reopening this dialog via "Edit Glass Details" hands back items
+				// that already exist in qb_state.items — update those in place by
+				// id instead of pushing duplicates. Anything new (first pass from
+				// the item picker) still gets appended as before.
+				finished_items.forEach(function (final_item) {
+					let existing_index = window.qb_state.items.findIndex(function (it) { return it.id === final_item.id; });
+					if (existing_index === -1) {
+						window.qb_state.items.push(final_item);
+					} else {
+						window.qb_state.items[existing_index] = final_item;
+					}
+				});
+				// Rows removed from the grid during a re-edit (originally in
+				// qb_state.items, no longer in finished_items) should disappear
+				// from the quotation too, not just from this dialog.
+				let kept_ids = finished_items.map(function (it) { return it.id; });
+				let dropped_ids = original_ids.filter(function (id) { return kept_ids.indexOf(id) === -1; });
+				if (dropped_ids.length) {
+					window.qb_state.items = window.qb_state.items.filter(function (it) { return dropped_ids.indexOf(it.id) === -1; });
+				}
 				close_builder_dialog(d);
 				render_items_table(page);
 			});
@@ -3163,6 +3223,14 @@ function open_aluminium_batch_details_dialog(page, items) {
 		return;
 	}
 
+	// Snapshot which of these ids were already in qb_state.items (i.e. this is
+	// a re-edit via "Edit Aluminium Details", not a fresh add) — used on Save
+	// to drop any row the user removed from the grid instead of leaving it
+	// stranded in qb_state.items.
+	let original_ids = items.filter(function (it) {
+		return window.qb_state.items.some(function (existing) { return existing.id === it.id; });
+	}).map(function (it) { return it.id; });
+
 	ensure_aluminium_colors(function () {
 		let color_options = get_aluminium_color_options();
 		// Unique per dialog — a hidden previous dialog can still be in the DOM with its own datalist.
@@ -3178,8 +3246,8 @@ function open_aluminium_batch_details_dialog(page, items) {
 					<td style="white-space:nowrap;">${frappe.utils.escape_html(it.item_name || it.item_code)}</td>
 					<td><input type="text" class="form-control input-sm qb-batch-input qb-aluminium-color-input" data-field="aluminium_color" list="${color_list_id}" placeholder="Search color..." value="${frappe.utils.escape_html(it.aluminium_color || 'None')}" style="width:130px;"></td>
 					<td><input type="number" min="1" step="1" class="form-control input-sm qb-batch-input" data-field="qty" value="${flt(it.qty || 1) || 1}" style="width:60px;"></td>
-					<td><input type="number" min="0" step="any" class="form-control input-sm qb-batch-input" data-field="aluminium_rate_per_kg" value="${flt(it.aluminium_rate_per_kg || 0)}" style="width:90px;"></td>
-					<td><input type="number" min="0" step="any" class="form-control input-sm qb-batch-input" data-field="aluminium_weight_per_length" value="${flt(it.aluminium_weight_per_length || 0)}" style="width:90px;"></td>
+					<input type="hidden" data-field="aluminium_rate_per_kg" value="${flt(it.aluminium_rate_per_kg || 0)}">
+					<input type="hidden" data-field="aluminium_weight_per_length" value="${flt(it.aluminium_weight_per_length || 0)}">
 					<td><input type="number" min="0" step="any" class="form-control input-sm qb-batch-input" data-field="aluminium_powder_coating_charge" value="${flt(it.aluminium_powder_coating_charge || 0)}" style="width:90px;"></td>
 					<td><input type="text" class="form-control input-sm qb-batch-input" data-field="description" value="${frappe.utils.escape_html(it.description || '')}" style="width:150px;"></td>
 					<td style="text-align:center;white-space:nowrap;">
@@ -3204,8 +3272,6 @@ function open_aluminium_batch_details_dialog(page, items) {
 							<th style="white-space:nowrap;">Item</th>
 							<th style="white-space:nowrap;">Color</th>
 							<th style="white-space:nowrap;">Pcs</th>
-							<th style="white-space:nowrap;">Rate / Kg</th>
-							<th style="white-space:nowrap;">Weight / Length</th>
 							<th style="white-space:nowrap;">Powder Coating</th>
 							<th style="white-space:nowrap;">Description</th>
 							<th style="white-space:nowrap;"></th>
@@ -3259,7 +3325,26 @@ function open_aluminium_batch_details_dialog(page, items) {
 				frappe.dom.freeze('Calculating...');
 				Promise.all(calls).then(function (finished_items) {
 					frappe.dom.unfreeze();
-					window.qb_state.items.push(...finished_items);
+					// Reopening this dialog via "Edit Aluminium Details" hands back
+					// items that already exist in qb_state.items — update those in
+					// place by id instead of pushing duplicates. Anything new (first
+					// pass from the item picker) still gets appended as before.
+					finished_items.forEach(function (final_item) {
+						let existing_index = window.qb_state.items.findIndex(function (it) { return it.id === final_item.id; });
+						if (existing_index === -1) {
+							window.qb_state.items.push(final_item);
+						} else {
+							window.qb_state.items[existing_index] = final_item;
+						}
+					});
+					// Rows removed from the grid during a re-edit (originally in
+					// qb_state.items, no longer in finished_items) should disappear
+					// from the quotation too, not just from this dialog.
+					let kept_ids = finished_items.map(function (it) { return it.id; });
+					let dropped_ids = original_ids.filter(function (id) { return kept_ids.indexOf(id) === -1; });
+					if (dropped_ids.length) {
+						window.qb_state.items = window.qb_state.items.filter(function (it) { return dropped_ids.indexOf(it.id) === -1; });
+					}
 					close_builder_dialog(d);
 					render_items_table(page);
 				});
@@ -3851,7 +3936,9 @@ function get_builder_html() {
 					<button class="qb-add-btn" data-category="Glass" data-glass-type="Laminated">+ Laminated Glass</button>
 					<button class="qb-add-btn" data-category="Glass" data-glass-type="Ready Laminated">+ Ready Laminated Glass</button>
 					<button class="qb-add-btn" data-category="Glass" data-glass-type="Toughened">+ Toughened Glass</button>
+					<button class="qb-nav-btn primary qb-edit-glass-details-btn" style="display:none;" title="Reopen the Fill Details grid for the resized Glass items already added">✎ Edit Glass Details</button>
 					<button class="qb-add-btn" data-category="Aluminium">+ Aluminium</button>
+					<button class="qb-nav-btn primary qb-edit-aluminium-details-btn" style="display:none;" title="Reopen the Fill Details grid for the Aluminium items already added">✎ Edit Aluminium Details</button>
 					<button class="qb-add-btn" data-category="Fittings">+ Fittings</button>
 					<button class="qb-add-btn" data-category="Ceiling">+ Ceiling</button>
 					<button class="qb-add-btn" data-category="Rubber">+ Rubber</button>

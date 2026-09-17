@@ -966,6 +966,21 @@ function get_action_buttons(doc, sales_invoices, existing_job_card, deposit_cred
 		`;
 	}
 
+	// The cut-list only carries Width/Height/No for Cut Size glass — Sheet rows have no
+	// cut dimensions, so with nothing but those (or no Glass at all) the export is empty.
+	let has_layout_items = ((doc || {}).items || []).some(item =>
+		!item.custom_auto_generated &&
+		item.custom_product_category === 'Glass' &&
+		item.custom_glass_sale_mode !== 'Sheet'
+	);
+	if (has_layout_items) {
+		buttons += `
+			<button class="btn btn-default" id="btn-export-quotation-layout" title="Export cut-list as xlsx (Code, Item, No, Width, Height, Pcs)">
+				<i class="fa fa-download" style="margin-right:6px;"></i>Export Layout
+			</button>
+		`;
+	}
+
 	buttons += deposit_buttons_html;
 
 	return (buttons || '<span style="color:var(--text-muted);">No actions available.</span>') + note;
@@ -1844,6 +1859,7 @@ async function open_quotation_in_builder(doc) {
 					// Glass-specific
 					sale_mode: item.custom_glass_sale_mode || 'Resized',
 					glass_mode: item.custom_glass_sale_mode === 'Sheet' ? 'Sheet' : 'Cut Size',
+				dimension_uom: item.custom_dimension_uom || 'mm',
 				width_mm: item.custom_width_mm || 0,
 				height_mm: item.custom_height_mm || 0,
 				width_allowance: item.custom_width_allowance || 0,
@@ -2067,5 +2083,13 @@ function bind_action_events(page, doc, sales_invoices, existing_job_card) {
 			`/api/method/crystal_alluminium_works.api.download_crystal_quotation_pdf?name=${encodeURIComponent(doc.name)}`
 		);
 		window.open(print_url, '_blank');
+	});
+
+	// ── Export cut-list layout ──
+	$('#btn-export-quotation-layout').on('click', () => {
+		let export_url = frappe.urllib.get_full_url(
+			`/api/method/crystal_alluminium_works.api.export_quotation_layout?name=${encodeURIComponent(doc.name)}`
+		);
+		window.open(export_url, '_blank');
 	});
 }

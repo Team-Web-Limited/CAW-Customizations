@@ -1199,6 +1199,7 @@ function open_edit_invoice_items_dialog(page, doc) {
 			const sandblast = item.sandblast_type || '';
 			Object.assign(customs, {
 				custom_glass_sale_mode: sale_mode,
+				custom_dimension_uom: item.dimension_uom || 'mm',
 				custom_width_mm: item.width_mm || 0,
 				custom_height_mm: item.height_mm || 0,
 				custom_base_width_ft: item.base_width_ft || 0,
@@ -1272,7 +1273,7 @@ function open_edit_invoice_items_dialog(page, doc) {
 			qty: flt(r.qty) || 1,
 			rate: flt(r.rate) * 1.16, // invoice stores net; the modal shows/uses gross
 			amount: 0,
-			dimension_uom: 'mm', // width/height are stored in mm
+			dimension_uom: o.custom_dimension_uom || 'mm',
 			price_list: o.custom_price_list || 'Retail',
 		};
 

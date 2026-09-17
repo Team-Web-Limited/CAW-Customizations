@@ -47,6 +47,12 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
     {{% else %}}{{{{ value or '-' }}}}{{% endif %}}
 {{% endmacro %}}
 
+{{% macro format_dimension(mm_value, uom) %}}
+    {{% if not (mm_value or 0) %}}-
+    {{% elif (uom or '')|lower == 'inches' %}}{{{{ frappe.utils.flt(mm_value / 25.4, 2) }}}}"
+    {{% else %}}{{{{ '%.0f'|format(mm_value or 0) }}}}mm{{% endif %}}
+{{% endmacro %}}
+
 <div class="letterhead" style="margin-bottom: 20px;">
     <img src="/assets/crystal_alluminium_works/images/crystal-alluminium-works-letterhead.jpeg" style="max-width: 100%; height: auto;" alt="Crystal Aluminium Works">
 </div>
@@ -86,8 +92,16 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
         <div style="color: #7f8c8d; font-size: 12px; text-transform: uppercase; margin-top: 5px;">Due Date:</div>
         <div style="font-size: 14px; font-weight: bold; color: #e74c3c;">{{{{ frappe.utils.formatdate(doc.due_date) }}}}</div>
         {{% endif %}}
+        {{% if doc.doctype == 'Quotation' %}}
+        {{% set quote_name_parts = doc.name.split('-') %}}
+        <div style="margin-top: 10px;">
+            <span style="color: #7f8c8d; font-size: 12px; text-transform: uppercase; font-weight: bold;">Quote No:</span>
+            <span style="font-size: 14px; font-weight: bold;">{{{{ (quote_name_parts[3] if quote_name_parts|length > 3 else quote_name_parts[-1])|int }}}}</span>
+        </div>
+        {{% else %}}
         <div style="color: #7f8c8d; font-size: 12px; text-transform: uppercase; margin-top: 10px;">{ref_label}:</div>
         <div style="font-size: 14px;">{{{{ doc.name }}}}</div>
+        {{% endif %}}
     </div>
 </div>
 
@@ -168,14 +182,16 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
             {{% if has_color_rows.value %}}
             <th style="text-align: center; white-space: nowrap;">Color</th>
             {{% endif %}}
-            <th style="text-align: center; white-space: nowrap;">Pcs</th>
-            <th style="text-align: right; white-space: nowrap;">Rate</th>
-            <th style="text-align: center; white-space: nowrap;">Qty</th>
-            <th style="text-align: center; white-space: nowrap;">UOM</th>
             <th style="text-align: center; white-space: nowrap;">No</th>
             {{% if has_glass_rows.value %}}
             <th style="text-align: center; white-space: nowrap;">Width</th>
             <th style="text-align: center; white-space: nowrap;">Height</th>
+            {{% endif %}}
+            <th style="text-align: center; white-space: nowrap;">Pcs</th>
+            <th style="text-align: center; white-space: nowrap;">Qty</th>
+            <th style="text-align: right; white-space: nowrap;">Rate</th>
+            <th style="text-align: center; white-space: nowrap;">UOM</th>
+            {{% if has_glass_rows.value %}}
             <th style="text-align: left; white-space: nowrap;">Polish Sides</th>
             <th style="text-align: center; white-space: nowrap;">Holes</th>
             <th style="text-align: center; white-space: nowrap;">Notches</th>
@@ -242,8 +258,8 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
                         {{% set display_width = (parent.custom_sheet_size or '-')|trim or '-' %}}
                         {{% set display_height = '-' %}}
                     {{% else %}}
-                        {{% set display_width = frappe.utils.flt(parent.custom_width_mm or 0, 0) or '-' %}}
-                        {{% set display_height = frappe.utils.flt(parent.custom_height_mm or 0, 0) or '-' %}}
+                        {{% set display_width = format_dimension(parent.custom_width_mm, parent.custom_dimension_uom) %}}
+                        {{% set display_height = format_dimension(parent.custom_height_mm, parent.custom_dimension_uom) %}}
                     {{% endif %}}
                     {{% if parent.custom_glass_sale_mode not in ['Full Sheet', 'Sheet'] and frappe.utils.flt(parent.custom_area_sqft or 0) > 0 %}}
                         {{% set display_rate = (parent.rate or 0) / frappe.utils.flt(parent.custom_area_sqft or 0) %}}
@@ -267,16 +283,18 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
                         {{{{ parent.custom_aluminium_color or '-' }}}}
                     </td>
                     {{% endif %}}
-                    <td style="text-align: center; white-space: nowrap;">{{{{ frappe.utils.flt(pieces, 2) }}}}</td>
-                    <td style="text-align: right; white-space: nowrap;">{{{{ frappe.format_value(display_rate, df={{'fieldtype': 'Currency'}}, doc=doc) }}}}</td>
-                    <td style="text-align: center; white-space: nowrap;">{{{{ frappe.utils.flt(qty, 3) }}}}</td>
-                    <td style="text-align: center; white-space: nowrap;">{{{{ short_uom(uom) }}}}</td>
                     <td style="text-align: center; white-space: nowrap;">
                         {{% if parent_category == 'Glass' %}}{{{{ parent.custom_numbering or '-' }}}}{{% else %}}-{{% endif %}}
                     </td>
                     {{% if has_glass_rows.value %}}
                     <td style="text-align: center; white-space: nowrap;">{{{{ display_width }}}}</td>
                     <td style="text-align: center; white-space: nowrap;">{{{{ display_height }}}}</td>
+                    {{% endif %}}
+                    <td style="text-align: center; white-space: nowrap;">{{{{ frappe.utils.flt(pieces, 2) }}}}</td>
+                    <td style="text-align: center; white-space: nowrap;">{{{{ frappe.utils.flt(qty, 3) }}}}</td>
+                    <td style="text-align: right; white-space: nowrap;">{{{{ frappe.format_value(display_rate, df={{'fieldtype': 'Currency'}}, doc=doc) }}}}</td>
+                    <td style="text-align: center; white-space: nowrap;">{{{{ short_uom(uom) }}}}</td>
+                    {{% if has_glass_rows.value %}}
                     <td style="white-space: nowrap;">
                         {{% if parent_category == 'Glass' and polish_sides > 0 %}}
                             {{{{ polish_sides }}}}
@@ -303,15 +321,18 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
         {{% if doc.doctype == 'Quotation' %}}
         <tr>
             <td colspan="{{{{ 3 if has_color_rows.value else 2 }}}}" style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
-            <td style="text-align: center; white-space: nowrap; font-weight: bold;">{{{{ frappe.utils.flt(quotation_totals.pcs, 2) }}}}</td>
-            <td style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
-            <td style="text-align: center; white-space: nowrap; font-weight: bold;">{{{{ frappe.utils.flt(quotation_totals.qty, 3) }}}}</td>
             {{% if has_glass_rows.value %}}
-            <td colspan="5" style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
+            <td colspan="3" style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
+            {{% else %}}
+            <td style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
+            {{% endif %}}
+            <td style="text-align: center; white-space: nowrap; font-weight: bold;">{{{{ frappe.utils.flt(quotation_totals.pcs, 2) }}}}</td>
+            <td style="text-align: center; white-space: nowrap; font-weight: bold;">{{{{ frappe.utils.flt(quotation_totals.qty, 3) }}}}</td>
+            <td colspan="2" style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
+            {{% if has_glass_rows.value %}}
+            <td style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
             <td style="text-align: center; white-space: nowrap; font-weight: bold;">{{{{ quotation_totals.holes }}}}</td>
             <td style="text-align: center; white-space: nowrap; font-weight: bold;">{{{{ quotation_totals.notches }}}}</td>
-            {{% else %}}
-            <td colspan="2" style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
             {{% endif %}}
             <td style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
         </tr>
@@ -566,6 +587,12 @@ def build_crystal_job_card_print_format_html():
     {% else %}{{ value or '-' }}{% endif %}
 {% endmacro %}
 
+{% macro format_dimension(mm_value, uom) %}
+    {% if not (mm_value or 0) %}-
+    {% elif (uom or '')|lower == 'inches' %}{{ frappe.utils.flt(mm_value / 25.4, 2) }}"
+    {% else %}{{ '%.0f'|format(mm_value or 0) }}mm{% endif %}
+{% endmacro %}
+
 <div style="width: 100%; margin-bottom: 22px;">
     <div style="display: table; width: 100%; table-layout: fixed;">
         <div style="display: table-row;">
@@ -699,9 +726,10 @@ def build_crystal_job_card_print_format_html():
                 {% set job_totals.qty = job_totals.qty + frappe.utils.flt(qty, 3) %}
                 {% set job_totals.holes = job_totals.holes + frappe.utils.cint(parent.custom_holes or 0) %}
                 {% set job_totals.notches = job_totals.notches + frappe.utils.cint(parent.custom_notches or 0) %}
-                {% set width_sides = frappe.utils.cint(parent.custom_polish_width_sides or 0) %}
-                {% set height_sides = frappe.utils.cint(parent.custom_polish_height_sides or 0) %}
-                {% if parent_category == 'Glass' and not width_sides and not height_sides and frappe.utils.cint(parent.custom_polishing or 0) %}
+                {% set is_sheet_glass = parent_category == 'Glass' and parent.custom_glass_sale_mode == 'Sheet' %}
+                {% set width_sides = 0 if is_sheet_glass else frappe.utils.cint(parent.custom_polish_width_sides or 0) %}
+                {% set height_sides = 0 if is_sheet_glass else frappe.utils.cint(parent.custom_polish_height_sides or 0) %}
+                {% if parent_category == 'Glass' and not is_sheet_glass and not width_sides and not height_sides and frappe.utils.cint(parent.custom_polishing or 0) %}
                     {% set width_sides = 2 %}
                     {% set height_sides = 2 %}
                 {% endif %}
@@ -709,8 +737,13 @@ def build_crystal_job_card_print_format_html():
                 {% set display_width = '-' %}
                 {% set display_height = '-' %}
                 {% if parent_category == 'Glass' %}
-                    {% set display_width = frappe.utils.flt(parent.custom_width_mm or 0, 0) or '-' %}
-                    {% set display_height = frappe.utils.flt(parent.custom_height_mm or 0, 0) or '-' %}
+                    {% if is_sheet_glass %}
+                        {% set display_width = (parent.custom_sheet_size or '-')|trim or '-' %}
+                        {% set display_height = '-' %}
+                    {% else %}
+                        {% set display_width = format_dimension(parent.custom_width_mm, parent.custom_dimension_uom) %}
+                        {% set display_height = format_dimension(parent.custom_height_mm, parent.custom_dimension_uom) %}
+                    {% endif %}
                 {% endif %}
                 <tr>
                     <td style="font-weight: bold; white-space: nowrap;">{{ parent.item_code or '' }}</td>
@@ -728,8 +761,8 @@ def build_crystal_job_card_print_format_html():
                     <td style="text-align: center; white-space: nowrap;">{{ display_width }}</td>
                     <td style="text-align: center; white-space: nowrap;">{{ display_height }}</td>
                     <td style="text-align: center; white-space: nowrap;">{% if parent_category == 'Glass' and polish_sides > 0 %}{{ polish_sides }}{% else %}-{% endif %}</td>
-                    <td style="text-align: center; white-space: nowrap;">{% if parent_category == 'Glass' and frappe.utils.cint(parent.custom_holes or 0) > 0 %}{{ frappe.utils.cint(parent.custom_holes or 0) }}{% else %}-{% endif %}</td>
-                    <td style="text-align: center; white-space: nowrap;">{% if parent_category == 'Glass' and frappe.utils.cint(parent.custom_notches or 0) > 0 %}{{ frappe.utils.cint(parent.custom_notches or 0) }}{% else %}-{% endif %}</td>
+                    <td style="text-align: center; white-space: nowrap;">{% if parent_category == 'Glass' and not is_sheet_glass and frappe.utils.cint(parent.custom_holes or 0) > 0 %}{{ frappe.utils.cint(parent.custom_holes or 0) }}{% else %}-{% endif %}</td>
+                    <td style="text-align: center; white-space: nowrap;">{% if parent_category == 'Glass' and not is_sheet_glass and frappe.utils.cint(parent.custom_notches or 0) > 0 %}{{ frappe.utils.cint(parent.custom_notches or 0) }}{% else %}-{% endif %}</td>
                     {% endif %}
                 </tr>
             {% endif %}
