@@ -537,11 +537,25 @@ def download_crystal_job_card_pdf(name):
     )
 
 
+def _dimension_value_only(value_mm, dimension_uom=None):
+    """Same conversion as _mm_to_dimension_display, but returns a bare number
+    (no unit suffix) for exports where the column header already says the unit
+    and Excel should treat the cell as a number, not text."""
+    value_mm = flt(value_mm or 0)
+    if not value_mm:
+        return "-"
+    if _normalize_glass_dimension_uom(dimension_uom) == "inches":
+        return flt(value_mm / 25.4, 2)
+    return flt(value_mm, 0)
+
+
 def _build_layout_rows(items):
     """Cut-list rows for the workshop floor: just Code/Item/No/Width/Height/Pcs,
     one row per quotation line — the same rows the Crystal Job Card PDF's main
     items table shows (auto-generated service rows and Ceiling items excluded),
-    without the Qty/UOM/Color/Polish/Holes/Notches columns the PDF also carries."""
+    without the Qty/UOM/Color/Polish/Holes/Notches columns the PDF also carries.
+    Width/Height are exported as bare numbers (no "mm"/inch-mark suffix) so
+    they read as plain glass sizes in the spreadsheet."""
     rows = [["Code", "Item", "No", "Width", "Height", "Pcs"]]
     for row in items:
         if row.custom_auto_generated or (row.custom_product_category or "") == "Ceiling":
@@ -554,8 +568,8 @@ def _build_layout_rows(items):
 
         if category == "Glass":
             numbering = row.custom_numbering or "-"
-            width = _mm_to_dimension_display(row.custom_width_mm, row.get("custom_dimension_uom"))
-            height = _mm_to_dimension_display(row.custom_height_mm, row.get("custom_dimension_uom"))
+            width = _dimension_value_only(row.custom_width_mm, row.get("custom_dimension_uom"))
+            height = _dimension_value_only(row.custom_height_mm, row.get("custom_dimension_uom"))
         else:
             numbering = "-"
             width = "-"
