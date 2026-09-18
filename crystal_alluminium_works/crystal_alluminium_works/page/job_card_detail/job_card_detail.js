@@ -319,7 +319,7 @@ function queue_job_card_customer_defaults(dialog) {
 
 
 
-// "Cutoffs" is a value in the Item Consumed field (Sheets Consumed column), not a size.
+// "Cutoffs" is a value in the Item Consumed field (Glass Consumed column), not a size.
 // It means the company built a new product from unmeasured scrap/off-cuts rather than a
 // tracked sheet item, so the size is pinned to the permanent 1 x 1 = 1 SFT entry (see
 // Glass Sheet Sizes), Pcs becomes N/A, and the row never contributes to stock deduction.
@@ -334,6 +334,39 @@ function jc_sheet_size_options_html(configs, selected_size) {
 	return configs
 		.map(c => `<option value="${c.size}" ${c.size === selected_size ? 'selected' : ''}>${c.size}</option>`)
 		.join('');
+}
+
+// Shared by the initial render, "Add empty row", and "duplicate row" below,
+// so a clone picks up the exact same markup/behaviour as any other sheet row.
+function jc_build_sheet_entry_row_html(sheet, configs) {
+	let is_cutoff = !!sheet.is_cutoff || jc_is_cutoff_item(sheet.item_consumed);
+	let item_consumed = is_cutoff ? JC_CUTOFF_ITEM_CONSUMED : (sheet.item_consumed || '');
+	let size_for_row = is_cutoff ? JC_CUTOFF_SIZE_VALUE : (sheet.size || '');
+	let pcs_for_row = is_cutoff ? '' : (sheet.pcs || '');
+	let row_options = jc_sheet_size_options_html(configs, size_for_row);
+
+	// Item Consumed/Size/Pcs are wrapped in fixed flex-basis boxes (flex: 0 0 Npx)
+	// rather than sizing the inputs themselves, so their rendered width can't be
+	// stretched by .form-control's own width:100% — the header's sub-labels use
+	// the same fixed basis values, so the two stay pixel-aligned regardless of
+	// how the browser would otherwise size a bare .form-control in a flex row.
+	return `
+		<div class="sheet-entry-row" style="display: flex; gap: 8px; margin-bottom: 6px; align-items: center;">
+			<div style="flex: 0 0 180px;"><input type="text" class="form-control input-sm sheet-item-consumed-input" list="all-glass-items" value="${jc_escape(item_consumed)}" style="width:100%;" placeholder="Item Consumed..."></div>
+			<div style="flex: 0 0 130px;">
+				<select class="form-control input-sm sheet-size-select" style="width:100%;" ${is_cutoff ? 'disabled' : ''}>
+					<option value=""></option>
+					${row_options}
+				</select>
+			</div>
+			<div style="flex: 0 0 70px;"><input type="number" class="form-control input-sm sheet-pcs-input" value="${pcs_for_row}" min="1" step="1" style="width:100%; text-align:right;" placeholder="${is_cutoff ? 'N/A' : 'Pcs'}" ${is_cutoff ? 'disabled' : ''}></div>
+			<span class="sheet-balance-lbl text-info" style="font-size: 11px; font-weight: bold; min-width: 45px; text-align: center;">${is_cutoff ? 'N/A' : '-'}</span>
+			<input type="number" min="1" step="1" value="1" class="form-control input-sm sheet-duplicate-count" title="Number of rows below this one that consumed the same sheet — press Enter here to fill them down" style="width:44px;display:inline-block;">
+			<button class="btn btn-default btn-xs duplicate-sheet-btn" style="padding: 2px 6px;" title="Fill down — copies this Item Consumed/Size/Pcs into the count field's number of rows below"><i class="fa fa-clone text-primary"></i></button>
+			<button class="btn btn-default btn-xs add-sheet-btn" style="padding: 2px 6px;" title="Add empty row"><i class="fa fa-plus text-primary"></i></button>
+			<button class="btn btn-default btn-xs remove-sheet-btn" style="padding: 2px 6px;" title="Remove Row"><i class="fa fa-trash text-danger"></i></button>
+		</div>
+	`;
 }
 
 function jc_apply_cutoff_row_state($row) {
@@ -363,11 +396,16 @@ function open_jc_operations_modal(page, job_card, quotation) {
 			} catch (e) {}
 			
 			// Get all Cut Size glass items OR Laminated glass items from quotation.items
-			let items = ((quotation || {}).items || []).filter(item => 
-				item.custom_product_category === 'Glass' && 
+			let items = ((quotation || {}).items || []).filter(item =>
+				item.custom_product_category === 'Glass' &&
 				(item.custom_glass_sale_mode === 'Resized' || item.custom_glass_type === 'Laminated')
 			);
-			
+			// Group identical glass codes together so "fill down" (below) can copy one
+			// row's sheet consumed into the next few rows in one action — most jobs
+			// have several pieces of the same code back to back, each fed by the same
+			// sheet size.
+			items = items.slice().sort((a, b) => (a.item_code || '').localeCompare(b.item_code || ''));
+
 			if (items.length === 0) {
 				// The JC Operations button is hidden whenever there are no such items
 				// (see has_jc_operations_items), so this is just a defensive guard.
@@ -441,22 +479,12 @@ function open_jc_operations_modal(page, job_card, quotation) {
 								let sheets_html = existing_sheets.map(sheet => {
 									let is_cutoff = !!sheet.is_cutoff || jc_is_cutoff_item(sheet.item_consumed);
 									let current_item_consumed = is_cutoff ? JC_CUTOFF_ITEM_CONSUMED : (sheet.item_consumed || (is_laminated_item ? '' : item.item_code));
-									let size_for_row = is_cutoff ? JC_CUTOFF_SIZE_VALUE : sheet.size;
-									let row_options = jc_sheet_size_options_html(configs, size_for_row);
-
-									return `
-										<div class="sheet-entry-row" style="display: flex; gap: 8px; margin-bottom: 6px; align-items: center;">
-											<input type="text" class="form-control input-sm sheet-item-consumed-input" list="all-glass-items" value="${jc_escape(current_item_consumed)}" style="min-width: 180px; display: inline-block;" placeholder="Item Consumed...">
-											<select class="form-control input-sm sheet-size-select" style="min-width: 130px; display: inline-block;" ${is_cutoff ? 'disabled' : ''}>
-												<option value=""></option>
-												${row_options}
-											</select>
-											<input type="number" class="form-control input-sm sheet-pcs-input" value="${is_cutoff ? '' : (sheet.pcs || '')}" min="1" step="1" style="text-align:right; width: 70px; display: inline-block;" placeholder="${is_cutoff ? 'N/A' : 'Pcs'}" ${is_cutoff ? 'disabled' : ''}>
-											<span class="sheet-balance-lbl text-info" style="font-size: 11px; font-weight: bold; min-width: 45px; text-align: center;">${is_cutoff ? 'N/A' : '-'}</span>
-											<button class="btn btn-default btn-xs add-sheet-btn" style="padding: 2px 6px;" title="Add Row"><i class="fa fa-plus text-primary"></i></button>
-											<button class="btn btn-default btn-xs remove-sheet-btn" style="padding: 2px 6px;" title="Remove Row"><i class="fa fa-trash text-danger"></i></button>
-										</div>
-									`;
+									return jc_build_sheet_entry_row_html({
+										item_consumed: current_item_consumed,
+										size: sheet.size,
+										pcs: sheet.pcs,
+										is_cutoff: is_cutoff
+									}, configs);
 								}).join('');
 								
 								return `
@@ -495,7 +523,14 @@ function open_jc_operations_modal(page, job_card, quotation) {
 											<th style="text-align:right;">Pcs</th>
 											<th style="text-align:right;">Qty</th>
 											<th>UOM</th>
-											<th>Sheets Consumed</th>
+											<th>
+												Glass Consumed
+												<div style="display:flex; gap:8px; font-weight:normal; font-size:11px; color:var(--text-muted); margin-top:4px;">
+													<span style="flex: 0 0 180px;"></span>
+													<span style="flex: 0 0 130px;">Size</span>
+													<span style="flex: 0 0 70px;">Pcs</span>
+												</div>
+											</th>
 										</tr>
 									</thead>
 									<tbody>
@@ -552,7 +587,6 @@ function open_jc_operations_modal(page, job_card, quotation) {
 							d.$wrapper.on('click', '.add-sheet-btn', function() {
 								let $cell = $(this).closest('.sheets-container-cell');
 								let $list = $cell.find('.sheets-list');
-								let row_options = jc_sheet_size_options_html(configs, '');
 
 								// Find parent row to get default item code. Laminated glass is the
 								// end product of this operation, not a raw sheet, so never default
@@ -561,19 +595,12 @@ function open_jc_operations_modal(page, job_card, quotation) {
 								let is_laminated_row = $row.attr('data-glass-type') === 'Laminated';
 								let default_item = is_laminated_row ? '' : $row.find('td:first').text().trim();
 
-								let new_row = `
-									<div class="sheet-entry-row" style="display: flex; gap: 8px; margin-bottom: 6px; align-items: center;">
-										<input type="text" class="form-control input-sm sheet-item-consumed-input" list="all-glass-items" value="${jc_escape(default_item)}" style="min-width: 180px; display: inline-block;" placeholder="Item Consumed...">
-										<select class="form-control input-sm sheet-size-select" style="min-width: 130px; display: inline-block;">
-											<option value=""></option>
-											${row_options}
-										</select>
-										<input type="number" class="form-control input-sm sheet-pcs-input" value="" min="1" step="1" style="text-align:right; width: 70px; display: inline-block;" placeholder="Pcs">
-										<span class="sheet-balance-lbl text-info" style="font-size: 11px; font-weight: bold; min-width: 45px; text-align: center;">-</span>
-										<button class="btn btn-default btn-xs add-sheet-btn" style="padding: 2px 6px;" title="Add Row"><i class="fa fa-plus text-primary"></i></button>
-										<button class="btn btn-default btn-xs remove-sheet-btn" style="padding: 2px 6px;" title="Remove Row"><i class="fa fa-trash text-danger"></i></button>
-									</div>
-								`;
+								let new_row = jc_build_sheet_entry_row_html({
+									item_consumed: default_item,
+									size: '',
+									pcs: '',
+									is_cutoff: false
+								}, configs);
 								$list.append(new_row);
 								$cell.find('.empty-sheets-placeholder').hide();
 								check_save_button_visibility();
@@ -616,6 +643,58 @@ function open_jc_operations_modal(page, job_card, quotation) {
 									}
 								});
 							};
+
+							// Fill down: type how many of the *following table rows* consumed the
+							// same sheet, then press Enter (or click the clone button). Items are
+							// sorted by code when the modal opens, so runs of the same glass code
+							// land on consecutive rows — fill one row in, then propagate it down
+							// instead of retyping the same Item Consumed/Size/Pcs on every row.
+							// Each target row's Glass Consumed cell is replaced with a single entry
+							// matching the source row (like a spreadsheet fill-down), overwriting
+							// whatever that row already had.
+							function jc_handle_sheet_duplicate($row, $count_input) {
+								let count = Math.max(1, parseInt($count_input.val(), 10) || 1);
+								let item_consumed = $row.find('.sheet-item-consumed-input').val();
+								let is_cutoff = jc_is_cutoff_item(item_consumed);
+								let size = is_cutoff ? JC_CUTOFF_SIZE_VALUE : $row.find('.sheet-size-select').val();
+								let pcs = is_cutoff ? '' : $row.find('.sheet-pcs-input').val();
+
+								let $target_table_row = $row.closest('.jc-glass-item-row');
+								for (let i = 0; i < count; i++) {
+									$target_table_row = $target_table_row.next('.jc-glass-item-row');
+									if (!$target_table_row.length) {
+										break;
+									}
+
+									let $cell = $target_table_row.find('.sheets-container-cell');
+									let $list = $cell.find('.sheets-list');
+									$list.empty();
+									let new_row_html = jc_build_sheet_entry_row_html({
+										item_consumed: item_consumed,
+										size: size,
+										pcs: pcs,
+										is_cutoff: is_cutoff
+									}, configs);
+									$list.append(new_row_html);
+									$cell.find('.empty-sheets-placeholder').hide();
+									update_sheet_row_balance($list.find('.sheet-entry-row').first());
+								}
+								check_save_button_visibility();
+							}
+
+							d.$wrapper.on('click', '.duplicate-sheet-btn', function() {
+								let $row = $(this).closest('.sheet-entry-row');
+								jc_handle_sheet_duplicate($row, $row.find('.sheet-duplicate-count'));
+							});
+
+							d.$wrapper.on('keydown', '.sheet-duplicate-count', function(e) {
+								if (e.key !== 'Enter') {
+									return;
+								}
+								e.preventDefault();
+								e.stopPropagation();
+								jc_handle_sheet_duplicate($(this).closest('.sheet-entry-row'), $(this));
+							});
 
 							d.$wrapper.on('change awesomplete-selectcomplete input', '.sheet-item-consumed-input', function() {
 								let $row = $(this).closest('.sheet-entry-row');
