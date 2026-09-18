@@ -174,7 +174,7 @@ function render_sales_invoices_table(page, rows) {
 				<td style="padding:12px 16px;">
 					<div style="font-weight:600;">
 						<a href="#" class="si-open-customer" data-customer="${frappe.utils.escape_html(invoice.customer || invoice.customer_name || '')}" style="color:var(--primary); text-decoration:none;">
-							${frappe.utils.escape_html(invoice.customer_name || invoice.customer || '—')}
+							${frappe.utils.escape_html(invoice.custom_customer_name || invoice.customer_name || invoice.customer || '—')}
 						</a>
 					</div>
 				</td>

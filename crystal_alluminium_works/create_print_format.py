@@ -57,13 +57,14 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
     <img src="/assets/crystal_alluminium_works/images/crystal-alluminium-works-letterhead.jpeg" style="max-width: 100%; height: auto;" alt="Crystal Aluminium Works">
 </div>
 <hr style="border-top: 2px solid #ecf0f1; margin-bottom: 20px;">
-<div class="row" style="margin-bottom: 30px;">
-    <div class="col-xs-4">
+<div class="row" style="margin-bottom: 10px;">
+    <div class="col-xs-8">
         <!-- Cash quotations all share the one walk-in Customer record, so customer_name/
              party_name is always "Cash Customer" - custom_customer_name (Quotation only,
              captured in Quotation Builder's cash-mode step) carries the walk-in's own name. -->
-        <div style="color: #7f8c8d; font-size: 12px; text-transform: uppercase;">Customer Name:</div>
-        <div style="font-size: 16px; font-weight: bold;">{{{{ doc.get('custom_customer_name') or doc.customer_name or doc.party_name or doc.customer }}}}</div>
+        <div style="font-size: 14px; font-weight: bold; color: #000; text-transform: uppercase; white-space: nowrap;">
+            Customer Name: {{{{ doc.get('custom_customer_name') or doc.customer_name or doc.party_name or doc.customer }}}}
+        </div>
         <!-- Walk-ins carry their own PIN on the Quotation (custom_customer_pin); a registered
              customer's is mirrored onto the document from Customer.tax_id - natively as
              `tax_id` on Sales Order/Invoice, via custom_customer_tax_id on Quotation. Read
@@ -72,25 +73,19 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
              Hidden entirely when there is no PIN. -->
         {{% set customer_pin = doc.get('custom_customer_pin') or doc.get('custom_customer_tax_id') or doc.get('tax_id') %}}
         {{% if customer_pin %}}
-        <div style="margin-top: 6px;">
-            <span style="color: #7f8c8d; font-size: 12px; text-transform: uppercase;">PIN:</span>
-            <span style="font-size: 14px; font-weight: bold;">{{{{ customer_pin }}}}</span>
+        <div style="margin-top: 6px; font-size: 14px; font-weight: bold; color: #000; text-transform: uppercase; white-space: nowrap;">
+            PIN Number: {{{{ customer_pin }}}}
         </div>
         {{% endif %}}
     </div>
-    <div class="col-xs-4 text-center">
-        {{% if doc.doctype == 'Sales Invoice' %}}
-        <div style="font-size: 26px; font-weight: bold; color: #2c3e50; text-transform: uppercase; letter-spacing: 1px;">Invoice</div>
-        {{% elif doc.doctype == 'Quotation' %}}
-        <div style="font-size: 26px; font-weight: bold; color: #2c3e50; text-transform: uppercase; letter-spacing: 1px;">Quotation</div>
-        {{% endif %}}
-    </div>
     <div class="col-xs-4 text-right">
-        <div style="color: #7f8c8d; font-size: 12px; text-transform: uppercase;">Date:</div>
-        <div style="font-size: 16px; font-weight: bold;">{{{{ frappe.utils.formatdate(doc.posting_date or doc.transaction_date) }}}}</div>
+        <div style="font-size: 14px; font-weight: bold; color: #000; text-transform: uppercase; white-space: nowrap;">
+            Date: {{{{ frappe.utils.formatdate(doc.posting_date or doc.transaction_date) }}}}
+        </div>
         {{% if doc.doctype != 'Sales Invoice' and doc.due_date %}}
-        <div style="color: #7f8c8d; font-size: 12px; text-transform: uppercase; margin-top: 5px;">Due Date:</div>
-        <div style="font-size: 14px; font-weight: bold; color: #e74c3c;">{{{{ frappe.utils.formatdate(doc.due_date) }}}}</div>
+        <div style="font-size: 14px; font-weight: bold; color: #e74c3c; text-transform: uppercase; margin-top: 5px; white-space: nowrap;">
+            Due Date: {{{{ frappe.utils.formatdate(doc.due_date) }}}}
+        </div>
         {{% endif %}}
         {{% if doc.doctype == 'Quotation' %}}
         {{% set quote_name_parts = doc.name.split('-') %}}
@@ -104,6 +99,13 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
         {{% endif %}}
     </div>
 </div>
+{{% if doc.doctype in ('Sales Invoice', 'Quotation') %}}
+<div class="text-center" style="margin-bottom: 20px; font-size: 26px; font-weight: bold; color: #2c3e50; text-transform: uppercase; letter-spacing: 1px;">
+    {{{{ 'Invoice' if doc.doctype == 'Sales Invoice' else 'Quotation' }}}}
+</div>
+{{% else %}}
+<div style="margin-bottom: 20px;"></div>
+{{% endif %}}
 
 <style>
     .cq-table {{

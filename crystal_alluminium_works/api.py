@@ -1408,6 +1408,7 @@ def get_sales_invoices_page(search=None, status=None, customer=None, from_date=N
         "name",
         "customer",
         "customer_name",
+        "custom_customer_name",
         "posting_date",
         "due_date",
         "grand_total",
