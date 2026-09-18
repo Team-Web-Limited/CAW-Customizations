@@ -89,9 +89,8 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
         {{% endif %}}
         {{% if doc.doctype == 'Quotation' %}}
         {{% set quote_name_parts = doc.name.split('-') %}}
-        <div style="margin-top: 10px;">
-            <span style="color: #7f8c8d; font-size: 12px; text-transform: uppercase; font-weight: bold;">Quote No:</span>
-            <span style="font-size: 14px; font-weight: bold;">{{{{ (quote_name_parts[3] if quote_name_parts|length > 3 else quote_name_parts[-1])|int }}}}</span>
+        <div style="margin-top: 10px; font-size: 14px; font-weight: bold; color: #000; text-transform: uppercase; white-space: nowrap;">
+            Quote No: {{{{ (quote_name_parts[3] if quote_name_parts|length > 3 else quote_name_parts[-1])|int }}}}
         </div>
         {{% else %}}
         <div style="color: #7f8c8d; font-size: 12px; text-transform: uppercase; margin-top: 10px;">{ref_label}:</div>
@@ -421,9 +420,10 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
 </table>
 {{% endif %}}
 
-{{% set subtotal_amount = frappe.utils.flt(doc.grand_total or 0) %}}
-{{% set vat_amount = subtotal_amount * 0.16 %}}
-{{% set total_amount = subtotal_amount + vat_amount %}}
+{{% set has_real_tax = frappe.utils.flt(doc.total_taxes_and_charges or 0) > 0 %}}
+{{% set subtotal_amount = frappe.utils.flt(doc.grand_total or 0) - frappe.utils.flt(doc.total_taxes_and_charges or 0) if has_real_tax else frappe.utils.flt(doc.grand_total or 0) %}}
+{{% set vat_amount = frappe.utils.flt(doc.total_taxes_and_charges or 0) if has_real_tax else subtotal_amount * 0.16 %}}
+{{% set total_amount = frappe.utils.flt(doc.grand_total or 0) if has_real_tax else subtotal_amount + vat_amount %}}
 {{% set outstanding_display_amount = (frappe.utils.flt(doc.outstanding_amount or 0) * 1.16) if doc.doctype == 'Sales Invoice' and frappe.utils.flt(doc.total_taxes_and_charges or 0) == 0 else frappe.utils.flt(doc.outstanding_amount or 0) %}}
 {{% set paid_display_amount = 0 %}}
 {{% if doc.doctype == 'Sales Invoice' and (doc.docstatus != 1 or doc.status == 'Unpaid' or doc.status == 'Overdue') %}}
