@@ -42,17 +42,34 @@ function load_ceiling_board_item_codes() {
 }
 const QM_VAT_RATE = 0.16;
 
+// doc.grand_total is VAT-exclusive only for the "visual VAT" case (no real tax
+// row — e.g. cash quotations, where 16% is shown for display purposes only).
+// A quotation with a real tax template applied (total_taxes_and_charges > 0)
+// already has that tax baked into grand_total, so treating grand_total as the
+// subtotal and adding tax again double-counts it. Mirrors the same
+// has_real_tax check used by the print format (create_print_format.py).
+function manager_quotation_has_real_tax(doc) {
+	return flt(doc.total_taxes_and_charges || 0) > 0;
+}
+
 function get_manager_quotation_subtotal(doc) {
+	if (manager_quotation_has_real_tax(doc)) {
+		return flt(doc.grand_total || 0) - flt(doc.total_taxes_and_charges || 0);
+	}
 	return flt(doc.grand_total || 0);
 }
 
 function get_manager_quotation_tax(doc) {
-	let subtotal = get_manager_quotation_subtotal(doc);
-	let explicit_tax = flt(doc.total_taxes_and_charges || 0);
-	return explicit_tax || (subtotal * QM_VAT_RATE);
+	if (manager_quotation_has_real_tax(doc)) {
+		return flt(doc.total_taxes_and_charges || 0);
+	}
+	return get_manager_quotation_subtotal(doc) * QM_VAT_RATE;
 }
 
 function get_manager_quotation_total(doc) {
+	if (manager_quotation_has_real_tax(doc)) {
+		return flt(doc.grand_total || 0);
+	}
 	return get_manager_quotation_subtotal(doc) + get_manager_quotation_tax(doc);
 }
 
