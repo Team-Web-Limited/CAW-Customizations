@@ -839,7 +839,13 @@ function get_customer_empty_transaction_row(message, colspan) {
 }
 
 function get_customer_invoice_row_html(invoice) {
-	let status_color = get_customer_manager_status_color(invoice.status);
+	// The invoice's own status shows "Paid" once generated so warehouse staff
+	// can use it to release goods, even if the Job Card behind it (this
+	// company's real payment source of truth) still has a balance owing —
+	// show that balance status here instead of the invoice's own status.
+	// get_sales_invoices_page (api.py) attaches job_card_balance_status.
+	let display_status = invoice.job_card_balance_status || invoice.status;
+	let status_color = get_customer_manager_status_color(display_status);
 	let source = invoice.custom_source_quotation || 'Direct / Sales Order';
 
 	return `
@@ -858,7 +864,7 @@ function get_customer_invoice_row_html(invoice) {
 			<td style="text-align:right;">${format_currency(get_customer_manager_invoice_outstanding(invoice), invoice.currency || 'KES')}</td>
 			<td style="text-align:center;">
 				<span class="cm-status-pill" style="background:${status_color}20; color:${status_color};">
-					${cm_text(invoice.status || '-')}
+					${cm_text(display_status || '-')}
 				</span>
 			</td>
 		</tr>
