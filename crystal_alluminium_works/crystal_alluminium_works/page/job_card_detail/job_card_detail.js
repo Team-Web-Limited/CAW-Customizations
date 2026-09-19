@@ -336,402 +336,463 @@ function jc_sheet_size_options_html(configs, selected_size) {
 		.join('');
 }
 
-// Shared by the initial render, "Add empty row", and "duplicate row" below,
-// so a clone picks up the exact same markup/behaviour as any other sheet row.
-function jc_build_sheet_entry_row_html(sheet, configs) {
-	let is_cutoff = !!sheet.is_cutoff || jc_is_cutoff_item(sheet.item_consumed);
-	let item_consumed = is_cutoff ? JC_CUTOFF_ITEM_CONSUMED : (sheet.item_consumed || '');
-	let size_for_row = is_cutoff ? JC_CUTOFF_SIZE_VALUE : (sheet.size || '');
-	let pcs_for_row = is_cutoff ? '' : (sheet.pcs || '');
-	let row_options = jc_sheet_size_options_html(configs, size_for_row);
-
-	// Item Consumed/Size/Pcs are wrapped in fixed flex-basis boxes (flex: 0 0 Npx)
-	// rather than sizing the inputs themselves, so their rendered width can't be
-	// stretched by .form-control's own width:100% — the header's sub-labels use
-	// the same fixed basis values, so the two stay pixel-aligned regardless of
-	// how the browser would otherwise size a bare .form-control in a flex row.
-	return `
-		<div class="sheet-entry-row" style="display: flex; gap: 8px; margin-bottom: 6px; align-items: center;">
-			<div style="flex: 0 0 180px;"><input type="text" class="form-control input-sm sheet-item-consumed-input" list="all-glass-items" value="${jc_escape(item_consumed)}" style="width:100%;" placeholder="Item Consumed..."></div>
-			<div style="flex: 0 0 130px;">
-				<select class="form-control input-sm sheet-size-select" style="width:100%;" ${is_cutoff ? 'disabled' : ''}>
-					<option value=""></option>
-					${row_options}
-				</select>
-			</div>
-			<div style="flex: 0 0 70px;"><input type="number" class="form-control input-sm sheet-pcs-input" value="${pcs_for_row}" min="1" step="1" style="width:100%; text-align:right;" placeholder="${is_cutoff ? 'N/A' : 'Pcs'}" ${is_cutoff ? 'disabled' : ''}></div>
-			<span class="sheet-balance-lbl text-info" style="font-size: 11px; font-weight: bold; min-width: 45px; text-align: center;">${is_cutoff ? 'N/A' : '-'}</span>
-			<input type="number" min="1" step="1" value="1" class="form-control input-sm sheet-duplicate-count" title="Number of rows below this one that consumed the same sheet — press Enter here to fill them down" style="width:44px;display:inline-block;">
-			<button class="btn btn-default btn-xs duplicate-sheet-btn" style="padding: 2px 6px;" title="Fill down — copies this Item Consumed/Size/Pcs into the count field's number of rows below"><i class="fa fa-clone text-primary"></i></button>
-			<button class="btn btn-default btn-xs add-sheet-btn" style="padding: 2px 6px;" title="Add empty row"><i class="fa fa-plus text-primary"></i></button>
-			<button class="btn btn-default btn-xs remove-sheet-btn" style="padding: 2px 6px;" title="Remove Row"><i class="fa fa-trash text-danger"></i></button>
-		</div>
-	`;
+function jc_get_sft_per_sheet(size, configs) {
+	let match = (configs || []).find(c => c.size === size);
+	return match ? flt(match.sft) : 0;
 }
 
-function jc_apply_cutoff_row_state($row) {
-	let is_cutoff = jc_is_cutoff_item($row.find('.sheet-item-consumed-input').val());
-	let $size = $row.find('.sheet-size-select');
-	let $pcs = $row.find('.sheet-pcs-input');
-	let $bal = $row.find('.sheet-balance-lbl');
-	if (is_cutoff) {
-		$size.val(JC_CUTOFF_SIZE_VALUE).prop('disabled', true);
-		$pcs.val('').prop('disabled', true).attr('placeholder', 'N/A');
-		$bal.text('N/A');
-	} else {
-		$size.prop('disabled', false);
-		$pcs.prop('disabled', false).attr('placeholder', 'Pcs');
-	}
+// Total SFT this quotation row still needs covered — Cut Size/Custom and Laminated
+// rows are both billed on custom_area_sqft * qty (see get_job_card_row_quantities).
+function jc_get_row_need_sft(row) {
+	return flt(row.custom_area_sqft || 0) * flt(row.qty || 0);
 }
 
-function open_jc_operations_modal(page, job_card, quotation) {
-	// First fetch the latest custom_sheet_consumption_json from the Job Card
-	frappe.db.get_value('CAW Job Card', job_card.name, 'custom_sheet_consumption_json')
-		.then(r => {
-			let saved_data = {};
-			try {
-				if (r.message && r.message.custom_sheet_consumption_json) {
-					saved_data = JSON.parse(r.message.custom_sheet_consumption_json);
-				}
-			} catch (e) {}
-			
-			// Get all Cut Size glass items OR Laminated glass items from quotation.items
-			let items = ((quotation || {}).items || []).filter(item =>
-				item.custom_product_category === 'Glass' &&
-				(item.custom_glass_sale_mode === 'Resized' || item.custom_glass_type === 'Laminated')
-			);
-			// Group identical glass codes together so "fill down" (below) can copy one
-			// row's sheet consumed into the next few rows in one action — most jobs
-			// have several pieces of the same code back to back, each fed by the same
-			// sheet size.
-			items = items.slice().sort((a, b) => (a.item_code || '').localeCompare(b.item_code || ''));
+// Turns the flat "Glass Consumed" ledger (item/size/pcs + which item code it
+// produces) into the per-row map the backend has always expected
+// ({row_name: [{item_consumed, size, pcs, is_cutoff}]}) — this is the "background"
+// step: staff never pick a row, but every row still gets exactly the entries
+// save_jc_operations_consumption/_validate_glass_consumption/the repack logic in
+// api.py already know how to read, so none of that backend code has to change.
+// Sheets are handed out to a code's rows in row order, one row's whole need at a
+// time (ceil(need_sft / sft_per_sheet) — a sheet is used up the moment a piece is
+// cut from it, so partial sheets never carry over to the next row), draining the
+// ledger entries producing that code in the order they were added. A row that
+// still comes up short falls back to that code's Cutoffs entry (if any) or is
+// reported as a shortfall so Save can be blocked with a clear reason.
+function jc_allocate_ledger_to_rows(items, ledger, configs) {
+	let by_code = {};
+	items.forEach(item => {
+		(by_code[item.item_code] = by_code[item.item_code] || []).push(item);
+	});
 
-			if (items.length === 0) {
-				// The JC Operations button is hidden whenever there are no such items
-				// (see has_jc_operations_items), so this is just a defensive guard.
+	let consumption = {};
+	let shortfalls = [];
+	let zero_area_rows = [];
+
+	Object.keys(by_code).forEach(code => {
+		let entries = ledger.filter(e => e.produces === code);
+		let cutoff_entry = entries.find(e => e.is_cutoff);
+		let pool = entries
+			.filter(e => !e.is_cutoff)
+			.map(e => ({ item_consumed: e.item_consumed, size: e.size, remaining: flt(e.pcs) }));
+
+		by_code[code].forEach(row => {
+			let need_sft = jc_get_row_need_sft(row);
+			if (need_sft <= 0.0001) {
+				// A Resized/Laminated row with no area is a Quotation data problem (missing
+				// width/height), not "nothing to consume" — flag it instead of silently
+				// waving it through, so billing stays blocked until it's actually fixed.
+				zero_area_rows.push({ item_code: code, item_name: row.item_name });
 				return;
 			}
 
-			let d = new frappe.ui.Dialog({
-				title: 'JC Operations (Glass Sheet Consumption)',
-				size: 'extra-large',
-				fields: [
-					{
-						fieldname: 'html',
-						fieldtype: 'HTML'
-					}
-				],
-				primary_action_label: 'Save',
-				primary_action: function() {
-					let consumption = {};
-					d.$wrapper.find('.jc-glass-item-row').each(function() {
-						let row_name = $(this).attr('data-row-name');
-						let item_sheets = [];
-						$(this).find('.sheet-entry-row').each(function() {
-							let item_consumed = $(this).find('.sheet-item-consumed-input').val();
-							let is_cutoff = jc_is_cutoff_item(item_consumed);
-							let size = is_cutoff ? JC_CUTOFF_SIZE_VALUE : $(this).find('.sheet-size-select').val();
-							let pcs = flt($(this).find('.sheet-pcs-input').val());
-							if (size && (is_cutoff || pcs > 0)) {
-								item_sheets.push({
-									item_consumed: is_cutoff ? JC_CUTOFF_ITEM_CONSUMED : item_consumed,
-									size: size,
-									pcs: is_cutoff ? null : pcs,
-									is_cutoff: is_cutoff ? 1 : 0
-								});
-							}
-						});
-						if (item_sheets.length > 0) {
-							consumption[row_name] = item_sheets;
-						}
-					});
-					d.get_primary_btn().prop('disabled', true);
-					frappe.call({
-						method: 'crystal_alluminium_works.api.save_jc_operations_consumption',
-						args: {
-							job_card_name: job_card.name,
-							consumption_json: JSON.stringify(consumption)
-						},
-						callback: function(r) {
-							d.hide();
-							frappe.show_alert({message: 'Saved successfully', indicator: 'green'});
-							load_single_job_card_detail(page, job_card.name);
-						}
-					});
+			let assigned = [];
+			let remaining_sft = need_sft;
+			pool.forEach(slot => {
+				if (remaining_sft <= 0.0001 || slot.remaining <= 0) {
+					return;
 				}
+				let sft_per_sheet = jc_get_sft_per_sheet(slot.size, configs);
+				if (!sft_per_sheet) {
+					return;
+				}
+				let sheets_needed = Math.ceil((remaining_sft - 0.0001) / sft_per_sheet);
+				let take = Math.min(sheets_needed, slot.remaining);
+				if (take <= 0) {
+					return;
+				}
+				assigned.push({ item_consumed: slot.item_consumed, size: slot.size, pcs: take, is_cutoff: 0 });
+				slot.remaining -= take;
+				remaining_sft -= take * sft_per_sheet;
 			});
 
-			frappe.call({
-				method: 'crystal_alluminium_works.api.get_glass_sheet_configs',
-				callback: function(configs_r) {
-					let configs = configs_r.message || [];
-					
-					frappe.call({
-						method: 'crystal_alluminium_works.api.get_all_glass_items',
-						callback: function(items_r) {
-							let glass_items = items_r.message || [];
-
-							let rows_html = items.map(item => {
-								let existing_sheets = saved_data[item.name] || [];
-								let show_placeholder = existing_sheets.length === 0;
-								let is_laminated_item = item.custom_glass_type === 'Laminated';
-
-								let sheets_html = existing_sheets.map(sheet => {
-									let is_cutoff = !!sheet.is_cutoff || jc_is_cutoff_item(sheet.item_consumed);
-									let current_item_consumed = is_cutoff ? JC_CUTOFF_ITEM_CONSUMED : (sheet.item_consumed || (is_laminated_item ? '' : item.item_code));
-									return jc_build_sheet_entry_row_html({
-										item_consumed: current_item_consumed,
-										size: sheet.size,
-										pcs: sheet.pcs,
-										is_cutoff: is_cutoff
-									}, configs);
-								}).join('');
-								
-								return `
-									<tr class="jc-glass-item-row" data-row-name="${jc_escape(item.name)}" data-glass-type="${jc_escape(item.custom_glass_type || '')}">
-										<td>${jc_escape(item.item_code)}</td>
-										<td>${jc_escape(item.item_name)}</td>
-										<td style="text-align:right;">${jc_number(item.custom_numbering, 0)}</td>
-										<td style="text-align:right;">${jc_number(item.qty, 3)}</td>
-										<td>${jc_escape(item.uom)}</td>
-										<td class="sheets-container-cell">
-											<div class="empty-sheets-placeholder" style="${show_placeholder ? '' : 'display: none;'} margin-bottom: 6px;">
-												<span class="text-muted small">No sheets specified. </span>
-												<button class="btn btn-default btn-xs add-sheet-btn" style="padding: 2px 6px;" title="Add Row"><i class="fa fa-plus text-primary"></i> Add Sheet</button>
-											</div>
-											<div class="sheets-list">
-												${sheets_html}
-											</div>
-										</td>
-									</tr>
-								`;
-							}).join('');
-
-							let datalist_html = `
-								<datalist id="all-glass-items">
-									<option value="${JC_CUTOFF_ITEM_CONSUMED}">Cutoffs (no stock deducted)</option>
-									${glass_items.map(i => `<option value="${jc_escape(i.item_code)}">${jc_escape(i.item_name || i.item_code)}</option>`).join('')}
-								</datalist>
-							`;
-
-							let html = `
-								<table class="table table-bordered">
-									<thead>
-										<tr>
-											<th>Item Code</th>
-											<th>Item Name</th>
-											<th style="text-align:right;">Pcs</th>
-											<th style="text-align:right;">Qty</th>
-											<th>UOM</th>
-											<th>
-												Glass Consumed
-												<div style="display:flex; gap:8px; font-weight:normal; font-size:11px; color:var(--text-muted); margin-top:4px;">
-													<span style="flex: 0 0 180px;"></span>
-													<span style="flex: 0 0 130px;">Size</span>
-													<span style="flex: 0 0 70px;">Pcs</span>
-												</div>
-											</th>
-										</tr>
-									</thead>
-									<tbody>
-										${rows_html}
-									</tbody>
-								</table>
-								${datalist_html}
-							`;
-							
-							d.fields_dict.html.$wrapper.html(html);
-
-							// Bind event handlers inside the wrapper
-							let check_save_button_visibility = function() {
-								let has_sheets = false;
-								let is_valid = true;
-								
-								d.$wrapper.find('.sheet-entry-row').each(function() {
-									has_sheets = true;
-									let item_consumed = $(this).find('.sheet-item-consumed-input').val();
-									let is_cutoff = jc_is_cutoff_item(item_consumed);
-									let size = is_cutoff ? JC_CUTOFF_SIZE_VALUE : $(this).find('.sheet-size-select').val();
-									let pcs_val = $(this).find('.sheet-pcs-input').val();
-
-									if (!item_consumed || !size) {
-										is_valid = false;
-									} else if (!is_cutoff) {
-										let pcs = parseFloat(pcs_val);
-										if (!pcs_val || isNaN(pcs) || pcs <= 0 || !Number.isInteger(pcs)) {
-											is_valid = false;
-										}
-									}
-								});
-								
-								// Also check if any jc-glass-item-row has 0 sheets.
-								// If we want to force ALL glass items to be configured:
-								let all_configured = true;
-								d.$wrapper.find('.jc-glass-item-row').each(function() {
-									if ($(this).find('.sheet-entry-row').length === 0) {
-										all_configured = false;
-									}
-								});
-								
-								let $btn = d.get_primary_btn();
-								if (has_sheets && is_valid && all_configured) {
-									$btn.prop('disabled', false).attr('title', '');
-									$btn.show();
-								} else {
-									let reason = !all_configured ? 'Add sheets for all glass items' : (!is_valid ? 'Ensure all rows have Item Consumed and Size, with a valid whole Pcs > 0 (or set Item Consumed to Cutoffs)' : 'Please add sheets consumed');
-									$btn.prop('disabled', true).attr('title', reason);
-									$btn.show();
-								}
-							};
-
-							d.$wrapper.on('click', '.add-sheet-btn', function() {
-								let $cell = $(this).closest('.sheets-container-cell');
-								let $list = $cell.find('.sheets-list');
-
-								// Find parent row to get default item code. Laminated glass is the
-								// end product of this operation, not a raw sheet, so never default
-								// the consumed item to the laminated glass item itself.
-								let $row = $(this).closest('.jc-glass-item-row');
-								let is_laminated_row = $row.attr('data-glass-type') === 'Laminated';
-								let default_item = is_laminated_row ? '' : $row.find('td:first').text().trim();
-
-								let new_row = jc_build_sheet_entry_row_html({
-									item_consumed: default_item,
-									size: '',
-									pcs: '',
-									is_cutoff: false
-								}, configs);
-								$list.append(new_row);
-								$cell.find('.empty-sheets-placeholder').hide();
-								check_save_button_visibility();
-							});
-
-							d.$wrapper.on('click', '.remove-sheet-btn', function() {
-								let $cell = $(this).closest('.sheets-container-cell');
-								$(this).closest('.sheet-entry-row').remove();
-								
-								let $list = $cell.find('.sheets-list');
-								if ($list.children().length === 0) {
-									$cell.find('.empty-sheets-placeholder').show();
-								}
-								check_save_button_visibility();
-							});
-
-							let update_sheet_row_balance = function($row) {
-								let item_code = $row.find('.sheet-item-consumed-input').val();
-								let size = $row.find('.sheet-size-select').val();
-								let $lbl = $row.find('.sheet-balance-lbl');
-								if (jc_is_cutoff_item(item_code)) {
-									$lbl.text('N/A');
-									return;
-								}
-								if (!item_code || !size) {
-									$lbl.text('-');
-									return;
-								}
-								frappe.call({
-									method: 'crystal_alluminium_works.api.get_item_stock_balance',
-									args: { item_code: item_code },
-									callback: function(r) {
-										let balances = r.message || [];
-										let store_bal = balances.find(b => b.warehouse.includes('Stores')) || balances[0];
-										if (store_bal && store_bal.sheet_bal && store_bal.sheet_bal[size] !== undefined) {
-											$lbl.text(store_bal.sheet_bal[size] + 'pcs');
-										} else {
-											$lbl.text('0pcs');
-										}
-									}
-								});
-							};
-
-							// Fill down: type how many of the *following table rows* consumed the
-							// same sheet, then press Enter (or click the clone button). Items are
-							// sorted by code when the modal opens, so runs of the same glass code
-							// land on consecutive rows — fill one row in, then propagate it down
-							// instead of retyping the same Item Consumed/Size/Pcs on every row.
-							// Each target row's Glass Consumed cell is replaced with a single entry
-							// matching the source row (like a spreadsheet fill-down), overwriting
-							// whatever that row already had.
-							function jc_handle_sheet_duplicate($row, $count_input) {
-								let count = Math.max(1, parseInt($count_input.val(), 10) || 1);
-								let item_consumed = $row.find('.sheet-item-consumed-input').val();
-								let is_cutoff = jc_is_cutoff_item(item_consumed);
-								let size = is_cutoff ? JC_CUTOFF_SIZE_VALUE : $row.find('.sheet-size-select').val();
-								let pcs = is_cutoff ? '' : $row.find('.sheet-pcs-input').val();
-
-								let $target_table_row = $row.closest('.jc-glass-item-row');
-								for (let i = 0; i < count; i++) {
-									$target_table_row = $target_table_row.next('.jc-glass-item-row');
-									if (!$target_table_row.length) {
-										break;
-									}
-
-									let $cell = $target_table_row.find('.sheets-container-cell');
-									let $list = $cell.find('.sheets-list');
-									$list.empty();
-									let new_row_html = jc_build_sheet_entry_row_html({
-										item_consumed: item_consumed,
-										size: size,
-										pcs: pcs,
-										is_cutoff: is_cutoff
-									}, configs);
-									$list.append(new_row_html);
-									$cell.find('.empty-sheets-placeholder').hide();
-									update_sheet_row_balance($list.find('.sheet-entry-row').first());
-								}
-								check_save_button_visibility();
-							}
-
-							d.$wrapper.on('click', '.duplicate-sheet-btn', function() {
-								let $row = $(this).closest('.sheet-entry-row');
-								jc_handle_sheet_duplicate($row, $row.find('.sheet-duplicate-count'));
-							});
-
-							d.$wrapper.on('keydown', '.sheet-duplicate-count', function(e) {
-								if (e.key !== 'Enter') {
-									return;
-								}
-								e.preventDefault();
-								e.stopPropagation();
-								jc_handle_sheet_duplicate($(this).closest('.sheet-entry-row'), $(this));
-							});
-
-							d.$wrapper.on('change awesomplete-selectcomplete input', '.sheet-item-consumed-input', function() {
-								let $row = $(this).closest('.sheet-entry-row');
-								jc_apply_cutoff_row_state($row);
-								update_sheet_row_balance($row);
-								check_save_button_visibility();
-							});
-							d.$wrapper.on('change', '.sheet-size-select', function() {
-								let $row = $(this).closest('.sheet-entry-row');
-								update_sheet_row_balance($row);
-								check_save_button_visibility();
-							});
-							d.$wrapper.on('input change', '.sheet-pcs-input', function() {
-								let val = $(this).val();
-								if (val) {
-									let clean = val.replace(/[^0-9]/g, '');
-									if (clean !== val) {
-										$(this).val(clean);
-									}
-								}
-								check_save_button_visibility();
-							});
-
-							d.show();
-							check_save_button_visibility();
-
-							// On initial show, trigger update for all rows
-							setTimeout(function() {
-								d.$wrapper.find('.sheet-entry-row').each(function() {
-									update_sheet_row_balance($(this));
-								});
-							}, 200);
-						}
-					});
+			if (remaining_sft > 0.0001) {
+				if (cutoff_entry) {
+					assigned.push({ item_consumed: JC_CUTOFF_ITEM_CONSUMED, size: JC_CUTOFF_SIZE_VALUE, pcs: null, is_cutoff: 1 });
+				} else {
+					shortfalls.push({ item_code: code, item_name: row.item_name, need_sft: remaining_sft });
+					return;
 				}
-			});
+			}
+
+			consumption[row.name] = assigned;
 		});
+	});
+
+	return { consumption, shortfalls, zero_area_rows };
+}
+
+function jc_ledger_entry_key(entry) {
+	return `${entry.item_consumed}||${entry.size}||${entry.produces}`;
+}
+
+// Rebuilds an editable ledger from the row-keyed JSON already on the Job Card
+// (from an older save, or this same flow's own last save), so reopening JC
+// Operations doesn't lose what was entered — entries for the same
+// (item consumed, size, code produced) across different rows are just summed,
+// since only the aggregate matters to the allocator above.
+function jc_ledger_from_saved_data(items, saved_data) {
+	let item_by_row = {};
+	items.forEach(item => { item_by_row[item.name] = item; });
+
+	let by_key = {};
+	Object.keys(saved_data || {}).forEach(row_name => {
+		let item = item_by_row[row_name];
+		if (!item) return;
+		(saved_data[row_name] || []).forEach(sheet => {
+			let is_cutoff = !!sheet.is_cutoff || jc_is_cutoff_item(sheet.item_consumed);
+			let entry = {
+				item_consumed: is_cutoff ? JC_CUTOFF_ITEM_CONSUMED : (sheet.item_consumed || ''),
+				size: is_cutoff ? JC_CUTOFF_SIZE_VALUE : (sheet.size || ''),
+				pcs: is_cutoff ? 0 : flt(sheet.pcs),
+				is_cutoff: is_cutoff,
+				produces: item.item_code
+			};
+			let key = jc_ledger_entry_key(entry);
+			if (by_key[key]) {
+				by_key[key].pcs += entry.pcs;
+			} else {
+				by_key[key] = entry;
+			}
+		});
+	});
+	return Object.values(by_key);
+}
+
+function open_jc_operations_modal(page, job_card, quotation) {
+	if (!job_card.quotation) {
+		return;
+	}
+
+	// The `quotation` passed in only carries the summary fields get_job_card_detail
+	// sends down (no custom_area_sqft) — fetch the full doc so the allocator above
+	// has the real area to work against, same reasoning as the partial invoice modal.
+	Promise.all([
+		frappe.db.get_doc('Quotation', job_card.quotation),
+		frappe.db.get_value('CAW Job Card', job_card.name, 'custom_sheet_consumption_json'),
+		new Promise(resolve => frappe.call({ method: 'crystal_alluminium_works.api.get_glass_sheet_configs', callback: r => resolve(r.message || []) })),
+		new Promise(resolve => frappe.call({ method: 'crystal_alluminium_works.api.get_all_glass_items', callback: r => resolve(r.message || []) }))
+	]).then(([full_quotation, saved_json_r, configs, glass_items]) => {
+		let items = (full_quotation.items || []).filter(item =>
+			item.custom_product_category === 'Glass' &&
+			(item.custom_glass_sale_mode === 'Resized' || item.custom_glass_type === 'Laminated')
+		);
+		items = items.slice().sort((a, b) => (a.item_code || '').localeCompare(b.item_code || ''));
+
+		if (items.length === 0) {
+			// The JC Operations button is hidden whenever there are no such items
+			// (see has_jc_operations_items), so this is just a defensive guard.
+			return;
+		}
+
+		let saved_data = {};
+		try {
+			// frappe.db.get_value(doctype, name, fieldname) resolves to {message: {fieldname: value}}.
+			let saved_json = ((saved_json_r || {}).message || {}).custom_sheet_consumption_json;
+			if (saved_json) {
+				saved_data = JSON.parse(saved_json);
+			}
+		} catch (e) {}
+
+		// Non-Laminated codes present on this job card can be auto-matched — typing
+		// that exact code as "Consumed" is enough to know what it produces.
+		let cut_size_codes = new Set(
+			items.filter(item => item.custom_glass_type !== 'Laminated').map(item => item.item_code)
+		);
+		// Every distinct code (Cut Size or Laminated) is a valid target for an
+		// explicit "Produces" pick — Cutoffs can cover either kind of row.
+		let produce_options = [];
+		let seen_codes = new Set();
+		items.forEach(item => {
+			if (seen_codes.has(item.item_code)) return;
+			seen_codes.add(item.item_code);
+			produce_options.push({ code: item.item_code, name: item.item_name });
+		});
+
+		let ledger = jc_ledger_from_saved_data(items, saved_data);
+
+		let d = new frappe.ui.Dialog({
+			title: 'JC Operations (Glass Consumed)',
+			size: 'extra-large',
+			fields: [{ fieldname: 'html', fieldtype: 'HTML' }],
+			primary_action_label: 'Save',
+			primary_action: function() {
+				let { consumption, shortfalls, zero_area_rows } = jc_allocate_ledger_to_rows(items, ledger, configs);
+				if (shortfalls.length > 0 || zero_area_rows.length > 0) {
+					let lines = shortfalls.map(s =>
+						`"${frappe.utils.escape_html(s.item_name)}" (${frappe.utils.escape_html(s.item_code)}) is short ${s.need_sft.toFixed(2)} SFT.`
+					).concat(zero_area_rows.map(z =>
+						`"${frappe.utils.escape_html(z.item_name)}" (${frappe.utils.escape_html(z.item_code)}) has no area set on the Quotation — fix its Width/Height there before it can be configured here.`
+					));
+					frappe.msgprint({
+						title: 'Cannot save yet',
+						indicator: 'red',
+						message: lines.join('<br>')
+					});
+					return;
+				}
+				d.get_primary_btn().prop('disabled', true);
+				frappe.call({
+					method: 'crystal_alluminium_works.api.save_jc_operations_consumption',
+					args: {
+						job_card_name: job_card.name,
+						consumption_json: JSON.stringify(consumption)
+					},
+					callback: function() {
+						d.hide();
+						frappe.show_alert({message: 'Saved successfully', indicator: 'green'});
+						load_single_job_card_detail(page, job_card.name);
+					},
+					error: function() {
+						d.get_primary_btn().prop('disabled', false);
+					}
+				});
+			}
+		});
+
+		let datalist_html = `
+			<datalist id="all-glass-items">
+				<option value="${JC_CUTOFF_ITEM_CONSUMED}">Cutoffs (no stock deducted)</option>
+				${glass_items.map(i => `<option value="${jc_escape(i.item_code)}">${jc_escape(i.item_name || i.item_code)}</option>`).join('')}
+			</datalist>
+		`;
+
+		let produces_options_html = produce_options
+			.map(o => `<option value="${jc_escape(o.code)}">${jc_escape(o.code)} — ${jc_escape(o.name)}</option>`)
+			.join('');
+
+		let summary_rows_html = items.map(item => `
+			<tr class="jc-glass-item-row" data-row-name="${jc_escape(item.name)}" data-item-code="${jc_escape(item.item_code)}">
+				<td>${jc_escape(item.item_code)}</td>
+				<td>${jc_escape(item.item_name)}</td>
+				<td style="text-align:right;">${jc_number(item.custom_numbering, 0)}</td>
+				<td style="text-align:right;">${jc_number(item.qty, 3)}</td>
+				<td>${jc_escape(item.uom)}</td>
+				<td class="jc-item-status text-muted">-</td>
+			</tr>
+		`).join('');
+
+		let html = `
+			<table class="table table-bordered">
+				<thead>
+					<tr>
+						<th>Item Code</th>
+						<th>Item Name</th>
+						<th style="text-align:right;">Pcs</th>
+						<th style="text-align:right;">Qty</th>
+						<th>UOM</th>
+						<th>Status</th>
+					</tr>
+				</thead>
+				<tbody>${summary_rows_html}</tbody>
+			</table>
+			${datalist_html}
+
+			<div class="jc-all-zero-area-msg" style="display:none; margin-top:18px; padding:12px 16px; border-radius:8px; background:#fdecea; border:1px solid #f5c2c0; color:#a94442; font-size:13px;">
+				Every item above has no area set on the Quotation — fix Width/Height there
+				first. There's nothing to log here until at least one item has a real area.
+			</div>
+			<div class="jc-glass-consumed-section">
+				<h6 style="margin:18px 0 8px;">Glass Consumed</h6>
+				<div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; margin-bottom:10px;">
+					<div style="flex: 0 0 200px;">
+						<label class="text-muted small" style="display:block;">Consumed</label>
+						<input type="text" class="form-control input-sm jc-ledger-consumed" list="all-glass-items" placeholder="Item or Cutoffs...">
+					</div>
+					<div style="flex: 0 0 140px;">
+						<label class="text-muted small" style="display:block;">Size</label>
+						<select class="form-control input-sm jc-ledger-size">
+							<option value=""></option>
+							${jc_sheet_size_options_html(configs, '')}
+						</select>
+					</div>
+					<div style="flex: 0 0 80px;">
+						<label class="text-muted small" style="display:block;">Pcs</label>
+						<input type="number" class="form-control input-sm jc-ledger-pcs" min="1" step="1">
+					</div>
+					<div class="jc-ledger-produces-wrap" style="flex: 0 0 220px; display:none;">
+						<label class="text-muted small" style="display:block;">Produces</label>
+						<select class="form-control input-sm jc-ledger-produces">
+							<option value="">Select item...</option>
+							${produces_options_html}
+						</select>
+					</div>
+					<span class="jc-ledger-balance-lbl text-info small" style="min-width:60px;"></span>
+					<button class="btn btn-primary btn-sm jc-ledger-add-btn">Add</button>
+				</div>
+				<table class="table table-bordered table-sm">
+					<thead>
+						<tr>
+							<th>Consumed</th>
+							<th>Size</th>
+							<th style="text-align:right;">Pcs</th>
+							<th>Produces</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody class="jc-ledger-rows"></tbody>
+				</table>
+			</div>
+		`;
+
+		d.fields_dict.html.$wrapper.html(html);
+
+		let produce_name_by_code = {};
+		produce_options.forEach(o => { produce_name_by_code[o.code] = o.name; });
+
+		let render_ledger_rows = function() {
+			let $rows = d.$wrapper.find('.jc-ledger-rows');
+			if (ledger.length === 0) {
+				$rows.html('<tr><td colspan="5" class="text-muted text-center">No Glass Consumed entries yet.</td></tr>');
+				return;
+			}
+			$rows.html(ledger.map((entry, idx) => `
+				<tr>
+					<td>${jc_escape(entry.item_consumed)}</td>
+					<td>${jc_escape(entry.size)}</td>
+					<td style="text-align:right;">${entry.is_cutoff ? 'N/A' : jc_number(entry.pcs, 0)}</td>
+					<td>${jc_escape(entry.produces)} — ${jc_escape(produce_name_by_code[entry.produces] || '')}</td>
+					<td><button class="btn btn-default btn-xs jc-ledger-remove-btn" data-idx="${idx}" title="Remove"><i class="fa fa-trash text-danger"></i></button></td>
+				</tr>
+			`).join(''));
+		};
+
+		let refresh = function() {
+			render_ledger_rows();
+			let { consumption, shortfalls, zero_area_rows } = jc_allocate_ledger_to_rows(items, ledger, configs);
+			let shortfall_by_row = {};
+			shortfalls.forEach(s => { shortfall_by_row[s.item_code] = s; });
+			let zero_area_by_row = {};
+			zero_area_rows.forEach(z => { zero_area_by_row[z.item_code] = z; });
+
+			d.$wrapper.find('.jc-glass-item-row').each(function() {
+				let row_name = $(this).attr('data-row-name');
+				let item_code = $(this).attr('data-item-code');
+				let $status = $(this).find('.jc-item-status');
+
+				if (consumption[row_name]) {
+					$status.attr('class', 'jc-item-status text-success').text('✓ Covered');
+				} else if (zero_area_by_row[item_code]) {
+					$status.attr('class', 'jc-item-status text-danger').text('No area set on Quotation');
+				} else if (shortfall_by_row[item_code]) {
+					$status.attr('class', 'jc-item-status text-danger')
+						.text(`Short ${shortfall_by_row[item_code].need_sft.toFixed(2)} SFT`);
+				} else {
+					$status.attr('class', 'jc-item-status text-muted').text('Pending');
+				}
+			});
+
+			// Nothing to log until at least one item has a real area — hide the whole
+			// entry form instead of leaving it sitting there with nowhere valid to go.
+			let all_zero_area = items.length > 0 && zero_area_rows.length === items.length;
+			d.$wrapper.find('.jc-glass-consumed-section').toggle(!all_zero_area);
+			d.$wrapper.find('.jc-all-zero-area-msg').toggle(all_zero_area);
+
+			let $btn = d.get_primary_btn();
+			if (shortfalls.length === 0 && zero_area_rows.length === 0) {
+				$btn.prop('disabled', false).attr('title', '');
+			} else if (all_zero_area) {
+				$btn.prop('disabled', true).attr('title', 'Fix the area on the Quotation before this can be saved');
+			} else {
+				$btn.prop('disabled', true).attr('title', 'Add more Glass Consumed to cover every item');
+			}
+		};
+
+		let update_produces_visibility = function() {
+			let consumed = d.$wrapper.find('.jc-ledger-consumed').val();
+			let $wrap = d.$wrapper.find('.jc-ledger-produces-wrap');
+			let $size = d.$wrapper.find('.jc-ledger-size');
+			let $pcs = d.$wrapper.find('.jc-ledger-pcs');
+			let is_cutoff = jc_is_cutoff_item(consumed);
+
+			if (is_cutoff) {
+				// Cutoffs means unmeasured scrap — no sheet count to track and nothing
+				// deducted from stock, so Size/Pcs don't apply; disable both so it's
+				// obvious neither field means anything for this entry.
+				$size.val(JC_CUTOFF_SIZE_VALUE).prop('disabled', true);
+				$pcs.val('').prop('disabled', true).attr('placeholder', 'N/A');
+			} else {
+				$size.prop('disabled', false);
+				$pcs.prop('disabled', false).attr('placeholder', '');
+			}
+
+			if (!is_cutoff && cut_size_codes.has(consumed)) {
+				$wrap.hide();
+				d.$wrapper.find('.jc-ledger-produces').val('');
+			} else {
+				$wrap.show();
+			}
+		};
+
+		let update_ledger_balance = function() {
+			let item_code = d.$wrapper.find('.jc-ledger-consumed').val();
+			let size = d.$wrapper.find('.jc-ledger-size').val();
+			let $lbl = d.$wrapper.find('.jc-ledger-balance-lbl');
+			if (!item_code || jc_is_cutoff_item(item_code) || !size) {
+				$lbl.text('');
+				return;
+			}
+			frappe.call({
+				method: 'crystal_alluminium_works.api.get_item_stock_balance',
+				args: { item_code: item_code },
+				callback: function(r) {
+					let balances = r.message || [];
+					let store_bal = balances.find(b => b.warehouse.includes('Stores')) || balances[0];
+					let bal = (store_bal && store_bal.sheet_bal && store_bal.sheet_bal[size] !== undefined) ? store_bal.sheet_bal[size] : 0;
+					$lbl.text(`${bal} in stock`);
+				}
+			});
+		};
+
+		d.$wrapper.on('change awesomplete-selectcomplete input', '.jc-ledger-consumed', function() {
+			update_produces_visibility();
+			update_ledger_balance();
+		});
+		d.$wrapper.on('change', '.jc-ledger-size', update_ledger_balance);
+
+		d.$wrapper.on('click', '.jc-ledger-add-btn', function() {
+			let consumed = (d.$wrapper.find('.jc-ledger-consumed').val() || '').trim();
+			let is_cutoff = jc_is_cutoff_item(consumed);
+			let size = is_cutoff ? JC_CUTOFF_SIZE_VALUE : d.$wrapper.find('.jc-ledger-size').val();
+			let pcs = is_cutoff ? 0 : parseInt(d.$wrapper.find('.jc-ledger-pcs').val(), 10);
+			let auto_produces = !is_cutoff && cut_size_codes.has(consumed) ? consumed : null;
+			let produces = auto_produces || d.$wrapper.find('.jc-ledger-produces').val();
+
+			if (!consumed || !size || (!is_cutoff && (!pcs || pcs <= 0))) {
+				frappe.msgprint('Enter Consumed, Size, and a whole Pcs > 0 (or set Consumed to Cutoffs).');
+				return;
+			}
+			if (!produces) {
+				frappe.msgprint('Select which item this Glass Consumed entry produces.');
+				return;
+			}
+
+			let entry = { item_consumed: is_cutoff ? JC_CUTOFF_ITEM_CONSUMED : consumed, size, pcs: is_cutoff ? 0 : pcs, is_cutoff, produces };
+			let key = jc_ledger_entry_key(entry);
+			let existing = ledger.find(e => jc_ledger_entry_key(e) === key);
+			if (existing && !is_cutoff) {
+				existing.pcs += pcs;
+			} else if (!existing) {
+				ledger.push(entry);
+			}
+
+			d.$wrapper.find('.jc-ledger-consumed').val('');
+			d.$wrapper.find('.jc-ledger-size').val('').prop('disabled', false);
+			d.$wrapper.find('.jc-ledger-pcs').val('').prop('disabled', false).attr('placeholder', '');
+			d.$wrapper.find('.jc-ledger-produces').val('');
+			d.$wrapper.find('.jc-ledger-produces-wrap').hide();
+			d.$wrapper.find('.jc-ledger-balance-lbl').text('');
+			refresh();
+		});
+
+		d.$wrapper.on('click', '.jc-ledger-remove-btn', function() {
+			ledger.splice(parseInt($(this).attr('data-idx'), 10), 1);
+			refresh();
+		});
+
+		d.show();
+		refresh();
+	});
 }
 
 async function open_edit_job_card_modal(page, job_card, quotation) {
