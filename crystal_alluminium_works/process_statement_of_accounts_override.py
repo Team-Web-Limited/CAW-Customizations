@@ -41,21 +41,53 @@ def _get_job_cards(customer):
 	)
 
 
+def _get_job_card_invoice_names(quotations):
+	"""The Job Card is purely internal bookkeeping — the customer's own reference for
+	what they used to pick up goods is the Sales Invoice(s) raised against it. Batched
+	by quotation (a job card's invoices are found via Sales Invoice.custom_source_quotation,
+	same lookup api.get_sales_invoices_page uses) rather than one query per job card."""
+	if not quotations:
+		return {}
+	rows = frappe.get_all(
+		"Sales Invoice",
+		filters={"custom_source_quotation": ["in", list(quotations)], "docstatus": 1},
+		fields=["name", "custom_source_quotation"],
+		order_by="creation asc",
+	)
+	names_by_quotation = {}
+	for row in rows:
+		names_by_quotation.setdefault(row.custom_source_quotation, []).append(row.name)
+	return names_by_quotation
+
+
 def _gather_events(customer, job_cards):
 	"""Every dated charge and receipt for a customer, oldest first."""
 	events = []
 	accounted_quotations = set()
 
+	invoice_names_by_quotation = _get_job_card_invoice_names(
+		[jc.quotation for jc in job_cards if jc.quotation]
+	)
+
 	for jc in job_cards:
 		if jc.quotation:
 			accounted_quotations.add(jc.quotation)
+		invoice_names = invoice_names_by_quotation.get(jc.quotation) if jc.quotation else None
+		# Nothing's been invoiced yet (e.g. still awaiting full payment) — fall back to
+		# the Job Card reference since there's nothing else to point the customer at.
+		voucher_type = "Sales Invoice" if invoice_names else "Job Card"
+		voucher_no = ", ".join(invoice_names) if invoice_names else jc.name
 		events.append(
 			frappe._dict(
 				posting_date=getdate(jc.creation),
-				voucher_type="Job Card",
-				voucher_no=jc.name,
+				voucher_type=voucher_type,
+				voucher_no=voucher_no,
 				debit=flt(jc.quotation_amount),
 				credit=0.0,
+				# The sort below needs to know this is a charge event regardless of
+				# what it displays as — voucher_type here may now read "Sales Invoice"
+				# once one exists, same as a genuinely standalone invoice row.
+				_is_job_card_charge=True,
 			)
 		)
 
@@ -120,7 +152,7 @@ def _gather_events(customer, job_cards):
 			)
 
 	# Charges before receipts on a given day, then receipts in the order they were taken.
-	events.sort(key=lambda e: (e.posting_date, e.voucher_type != "Job Card", e.get("_seq") or 0))
+	events.sort(key=lambda e: (e.posting_date, not e.get("_is_job_card_charge"), e.get("_seq") or 0))
 	return events
 
 
@@ -181,9 +213,12 @@ def _build_ageing(job_cards, events, to_date, ageing_based_on):
 		else:
 			totals.range4 += outstanding
 
-	# Standalone invoices (no owning job card) age from their own posting date.
+	# Standalone invoices (no owning job card) age from their own posting date. Job
+	# cards are aged above from their own creation date instead — a job-card-derived
+	# event may now also display voucher_type "Sales Invoice" (see _gather_events), so
+	# exclude those explicitly rather than relying on voucher_type alone.
 	for e in events:
-		if e.voucher_type != "Sales Invoice":
+		if e.voucher_type != "Sales Invoice" or e.get("_is_job_card_charge"):
 			continue
 		outstanding = flt(e.debit) - sum(
 			flt(x.credit) for x in events if x.voucher_no == e.voucher_no and x.voucher_type == "Payment"
