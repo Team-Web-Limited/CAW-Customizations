@@ -41,7 +41,7 @@ def _get_job_cards(customer):
 	)
 
 
-def _get_job_card_invoice_names(quotations):
+def _get_job_card_invoices(quotations):
 	"""The Job Card is purely internal bookkeeping — the customer's own reference for
 	what they used to pick up goods is the Sales Invoice(s) raised against it. Batched
 	by quotation (a job card's invoices are found via Sales Invoice.custom_source_quotation,
@@ -51,13 +51,13 @@ def _get_job_card_invoice_names(quotations):
 	rows = frappe.get_all(
 		"Sales Invoice",
 		filters={"custom_source_quotation": ["in", list(quotations)], "docstatus": 1},
-		fields=["name", "custom_source_quotation"],
-		order_by="creation asc",
+		fields=["name", "custom_source_quotation", "posting_date", "grand_total", "total_taxes_and_charges"],
+		order_by="posting_date asc, creation asc",
 	)
-	names_by_quotation = {}
+	invoices_by_quotation = {}
 	for row in rows:
-		names_by_quotation.setdefault(row.custom_source_quotation, []).append(row.name)
-	return names_by_quotation
+		invoices_by_quotation.setdefault(row.custom_source_quotation, []).append(row)
+	return invoices_by_quotation
 
 
 def _gather_events(customer, job_cards):
@@ -65,31 +65,61 @@ def _gather_events(customer, job_cards):
 	events = []
 	accounted_quotations = set()
 
-	invoice_names_by_quotation = _get_job_card_invoice_names(
-		[jc.quotation for jc in job_cards if jc.quotation]
-	)
+	invoices_by_quotation = _get_job_card_invoices([jc.quotation for jc in job_cards if jc.quotation])
 
 	for jc in job_cards:
 		if jc.quotation:
 			accounted_quotations.add(jc.quotation)
-		invoice_names = invoice_names_by_quotation.get(jc.quotation) if jc.quotation else None
-		# Nothing's been invoiced yet (e.g. still awaiting full payment) — fall back to
-		# the Job Card reference since there's nothing else to point the customer at.
-		voucher_type = "Sales Invoice" if invoice_names else "Job Card"
-		voucher_no = ", ".join(invoice_names) if invoice_names else jc.name
-		events.append(
-			frappe._dict(
-				posting_date=getdate(jc.creation),
-				voucher_type=voucher_type,
-				voucher_no=voucher_no,
-				debit=flt(jc.quotation_amount),
-				credit=0.0,
-				# The sort below needs to know this is a charge event regardless of
-				# what it displays as — voucher_type here may now read "Sales Invoice"
-				# once one exists, same as a genuinely standalone invoice row.
-				_is_job_card_charge=True,
+		invoices = invoices_by_quotation.get(jc.quotation) if jc.quotation else None
+
+		if not invoices:
+			# Nothing's been invoiced yet (e.g. still awaiting full payment) — fall
+			# back to the Job Card reference since there's nothing else to point at.
+			events.append(
+				frappe._dict(
+					posting_date=getdate(jc.creation),
+					voucher_type="Job Card",
+					voucher_no=jc.name,
+					debit=flt(jc.quotation_amount),
+					credit=0.0,
+					_is_job_card_charge=True,
+				)
 			)
-		)
+			continue
+
+		# Split into one row per invoice — each is its own dated charge, not one lump
+		# sum under the job card. Sum by each invoice's own grossed amount rather than
+		# assuming they add up to jc.quotation_amount, since a job card can be only
+		# partially invoiced so far.
+		invoiced_total = 0.0
+		for inv in invoices:
+			charge = _gross(inv.grand_total, inv.total_taxes_and_charges)
+			invoiced_total += charge
+			events.append(
+				frappe._dict(
+					posting_date=getdate(inv.posting_date),
+					voucher_type="Sales Invoice",
+					voucher_no=inv.name,
+					debit=charge,
+					credit=0.0,
+					_is_job_card_charge=True,
+				)
+			)
+
+		# The rest of the quotation hasn't been invoiced yet — still owed, so it still
+		# needs a charge row, just against the Job Card since no invoice covers it.
+		remaining = flt(jc.quotation_amount) - invoiced_total
+		if remaining > 0.5:
+			events.append(
+				frappe._dict(
+					posting_date=getdate(jc.creation),
+					voucher_type="Job Card",
+					voucher_no=jc.name,
+					debit=remaining,
+					credit=0.0,
+					_is_job_card_charge=True,
+				)
+			)
 
 	for p in frappe.get_all(
 		"Payments",
