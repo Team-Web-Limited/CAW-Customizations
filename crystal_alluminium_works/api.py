@@ -1373,6 +1373,40 @@ def get_quotations_page(search=None, status=None, customer=None, from_date=None,
     }
 
 
+def _get_job_card_balance_status(job_card):
+    """The company treats the Job Card's own balance as the real payment source of
+    truth — a Sales Invoice is deliberately allowed to show "Paid" once generated
+    so warehouse staff can use it to release goods, even though the customer may
+    still owe money against the Job Card itself. Returns None when there's no
+    Job Card to check (so callers can fall back to the invoice's own status)."""
+    if not job_card:
+        return None
+    if flt(job_card.balance_amount) <= 0.01:
+        return "Paid"
+    if flt(job_card.payment_amount) > 0.01:
+        return "Partly Paid"
+    return "Unpaid"
+
+
+def _attach_job_card_balance_status(rows):
+    """Job Card names are deterministic from their quotation (autoname
+    "format:JOB-CARD-{quotation}"), so this looks them up in one batch query
+    rather than one Job Card fetch per invoice row."""
+    quotations = {r.custom_source_quotation for r in rows if r.get("custom_source_quotation")}
+    job_cards_by_quotation = {}
+    if quotations:
+        job_cards = frappe.get_all(
+            "CAW Job Card",
+            filters={"quotation": ["in", list(quotations)]},
+            fields=["quotation", "payment_amount", "balance_amount"],
+        )
+        job_cards_by_quotation = {jc.quotation: jc for jc in job_cards}
+
+    for row in rows:
+        job_card = job_cards_by_quotation.get(row.get("custom_source_quotation"))
+        row["job_card_balance_status"] = _get_job_card_balance_status(job_card)
+
+
 @frappe.whitelist()
 def get_sales_invoices_page(search=None, status=None, customer=None, from_date=None, to_date=None, page=1, page_length=20, payment_mode=None):
     page = max(int(page or 1), 1)
@@ -1446,6 +1480,8 @@ def get_sales_invoices_page(search=None, status=None, customer=None, from_date=N
         start=start,
         page_length=page_length,
     )
+
+    _attach_job_card_balance_status(rows)
 
     count_result = frappe.get_all(
         "Sales Invoice",

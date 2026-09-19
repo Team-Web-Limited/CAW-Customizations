@@ -157,7 +157,12 @@ function render_sales_invoices_table(page, rows) {
 	}
 
 	let html = rows.map(function(invoice) {
-		let status_color = get_sales_invoice_status_color(invoice.status);
+		// The invoice's own status shows "Paid" once generated so warehouse staff
+		// can use it to release goods, even if the Job Card behind it (this
+		// company's real payment source of truth) still has a balance owing —
+		// show that balance status here instead of the invoice's own status.
+		let display_status = invoice.job_card_balance_status || invoice.status;
+		let status_color = get_sales_invoice_status_color(display_status);
 		let source = invoice.custom_source_quotation || 'Direct / Sales Order';
 
 		return `
@@ -180,7 +185,7 @@ function render_sales_invoices_table(page, rows) {
 				</td>
 				<td style="padding:12px 16px; text-align:center;">
 					<span style="background:${status_color}20; color:${status_color}; padding:4px 12px; border-radius:12px; font-size:12px; font-weight:600;">
-						${invoice.status || '—'}
+						${display_status || '—'}
 					</span>
 				</td>
 			</tr>
