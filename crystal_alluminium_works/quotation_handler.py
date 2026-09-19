@@ -25,10 +25,14 @@ def on_validate(doc, method):
     # 3. Append generated service rows
     for new_item in new_items:
         doc.append("items", new_item)
-        
-    # 4. Recalculate totals since we added new items
-    if new_items:
-        doc.calculate_taxes_and_totals()
+
+    # 4. Recalculate totals unconditionally — process_glass_item/calculate_ceiling_pricing
+    # always overwrite the main row's own rate/amount in place (deriving price from area x
+    # the Item's standard rate), even on rows that need no auto-generated service rows at
+    # all (no holes/notches/polishing). Gating this on `new_items` skipped the recalc for
+    # exactly those rows, leaving doc.grand_total/base_rate/base_amount stuck at whatever
+    # they were before this hook ran instead of reflecting the rate it just set.
+    doc.calculate_taxes_and_totals()
 
 
 def on_submit(doc, method):
