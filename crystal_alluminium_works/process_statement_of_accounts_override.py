@@ -308,6 +308,39 @@ def download_statements(document_name):
 	return psoa.download_statements(document_name)
 
 
+@frappe.whitelist(methods=["GET"])
+def download_customer_statement_of_account(customer):
+	"""One-click statement for a single customer (Customer Manager's "Statement of
+	Account" filter) — builds an in-memory Process Statement Of Accounts doc rather
+	than inserting a real one, so clicking this never leaves a throwaway record in
+	that doctype's list (same reasoning as the app's other download-only exports:
+	stream, don't save_file)."""
+	from crystal_alluminium_works.api import _get_default_company
+
+	customer_doc = frappe.get_doc("Customer", customer)
+	psoa = _load_psoa()
+
+	doc = frappe.new_doc("Process Statement Of Accounts")
+	doc.company = _get_default_company()
+	doc.from_date = "1900-01-01"
+	doc.to_date = frappe.utils.today()
+	doc.include_ageing = 1
+	doc.ageing_based_on = "Due Date"
+	doc.include_break = 0
+	doc.orientation = CRYSTAL_STATEMENT_ORIENTATION
+	doc.print_format = CRYSTAL_STATEMENT_PRINT_FORMAT
+	doc.show_remarks = 0
+	doc.append("customers", {"customer": customer_doc.name, "customer_name": customer_doc.customer_name})
+
+	report = psoa.get_report_pdf(doc)
+	if not report:
+		frappe.throw(f"No statement activity found for {customer_doc.customer_name or customer_doc.name}.")
+
+	frappe.response["filename"] = f"Statement of Account - {customer_doc.customer_name or customer_doc.name}.pdf"
+	frappe.response["filecontent"] = report
+	frappe.response["type"] = "download"
+
+
 @frappe.whitelist()
 def send_emails(document_name, from_scheduler=False, posting_date=None):
 	_ensure_print_settings(document_name)

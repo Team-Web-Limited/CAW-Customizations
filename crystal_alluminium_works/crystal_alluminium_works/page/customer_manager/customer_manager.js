@@ -444,6 +444,15 @@ function bind_customer_manager_events(page) {
 	});
 
 	$(wrapper).on('change', '[data-filter="transaction_type"]', function () {
+		// This one isn't a view to switch to — it's a one-shot download (the same
+		// job-card-based statement as Process Statement Of Accounts, scoped to just
+		// this customer) — trigger it and drop the dropdown back to a real view
+		// instead of leaving it "selected" with nothing to show underneath it.
+		if ($(this).val() === 'statement_of_account') {
+			download_customer_statement_of_account(page);
+			$(this).val('invoices');
+			return;
+		}
 		render_customer_selected_transaction_table(page);
 	});
 
@@ -812,6 +821,7 @@ function get_customer_transactions_section_html() {
 						<option value="quotations">Quotations</option>
 						<option value="payments">Payments</option>
 						<option value="job_cards">Job Cards</option>
+						<option value="statement_of_account">Statement of Account</option>
 					</select>
 					<span class="cm-transaction-count"></span>
 				</div>
@@ -1029,6 +1039,17 @@ function get_customer_job_card_row_html(job_card) {
 			</td>
 		</tr>
 	`;
+}
+
+function download_customer_statement_of_account(page) {
+	let customer_name = page.customer_manager_current_customer;
+	if (!customer_name) {
+		return;
+	}
+	let url = frappe.urllib.get_full_url(
+		`/api/method/crystal_alluminium_works.process_statement_of_accounts_override.download_customer_statement_of_account?customer=${encodeURIComponent(customer_name)}`
+	);
+	window.open(url, '_blank');
 }
 
 function render_customer_selected_transaction_table(page) {
