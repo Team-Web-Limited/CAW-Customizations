@@ -319,7 +319,7 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
                 </tr>
             {{% endif %}}
         {{% endfor %}}
-        {{% if doc.doctype == 'Quotation' %}}
+        {{% if doc.doctype in ['Quotation', 'Sales Invoice'] %}}
         <tr>
             <td colspan="{{{{ 3 if has_color_rows.value else 2 }}}}" style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
             {{% if has_glass_rows.value %}}
@@ -688,7 +688,9 @@ def build_crystal_job_card_print_format_html():
             <th style="text-align: center; white-space: nowrap;">Color</th>
             {% endif %}
             <th style="text-align: center; white-space: nowrap;">Pcs</th>
+            {% if has_glass_rows.value %}
             <th style="text-align: center; white-space: nowrap;">Qty</th>
+            {% endif %}
             <th style="text-align: center; white-space: nowrap;">UOM</th>
             <th style="text-align: center; white-space: nowrap;">No</th>
             {% if has_glass_rows.value %}
@@ -754,7 +756,9 @@ def build_crystal_job_card_print_format_html():
                     <td style="text-align: center; white-space: nowrap;">{{ parent.custom_aluminium_color or '-' }}</td>
                     {% endif %}
                     <td style="text-align: center; white-space: nowrap;">{{ frappe.utils.flt(pieces, 2) }}</td>
+                    {% if has_glass_rows.value %}
                     <td style="text-align: center; white-space: nowrap;">{{ frappe.utils.flt(qty, 3) }}</td>
+                    {% endif %}
                     <td style="text-align: center; white-space: nowrap;">{{ short_uom(uom) }}</td>
                     <td style="text-align: center; white-space: nowrap;">
                         {% if parent_category == 'Glass' %}{{ parent.custom_numbering or '-' }}{% else %}-{% endif %}
@@ -772,8 +776,8 @@ def build_crystal_job_card_print_format_html():
         <tr>
             <td colspan="{{ 3 if has_color_rows.value else 2 }}" style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
             <td style="text-align: center; white-space: nowrap; font-weight: bold;">{{ frappe.utils.flt(job_totals.pcs, 2) }}</td>
-            <td style="text-align: center; white-space: nowrap; font-weight: bold;">{{ frappe.utils.flt(job_totals.qty, 3) }}</td>
             {% if has_glass_rows.value %}
+            <td style="text-align: center; white-space: nowrap; font-weight: bold;">{{ frappe.utils.flt(job_totals.qty, 3) }}</td>
             <td colspan="5" style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
             <td style="text-align: center; white-space: nowrap; font-weight: bold;">{{ job_totals.holes }}</td>
             <td style="text-align: center; white-space: nowrap; font-weight: bold;">{{ job_totals.notches }}</td>

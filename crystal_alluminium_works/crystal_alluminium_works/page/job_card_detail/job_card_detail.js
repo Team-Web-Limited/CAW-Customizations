@@ -336,13 +336,10 @@ function jc_sheet_size_options_html(configs, selected_size) {
 		.join('');
 }
 
-function jc_get_sft_per_sheet(size, configs) {
-	let match = (configs || []).find(c => c.size === size);
-	return match ? flt(match.sft) : 0;
-}
-
-// Total SFT this quotation row still needs covered — Cut Size/Custom and Laminated
+// Total SFT this quotation row is billed on — Cut Size/Custom and Laminated
 // rows are both billed on custom_area_sqft * qty (see get_job_card_row_quantities).
+// Only used here to flag a Quotation data problem (missing Width/Height), never to
+// cap or judge what was actually consumed.
 function jc_get_row_need_sft(row) {
 	return flt(row.custom_area_sqft || 0) * flt(row.qty || 0);
 }
@@ -350,35 +347,34 @@ function jc_get_row_need_sft(row) {
 // Turns the flat "Glass Consumed" ledger (item/size/pcs + which item code it
 // produces) into the per-row map the backend has always expected
 // ({row_name: [{item_consumed, size, pcs, is_cutoff}]}) — this is the "background"
-// step: staff never pick a row, but every row still gets exactly the entries
+// step: staff never pick a row, but every row still gets entries
 // save_jc_operations_consumption/_validate_glass_consumption/the repack logic in
 // api.py already know how to read, so none of that backend code has to change.
-// Sheets are handed out to a code's rows in row order, one row's whole need at a
-// time (ceil(need_sft / sft_per_sheet) — a sheet is used up the moment a piece is
-// cut from it, so partial sheets never carry over to the next row), draining the
-// ledger entries producing that code in the order they were added. A row that
-// still comes up short falls back to that code's Cutoffs entry (if any) or is
-// reported as a shortfall so Save can be blocked with a clear reason.
-function jc_allocate_ledger_to_rows(items, ledger, configs) {
+//
+// The factory's actual consumption (offcuts used, sheets wasted, etc.) can never be
+// derived from theoretical area, so this never caps, drains, or second-guesses what
+// staff typed — whatever pcs they entered for a code is exactly what gets saved and
+// deducted, in full, against the first row producing that code (see below for why
+// that's safe). The only thing this still enforces is "did they log something at
+// all" — not "does it match what we calculated".
+function jc_allocate_ledger_to_rows(items, ledger) {
 	let by_code = {};
 	items.forEach(item => {
 		(by_code[item.item_code] = by_code[item.item_code] || []).push(item);
 	});
 
 	let consumption = {};
-	let shortfalls = [];
+	let missing = [];
 	let zero_area_rows = [];
 
 	Object.keys(by_code).forEach(code => {
 		let entries = ledger.filter(e => e.produces === code);
-		let cutoff_entry = entries.find(e => e.is_cutoff);
-		let pool = entries
-			.filter(e => !e.is_cutoff)
-			.map(e => ({ item_consumed: e.item_consumed, size: e.size, remaining: flt(e.pcs) }));
+		let has_entry = entries.some(e => e.is_cutoff || flt(e.pcs) > 0);
+		let rows = by_code[code];
+		let assigned_primary = false;
 
-		by_code[code].forEach(row => {
-			let need_sft = jc_get_row_need_sft(row);
-			if (need_sft <= 0.0001) {
+		rows.forEach(row => {
+			if (jc_get_row_need_sft(row) <= 0.0001) {
 				// A Resized/Laminated row with no area is a Quotation data problem (missing
 				// width/height), not "nothing to consume" — flag it instead of silently
 				// waving it through, so billing stays blocked until it's actually fixed.
@@ -386,40 +382,34 @@ function jc_allocate_ledger_to_rows(items, ledger, configs) {
 				return;
 			}
 
-			let assigned = [];
-			let remaining_sft = need_sft;
-			pool.forEach(slot => {
-				if (remaining_sft <= 0.0001 || slot.remaining <= 0) {
-					return;
-				}
-				let sft_per_sheet = jc_get_sft_per_sheet(slot.size, configs);
-				if (!sft_per_sheet) {
-					return;
-				}
-				let sheets_needed = Math.ceil((remaining_sft - 0.0001) / sft_per_sheet);
-				let take = Math.min(sheets_needed, slot.remaining);
-				if (take <= 0) {
-					return;
-				}
-				assigned.push({ item_consumed: slot.item_consumed, size: slot.size, pcs: take, is_cutoff: 0 });
-				slot.remaining -= take;
-				remaining_sft -= take * sft_per_sheet;
-			});
-
-			if (remaining_sft > 0.0001) {
-				if (cutoff_entry) {
-					assigned.push({ item_consumed: JC_CUTOFF_ITEM_CONSUMED, size: JC_CUTOFF_SIZE_VALUE, pcs: null, is_cutoff: 1 });
-				} else {
-					shortfalls.push({ item_code: code, item_name: row.item_name, need_sft: remaining_sft });
-					return;
-				}
+			if (!has_entry) {
+				return;
 			}
 
-			consumption[row.name] = assigned;
+			if (!assigned_primary) {
+				// api.py deducts stock separately per Quotation row, so every entry the
+				// user typed for this code is handed, as-is, to exactly one row — the
+				// first eligible one — to avoid deducting the same typed pcs more than once.
+				consumption[row.name] = entries.map(e => ({
+					item_consumed: e.is_cutoff ? JC_CUTOFF_ITEM_CONSUMED : e.item_consumed,
+					size: e.is_cutoff ? JC_CUTOFF_SIZE_VALUE : e.size,
+					pcs: e.is_cutoff ? null : flt(e.pcs),
+					is_cutoff: e.is_cutoff ? 1 : 0
+				}));
+				assigned_primary = true;
+			} else {
+				// Other rows sharing this same code already had their stock deducted
+				// against the row above — mark them covered without deducting again.
+				consumption[row.name] = [{ item_consumed: JC_CUTOFF_ITEM_CONSUMED, size: JC_CUTOFF_SIZE_VALUE, pcs: null, is_cutoff: 1 }];
+			}
 		});
+
+		if (!has_entry) {
+			missing.push({ item_code: code, item_name: rows[0].item_name });
+		}
 	});
 
-	return { consumption, shortfalls, zero_area_rows };
+	return { consumption, missing, zero_area_rows };
 }
 
 function jc_ledger_entry_key(entry) {
@@ -517,10 +507,10 @@ function open_jc_operations_modal(page, job_card, quotation) {
 			fields: [{ fieldname: 'html', fieldtype: 'HTML' }],
 			primary_action_label: 'Save',
 			primary_action: function() {
-				let { consumption, shortfalls, zero_area_rows } = jc_allocate_ledger_to_rows(items, ledger, configs);
-				if (shortfalls.length > 0 || zero_area_rows.length > 0) {
-					let lines = shortfalls.map(s =>
-						`"${frappe.utils.escape_html(s.item_name)}" (${frappe.utils.escape_html(s.item_code)}) is short ${s.need_sft.toFixed(2)} SFT.`
+				let { consumption, missing, zero_area_rows } = jc_allocate_ledger_to_rows(items, ledger);
+				if (missing.length > 0 || zero_area_rows.length > 0) {
+					let lines = missing.map(m =>
+						`"${frappe.utils.escape_html(m.item_name)}" (${frappe.utils.escape_html(m.item_code)}) has no Glass Consumed logged yet.`
 					).concat(zero_area_rows.map(z =>
 						`"${frappe.utils.escape_html(z.item_name)}" (${frappe.utils.escape_html(z.item_code)}) has no area set on the Quotation — fix its Width/Height there before it can be configured here.`
 					));
@@ -659,9 +649,9 @@ function open_jc_operations_modal(page, job_card, quotation) {
 
 		let refresh = function() {
 			render_ledger_rows();
-			let { consumption, shortfalls, zero_area_rows } = jc_allocate_ledger_to_rows(items, ledger, configs);
-			let shortfall_by_row = {};
-			shortfalls.forEach(s => { shortfall_by_row[s.item_code] = s; });
+			let { consumption, missing, zero_area_rows } = jc_allocate_ledger_to_rows(items, ledger);
+			let missing_by_row = {};
+			missing.forEach(m => { missing_by_row[m.item_code] = m; });
 			let zero_area_by_row = {};
 			zero_area_rows.forEach(z => { zero_area_by_row[z.item_code] = z; });
 
@@ -674,9 +664,8 @@ function open_jc_operations_modal(page, job_card, quotation) {
 					$status.attr('class', 'jc-item-status text-success').text('✓ Covered');
 				} else if (zero_area_by_row[item_code]) {
 					$status.attr('class', 'jc-item-status text-danger').text('No area set on Quotation');
-				} else if (shortfall_by_row[item_code]) {
-					$status.attr('class', 'jc-item-status text-danger')
-						.text(`Short ${shortfall_by_row[item_code].need_sft.toFixed(2)} SFT`);
+				} else if (missing_by_row[item_code]) {
+					$status.attr('class', 'jc-item-status text-danger').text('Nothing logged yet');
 				} else {
 					$status.attr('class', 'jc-item-status text-muted').text('Pending');
 				}
@@ -689,12 +678,12 @@ function open_jc_operations_modal(page, job_card, quotation) {
 			d.$wrapper.find('.jc-all-zero-area-msg').toggle(all_zero_area);
 
 			let $btn = d.get_primary_btn();
-			if (shortfalls.length === 0 && zero_area_rows.length === 0) {
+			if (missing.length === 0 && zero_area_rows.length === 0) {
 				$btn.prop('disabled', false).attr('title', '');
 			} else if (all_zero_area) {
 				$btn.prop('disabled', true).attr('title', 'Fix the area on the Quotation before this can be saved');
 			} else {
-				$btn.prop('disabled', true).attr('title', 'Add more Glass Consumed to cover every item');
+				$btn.prop('disabled', true).attr('title', 'Log Glass Consumed for every item');
 			}
 		};
 
