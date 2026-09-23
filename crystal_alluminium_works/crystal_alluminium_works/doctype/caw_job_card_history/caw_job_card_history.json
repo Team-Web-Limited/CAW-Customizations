@@ -67,7 +67,7 @@
    "fieldname": "payment_option",
    "fieldtype": "Select",
    "label": "Payment Option",
-   "options": "Cash\nPaybill\nBank\nCheque"
+   "options": "Cash\nPaybill\nBank Transfer i.e RTGS, TT\nPESALINK\nCheque"
   },
   {
    "fieldname": "customer_pin",
