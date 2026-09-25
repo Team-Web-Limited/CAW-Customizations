@@ -1235,6 +1235,83 @@ function get_job_card_print_table_context(quotation) {
 	};
 }
 
+// Same section keys, labels and order as JOB_CARD_PDF_SECTIONS in api.py and the
+// Crystal Job Card print template (which mirror the Quotation Builder's Review step).
+const JC_PDF_SECTIONS = [
+	{ key: 'Glass Cut Size', label: 'Glass Items — Cut Size' },
+	{ key: 'Glass Sheet', label: 'Glass Items — Sheet' },
+	{ key: 'Aluminium', label: 'Aluminium Items' },
+	{ key: 'Fittings', label: 'Fittings Items' },
+	{ key: 'Ceiling', label: 'Ceiling Items' },
+	{ key: 'Rubber', label: 'Rubber Items' },
+	{ key: 'Silicone', label: 'Silicone Items' },
+	{ key: 'Other', label: 'Other Items' }
+];
+
+function get_job_card_pdf_section_key(row) {
+	let category = row.custom_product_category || '';
+	if (category === 'Glass') {
+		return row.custom_glass_sale_mode === 'Sheet' ? 'Glass Sheet' : 'Glass Cut Size';
+	}
+	return JC_PDF_SECTIONS.some(section => section.key === category) ? category : 'Other';
+}
+
+function get_job_card_pdf_sections(quotation) {
+	let counts = {};
+	((quotation || {}).items || []).forEach(row => {
+		if (row.custom_auto_generated) return;
+		let key = get_job_card_pdf_section_key(row);
+		counts[key] = (counts[key] || 0) + 1;
+	});
+	return JC_PDF_SECTIONS
+		.filter(section => counts[section.key])
+		.map(section => Object.assign({ count: counts[section.key] }, section));
+}
+
+function open_job_card_pdf(job_card_name, section) {
+	let query = `name=${encodeURIComponent(job_card_name)}`;
+	if (section) {
+		query += `&section=${encodeURIComponent(section)}`;
+	}
+	window.open(
+		frappe.urllib.get_full_url(`/api/method/crystal_alluminium_works.api.download_crystal_job_card_pdf?${query}`),
+		'_blank'
+	);
+}
+
+function open_job_card_download_dialog(job_card_name, sections) {
+	let total = sections.reduce((sum, section) => sum + section.count, 0);
+	let option = (key, label, count) => `
+		<button class="btn btn-default jc-pdf-section-option" data-section="${frappe.utils.escape_html(key)}">
+			<span>${frappe.utils.icon('download', 'sm')} ${frappe.utils.escape_html(label)}</span>
+			<span class="text-muted">${count} ${count === 1 ? __('item') : __('items')}</span>
+		</button>
+	`;
+
+	let dialog = new frappe.ui.Dialog({
+		title: __('Download Job Card'),
+		fields: [{
+			fieldtype: 'HTML',
+			fieldname: 'sections_html',
+			options: `
+				<style>
+					.jc-pdf-section-option { display:flex; width:100%; justify-content:space-between; align-items:center; gap:12px; margin-bottom:8px; text-align:left; }
+					.jc-pdf-section-option span:first-child { display:inline-flex; align-items:center; gap:6px; }
+				</style>
+				<p class="text-muted" style="margin-bottom:12px;">${__('Download the whole job card, or one section at a time.')}</p>
+				${option('', __('All Items'), total)}
+				<hr style="margin:12px 0;">
+				${sections.map(section => option(section.key, __(section.label), section.count)).join('')}
+			`
+		}]
+	});
+
+	dialog.$wrapper.on('click', '.jc-pdf-section-option', function() {
+		open_job_card_pdf(job_card_name, $(this).attr('data-section') || null);
+	});
+	dialog.show();
+}
+
 function get_job_card_child_rows(items, parent_idx) {
 	return (items || []).filter(row => row.custom_auto_generated && row.custom_parent_row_idx === parent_idx);
 }
@@ -1718,10 +1795,12 @@ function bind_single_job_card_detail_events(page, $body, job_card, quotation, hi
 	});
 
 	$body.on('click.job-card-detail', '[data-action="download-job-card-pdf"]', function() {
-		let print_url = frappe.urllib.get_full_url(
-			`/api/method/crystal_alluminium_works.api.download_crystal_job_card_pdf?name=${encodeURIComponent(job_card.name)}`
-		);
-		window.open(print_url, '_blank');
+		let sections = get_job_card_pdf_sections(quotation);
+		if (sections.length <= 1) {
+			open_job_card_pdf(job_card.name);
+			return;
+		}
+		open_job_card_download_dialog(job_card.name, sections);
 	});
 
 	$body.on('click.job-card-detail', '[data-action="export-job-card-layout"]', function() {

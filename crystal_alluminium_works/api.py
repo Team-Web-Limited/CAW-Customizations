@@ -423,7 +423,7 @@ def _submit_and_settle_job_card_sales_invoice(invoice, job_card, preserve_paymen
     return invoice
 
 
-def _download_crystal_pdf(doctype, name, print_format_name, ref_label, terms):
+def _download_crystal_pdf(doctype, name, print_format_name, ref_label, terms, render_context=None, filename_suffix=""):
     from bs4 import BeautifulSoup
     from crystal_alluminium_works.create_print_format import (
         build_crystal_job_card_print_format_html,
@@ -464,7 +464,7 @@ def _download_crystal_pdf(doctype, name, print_format_name, ref_label, terms):
     template_html = embed_letterhead_image(template_html)
 
     with print_language(doc.get("language") or frappe.local.lang):
-        body = frappe.render_template(template_html, {"doc": doc})
+        body = frappe.render_template(template_html, {"doc": doc, **(render_context or {})})
         html = frappe.get_template("www/printview.html").render(
             {
                 "body": body,
@@ -499,7 +499,7 @@ def _download_crystal_pdf(doctype, name, print_format_name, ref_label, terms):
 
     pdf_file = get_pdf(str(soup), options=pdf_options)
 
-    frappe.local.response.filename = f"{name.replace(' ', '-').replace('/', '-')}.pdf"
+    frappe.local.response.filename = f"{name.replace(' ', '-').replace('/', '-')}{filename_suffix}.pdf"
     frappe.local.response.filecontent = pdf_file
     frappe.local.response.type = "pdf"
 
@@ -526,14 +526,34 @@ def download_crystal_sales_invoice_pdf(name):
     )
 
 
+# Section keys shared with the Crystal Job Card print template and the
+# job_card_detail page's Download picker. Long orders are downloaded one
+# section at a time so the workshop gets shorter sheets per item type.
+JOB_CARD_PDF_SECTIONS = (
+    "Glass Cut Size",
+    "Glass Sheet",
+    "Aluminium",
+    "Fittings",
+    "Ceiling",
+    "Rubber",
+    "Silicone",
+    "Other",
+)
+
+
 @frappe.whitelist()
-def download_crystal_job_card_pdf(name):
+def download_crystal_job_card_pdf(name, section=None):
+    if section and section not in JOB_CARD_PDF_SECTIONS:
+        frappe.throw(frappe._("Unknown Job Card section: {0}").format(section))
+
     _download_crystal_pdf(
         "CAW Job Card",
         name,
         "Crystal Job Card",
         "Job Card No",
         "",
+        render_context={"section_filter": section or ""},
+        filename_suffix=f"-{section.replace(' ', '-')}" if section else "",
     )
 
 

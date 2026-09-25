@@ -70,13 +70,11 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
              `tax_id` on Sales Order/Invoice, via custom_customer_tax_id on Quotation. Read
              from the doc only: frappe.db.get_value is not callable from a print template
              unless an HTTP request is in scope, which breaks server-side PDF rendering.
-             Hidden entirely when there is no PIN. -->
+             Shows "-" when the customer has no PIN. -->
         {{% set customer_pin = doc.get('custom_customer_pin') or doc.get('custom_customer_tax_id') or doc.get('tax_id') %}}
-        {{% if customer_pin %}}
         <div style="margin-top: 6px; font-size: 14px; font-weight: bold; color: #000; text-transform: uppercase; white-space: nowrap;">
-            PIN Number: {{{{ customer_pin }}}}
+            PIN Number: {{{{ customer_pin or '-' }}}}
         </div>
-        {{% endif %}}
     </div>
     <div class="col-xs-4 text-right">
         <div style="font-size: 14px; font-weight: bold; color: #000; text-transform: uppercase; white-space: nowrap;">
@@ -578,6 +576,7 @@ def build_crystal_job_card_print_format_html():
 {% set job_card = doc %}
 {% set quotation = frappe.get_doc('Quotation', job_card.quotation) if job_card.quotation else None %}
 {% set print_items = quotation.items if quotation else [] %}
+{% set section_filter = section_filter if section_filter is defined else '' %}
 
 {% macro short_uom(value) %}
     {% set normalized = (value or '')|trim|lower %}
@@ -604,7 +603,10 @@ def build_crystal_job_card_print_format_html():
                 </div>
             </div>
             <div style="display: table-cell; width: 240px; text-align: right; vertical-align: top;">
-                <div style="font-size: 26px; font-weight: bold; color: #2c3e50; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px;">Job Card</div>
+                <div style="font-size: 26px; font-weight: bold; color: #2c3e50; text-transform: uppercase; letter-spacing: 1px; margin-bottom: {{ 4 if section_filter else 12 }}px;">Job Card</div>
+                {% if section_filter %}
+                <div style="font-size: 13px; font-weight: 600; color: #7f8c8d; text-transform: uppercase; margin-bottom: 12px;">{{ section_filter }}</div>
+                {% endif %}
                 <div style="display: inline-block; min-width: 220px; padding: 12px 16px; border: 1px solid #dfe6e9; border-radius: 4px; text-align: left;">
                     <div style="color: #7f8c8d; font-size: 12px; text-transform: uppercase;">Approved Date</div>
                     <div style="font-size: 16px; font-weight: bold; margin-top: 4px;">{{ frappe.utils.formatdate(job_card.creation) }}</div>
@@ -643,155 +645,56 @@ def build_crystal_job_card_print_format_html():
         font-size: 11px;
         color: #495057;
     }
+    .jc-section-title {
+        margin: 10px 0 8px 0;
+        font-size: 13px;
+        font-weight: bold;
+        color: #2c3e50;
+        text-transform: uppercase;
+    }
 </style>
 
-{% set has_color_rows = namespace(value=false) %}
-{% set has_glass_rows = namespace(value=false) %}
-{% set has_non_ceiling_parent = namespace(value=false) %}
+{#
+    Items are split into one table per category, in the same order and
+    grouping as the Quotation Builder's Review step: Glass (Cut Size and
+    Sheet as separate tables), Aluminium, Fittings, Ceiling, Rubber,
+    Silicone, then anything else under "Other Items".
+#}
 {% set has_ceiling_parent = namespace(value=false) %}
 {% set has_ceiling_bundle = namespace(value=false) %}
 {% set ceiling_single_labels = namespace(items=[]) %}
 {% set ceiling_component_labels = ['Board', 'MainT', 'Sub Cross 4ft', 'Sub Cross 2ft', 'Wall angle'] %}
 {% set ceiling_board_item_codes = frappe.call("crystal_alluminium_works.api.get_ceiling_board_item_codes") %}
 {% for row in print_items %}
-    {% if not row.custom_auto_generated and (row.custom_aluminium_color or '')|trim %}
-        {% set has_color_rows.value = true %}
-    {% endif %}
-    {% if not row.custom_auto_generated and (row.custom_product_category or '') == 'Glass' %}
-        {% set has_glass_rows.value = true %}
-    {% endif %}
-    {% if not row.custom_auto_generated %}
-        {% set row_category = row.custom_product_category or '' %}
-        {% if row_category == 'Ceiling' %}
-            {% set has_ceiling_parent.value = true %}
-            {% if frappe.utils.flt(row.custom_ceiling_sq_m or 0) > 0 %}
-                {% set has_ceiling_bundle.value = true %}
-            {% else %}
-                {% set single_label = 'Board' if row.item_code in ceiling_board_item_codes else (row.item_name or row.item_code or '') %}
-                {% if single_label and single_label not in ceiling_single_labels.items %}
-                    {% set ceiling_single_labels.items = ceiling_single_labels.items + [single_label] %}
-                {% endif %}
-            {% endif %}
+    {% if not row.custom_auto_generated and (row.custom_product_category or '') == 'Ceiling' %}
+        {% set has_ceiling_parent.value = true %}
+        {% if frappe.utils.flt(row.custom_ceiling_sq_m or 0) > 0 %}
+            {% set has_ceiling_bundle.value = true %}
         {% else %}
-            {% set has_non_ceiling_parent.value = true %}
+            {% set single_label = 'Board' if row.item_code in ceiling_board_item_codes else (row.item_name or row.item_code or '') %}
+            {% if single_label and single_label not in ceiling_single_labels.items %}
+                {% set ceiling_single_labels.items = ceiling_single_labels.items + [single_label] %}
+            {% endif %}
         {% endif %}
     {% endif %}
 {% endfor %}
 
-{% if has_non_ceiling_parent.value %}
-<table class="cq-table">
-    <thead>
-        <tr>
-            <th style="text-align: left; white-space: nowrap;">Code</th>
-            <th style="text-align: left; white-space: nowrap;">Item</th>
-            {% if has_color_rows.value %}
-            <th style="text-align: center; white-space: nowrap;">Color</th>
-            {% endif %}
-            <th style="text-align: center; white-space: nowrap;">Pcs</th>
-            {% if has_glass_rows.value %}
-            <th style="text-align: center; white-space: nowrap;">Qty</th>
-            {% endif %}
-            <th style="text-align: center; white-space: nowrap;">UOM</th>
-            <th style="text-align: center; white-space: nowrap;">No</th>
-            {% if has_glass_rows.value %}
-            <th style="text-align: center; white-space: nowrap;">Width</th>
-            <th style="text-align: center; white-space: nowrap;">Height</th>
-            <th style="text-align: center; white-space: nowrap;">Polish Sides</th>
-            <th style="text-align: center; white-space: nowrap;">Holes</th>
-            <th style="text-align: center; white-space: nowrap;">Notches</th>
-            {% endif %}
-        </tr>
-    </thead>
-    <tbody>
-        {% set job_totals = namespace(pcs=0, qty=0, holes=0, notches=0) %}
-        {% for parent in print_items %}
-            {% if not parent.custom_auto_generated and (parent.custom_product_category or '') != 'Ceiling' %}
-                {% set parent_category = parent.custom_product_category or '' %}
-                {% set pieces = parent.qty or 0 %}
-                {% set qty = parent.qty or 0 %}
-                {% set uom = parent.uom or '' %}
-                {% if parent_category == 'Aluminium' %}
-                    {% set qty = parent.qty or 0 %}
-                    {% set uom = parent.uom or 'Nos' %}
-                {% elif parent_category == 'Glass' %}
-                    {% if parent.custom_glass_sale_mode == 'Full Sheet' %}
-                        {% set qty = parent.qty or 0 %}
-                        {% set uom = 'Nos' %}
-                    {% elif parent.custom_glass_sale_mode == 'Sheet' %}
-                        {% set pieces = parent.custom_sheet_pcs or 0 %}
-                        {% set qty = parent.qty or 0 %}
-                        {% set uom = parent.uom or 'Square Foot' %}
-                    {% else %}
-                        {% set qty = (parent.custom_area_sqft or 0) * (parent.qty or 0) %}
-                        {% set uom = parent.uom or 'Square Foot' %}
-                    {% endif %}
-                {% endif %}
-                {% set job_totals.pcs = job_totals.pcs + frappe.utils.flt(pieces, 2) %}
-                {% set job_totals.qty = job_totals.qty + frappe.utils.flt(qty, 3) %}
-                {% set job_totals.holes = job_totals.holes + frappe.utils.cint(parent.custom_holes or 0) %}
-                {% set job_totals.notches = job_totals.notches + frappe.utils.cint(parent.custom_notches or 0) %}
-                {% set is_sheet_glass = parent_category == 'Glass' and parent.custom_glass_sale_mode == 'Sheet' %}
-                {% set width_sides = 0 if is_sheet_glass else frappe.utils.cint(parent.custom_polish_width_sides or 0) %}
-                {% set height_sides = 0 if is_sheet_glass else frappe.utils.cint(parent.custom_polish_height_sides or 0) %}
-                {% if parent_category == 'Glass' and not is_sheet_glass and not width_sides and not height_sides and frappe.utils.cint(parent.custom_polishing or 0) %}
-                    {% set width_sides = 2 %}
-                    {% set height_sides = 2 %}
-                {% endif %}
-                {% set polish_sides = width_sides + height_sides %}
-                {% set display_width = '-' %}
-                {% set display_height = '-' %}
-                {% if parent_category == 'Glass' %}
-                    {% if is_sheet_glass %}
-                        {% set display_width = (parent.custom_sheet_size or '-')|trim or '-' %}
-                        {% set display_height = '-' %}
-                    {% else %}
-                        {% set display_width = format_dimension(parent.custom_width_mm, parent.custom_dimension_uom) %}
-                        {% set display_height = format_dimension(parent.custom_height_mm, parent.custom_dimension_uom) %}
-                    {% endif %}
-                {% endif %}
-                <tr>
-                    <td style="font-weight: bold; white-space: nowrap;">{{ parent.item_code or '' }}</td>
-                    <td>{{ parent.item_name or parent.item_code or '' }}</td>
-                    {% if has_color_rows.value %}
-                    <td style="text-align: center; white-space: nowrap;">{{ parent.custom_aluminium_color or '-' }}</td>
-                    {% endif %}
-                    <td style="text-align: center; white-space: nowrap;">{{ frappe.utils.flt(pieces, 2) }}</td>
-                    {% if has_glass_rows.value %}
-                    <td style="text-align: center; white-space: nowrap;">{{ frappe.utils.flt(qty, 3) }}</td>
-                    {% endif %}
-                    <td style="text-align: center; white-space: nowrap;">{{ short_uom(uom) }}</td>
-                    <td style="text-align: center; white-space: nowrap;">
-                        {% if parent_category == 'Glass' %}{{ parent.custom_numbering or '-' }}{% else %}-{% endif %}
-                    </td>
-                    {% if has_glass_rows.value %}
-                    <td style="text-align: center; white-space: nowrap;">{{ display_width }}</td>
-                    <td style="text-align: center; white-space: nowrap;">{{ display_height }}</td>
-                    <td style="text-align: center; white-space: nowrap;">{% if parent_category == 'Glass' and polish_sides > 0 %}{{ polish_sides }}{% else %}-{% endif %}</td>
-                    <td style="text-align: center; white-space: nowrap;">{% if parent_category == 'Glass' and not is_sheet_glass and frappe.utils.cint(parent.custom_holes or 0) > 0 %}{{ frappe.utils.cint(parent.custom_holes or 0) }}{% else %}-{% endif %}</td>
-                    <td style="text-align: center; white-space: nowrap;">{% if parent_category == 'Glass' and not is_sheet_glass and frappe.utils.cint(parent.custom_notches or 0) > 0 %}{{ frappe.utils.cint(parent.custom_notches or 0) }}{% else %}-{% endif %}</td>
-                    {% endif %}
-                </tr>
-            {% endif %}
-        {% endfor %}
-        <tr>
-            <td colspan="{{ 3 if has_color_rows.value else 2 }}" style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
-            <td style="text-align: center; white-space: nowrap; font-weight: bold;">{{ frappe.utils.flt(job_totals.pcs, 2) }}</td>
-            {% if has_glass_rows.value %}
-            <td style="text-align: center; white-space: nowrap; font-weight: bold;">{{ frappe.utils.flt(job_totals.qty, 3) }}</td>
-            <td colspan="5" style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
-            <td style="text-align: center; white-space: nowrap; font-weight: bold;">{{ job_totals.holes }}</td>
-            <td style="text-align: center; white-space: nowrap; font-weight: bold;">{{ job_totals.notches }}</td>
-            {% else %}
-            <td colspan="2" style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
-            {% endif %}
-        </tr>
-    </tbody>
-</table>
-{% endif %}
+{% set job_card_sections = [
+    {'key': 'Glass Cut Size', 'label': 'Glass Items — Cut Size'},
+    {'key': 'Glass Sheet', 'label': 'Glass Items — Sheet'},
+    {'key': 'Aluminium', 'label': 'Aluminium Items'},
+    {'key': 'Fittings', 'label': 'Fittings Items'},
+    {'key': 'Ceiling', 'label': 'Ceiling Items'},
+    {'key': 'Rubber', 'label': 'Rubber Items'},
+    {'key': 'Silicone', 'label': 'Silicone Items'},
+    {'key': 'Other', 'label': 'Other Items'},
+] %}
 
+{% for section in job_card_sections if not section_filter or section.key == section_filter %}
+{% if section.key == 'Ceiling' %}
 {% if has_ceiling_parent.value %}
 {% set ceiling_columns = ceiling_component_labels if has_ceiling_bundle.value else ceiling_single_labels.items %}
-<div style="margin: 10px 0 8px 0; font-size: 13px; font-weight: bold; color: #2c3e50; text-transform: uppercase;">Ceiling Items</div>
+<div class="jc-section-title">{{ section.label }}</div>
 <table class="cq-table">
     <thead>
         <tr>
@@ -854,6 +757,173 @@ def build_crystal_job_card_print_format_html():
     </tbody>
 </table>
 {% endif %}
+{% else %}
+{% set section_data = namespace(rows=[], has_color=false) %}
+{% for row in print_items %}
+    {% if not row.custom_auto_generated %}
+        {% set row_category = row.custom_product_category or '' %}
+        {% if row_category == 'Glass' %}
+            {% set row_section = 'Glass Sheet' if row.custom_glass_sale_mode == 'Sheet' else 'Glass Cut Size' %}
+        {% elif row_category in ['Aluminium', 'Fittings', 'Ceiling', 'Rubber', 'Silicone'] %}
+            {% set row_section = row_category %}
+        {% else %}
+            {% set row_section = 'Other' %}
+        {% endif %}
+        {% if row_section == section.key %}
+            {% set section_data.rows = section_data.rows + [row] %}
+            {% if (row.custom_aluminium_color or '')|trim %}
+                {% set section_data.has_color = true %}
+            {% endif %}
+        {% endif %}
+    {% endif %}
+{% endfor %}
+
+{% if section_data.rows %}
+<div class="jc-section-title">{{ section.label }}</div>
+{% if section.key == 'Glass Cut Size' %}
+<table class="cq-table">
+    <thead>
+        <tr>
+            <th style="text-align: left; white-space: nowrap;">Code</th>
+            <th style="text-align: left; white-space: nowrap;">Item</th>
+            <th style="text-align: center; white-space: nowrap;">Pcs</th>
+            <th style="text-align: center; white-space: nowrap;">Qty</th>
+            <th style="text-align: center; white-space: nowrap;">UOM</th>
+            <th style="text-align: center; white-space: nowrap;">No</th>
+            <th style="text-align: center; white-space: nowrap;">Width</th>
+            <th style="text-align: center; white-space: nowrap;">Height</th>
+            <th style="text-align: center; white-space: nowrap;">Polish Sides</th>
+            <th style="text-align: center; white-space: nowrap;">Holes</th>
+            <th style="text-align: center; white-space: nowrap;">Notches</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% set totals = namespace(pcs=0, qty=0, holes=0, notches=0) %}
+        {% for parent in section_data.rows %}
+            {% set pieces = parent.qty or 0 %}
+            {% if parent.custom_glass_sale_mode == 'Full Sheet' %}
+                {% set qty = parent.qty or 0 %}
+                {% set uom = 'Nos' %}
+            {% else %}
+                {% set qty = (parent.custom_area_sqft or 0) * (parent.qty or 0) %}
+                {% set uom = parent.uom or 'Square Foot' %}
+            {% endif %}
+            {% set width_sides = frappe.utils.cint(parent.custom_polish_width_sides or 0) %}
+            {% set height_sides = frappe.utils.cint(parent.custom_polish_height_sides or 0) %}
+            {% if not width_sides and not height_sides and frappe.utils.cint(parent.custom_polishing or 0) %}
+                {% set width_sides = 2 %}
+                {% set height_sides = 2 %}
+            {% endif %}
+            {% set polish_sides = width_sides + height_sides %}
+            {% set holes = frappe.utils.cint(parent.custom_holes or 0) %}
+            {% set notches = frappe.utils.cint(parent.custom_notches or 0) %}
+            {% set totals.pcs = totals.pcs + frappe.utils.flt(pieces, 2) %}
+            {% set totals.qty = totals.qty + frappe.utils.flt(qty, 3) %}
+            {% set totals.holes = totals.holes + holes %}
+            {% set totals.notches = totals.notches + notches %}
+            <tr>
+                <td style="font-weight: bold; white-space: nowrap;">{{ parent.item_code or '' }}</td>
+                <td>{{ parent.item_name or parent.item_code or '' }}</td>
+                <td style="text-align: center; white-space: nowrap;">{{ frappe.utils.flt(pieces, 2) }}</td>
+                <td style="text-align: center; white-space: nowrap;">{{ frappe.utils.flt(qty, 3) }}</td>
+                <td style="text-align: center; white-space: nowrap;">{{ short_uom(uom) }}</td>
+                <td style="text-align: center; white-space: nowrap;">{{ parent.custom_numbering or '-' }}</td>
+                <td style="text-align: center; white-space: nowrap;">{{ format_dimension(parent.custom_width_mm, parent.custom_dimension_uom) }}</td>
+                <td style="text-align: center; white-space: nowrap;">{{ format_dimension(parent.custom_height_mm, parent.custom_dimension_uom) }}</td>
+                <td style="text-align: center; white-space: nowrap;">{% if polish_sides > 0 %}{{ polish_sides }}{% else %}-{% endif %}</td>
+                <td style="text-align: center; white-space: nowrap;">{% if holes > 0 %}{{ holes }}{% else %}-{% endif %}</td>
+                <td style="text-align: center; white-space: nowrap;">{% if notches > 0 %}{{ notches }}{% else %}-{% endif %}</td>
+            </tr>
+        {% endfor %}
+        <tr>
+            <td colspan="2" style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
+            <td style="text-align: center; white-space: nowrap; font-weight: bold;">{{ frappe.utils.flt(totals.pcs, 2) }}</td>
+            <td style="text-align: center; white-space: nowrap; font-weight: bold;">{{ frappe.utils.flt(totals.qty, 3) }}</td>
+            <td colspan="5" style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
+            <td style="text-align: center; white-space: nowrap; font-weight: bold;">{{ totals.holes }}</td>
+            <td style="text-align: center; white-space: nowrap; font-weight: bold;">{{ totals.notches }}</td>
+        </tr>
+    </tbody>
+</table>
+{% elif section.key == 'Glass Sheet' %}
+<table class="cq-table">
+    <thead>
+        <tr>
+            <th style="text-align: left; white-space: nowrap;">Code</th>
+            <th style="text-align: left; white-space: nowrap;">Item</th>
+            <th style="text-align: center; white-space: nowrap;">No</th>
+            <th style="text-align: center; white-space: nowrap;">Sheet Size</th>
+            <th style="text-align: center; white-space: nowrap;">Pcs</th>
+            <th style="text-align: center; white-space: nowrap;">Qty</th>
+            <th style="text-align: center; white-space: nowrap;">UOM</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% set totals = namespace(pcs=0, qty=0) %}
+        {% for parent in section_data.rows %}
+            {% set pieces = parent.custom_sheet_pcs or 0 %}
+            {% set qty = parent.qty or 0 %}
+            {% set totals.pcs = totals.pcs + frappe.utils.flt(pieces, 2) %}
+            {% set totals.qty = totals.qty + frappe.utils.flt(qty, 3) %}
+            <tr>
+                <td style="font-weight: bold; white-space: nowrap;">{{ parent.item_code or '' }}</td>
+                <td>{{ parent.item_name or parent.item_code or '' }}</td>
+                <td style="text-align: center; white-space: nowrap;">{{ parent.custom_numbering or '-' }}</td>
+                <td style="text-align: center; white-space: nowrap;">{{ (parent.custom_sheet_size or '-')|trim or '-' }}</td>
+                <td style="text-align: center; white-space: nowrap;">{{ frappe.utils.flt(pieces, 2) }}</td>
+                <td style="text-align: center; white-space: nowrap;">{{ frappe.utils.flt(qty, 3) }}</td>
+                <td style="text-align: center; white-space: nowrap;">{{ short_uom(parent.uom or 'Square Foot') }}</td>
+            </tr>
+        {% endfor %}
+        <tr>
+            <td colspan="4" style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
+            <td style="text-align: center; white-space: nowrap; font-weight: bold;">{{ frappe.utils.flt(totals.pcs, 2) }}</td>
+            <td style="text-align: center; white-space: nowrap; font-weight: bold;">{{ frappe.utils.flt(totals.qty, 3) }}</td>
+            <td style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
+        </tr>
+    </tbody>
+</table>
+{% else %}
+{% set is_aluminium = section.key == 'Aluminium' %}
+<table class="cq-table">
+    <thead>
+        <tr>
+            <th style="text-align: left; white-space: nowrap;">Code</th>
+            <th style="text-align: left; white-space: nowrap;">Item</th>
+            {% if section_data.has_color %}
+            <th style="text-align: center; white-space: nowrap;">Color</th>
+            {% endif %}
+            <th style="text-align: center; white-space: nowrap;">{{ 'Pcs' if is_aluminium else 'Qty' }}</th>
+            <th style="text-align: center; white-space: nowrap;">UOM</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% set totals = namespace(qty=0) %}
+        {% for parent in section_data.rows %}
+            {% set totals.qty = totals.qty + frappe.utils.flt(parent.qty or 0, 2) %}
+            <tr>
+                <td style="font-weight: bold; white-space: nowrap;">{{ parent.item_code or '' }}</td>
+                <td>{{ parent.item_name or parent.item_code or '' }}</td>
+                {% if section_data.has_color %}
+                <td style="text-align: center; white-space: nowrap;">{{ parent.custom_aluminium_color or '-' }}</td>
+                {% endif %}
+                <td style="text-align: center; white-space: nowrap;">{{ frappe.utils.flt(parent.qty or 0, 2) }}</td>
+                <td style="text-align: center; white-space: nowrap;">{{ short_uom(parent.uom or ('Nos' if is_aluminium else '')) }}</td>
+            </tr>
+        {% endfor %}
+        {% if is_aluminium %}
+        <tr>
+            <td colspan="{{ 3 if section_data.has_color else 2 }}" style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
+            <td style="text-align: center; white-space: nowrap; font-weight: bold;">{{ frappe.utils.flt(totals.qty, 2) }}</td>
+            <td style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
+        </tr>
+        {% endif %}
+    </tbody>
+</table>
+{% endif %}
+{% endif %}
+{% endif %}
+{% endfor %}
 """
 
 
