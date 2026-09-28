@@ -73,6 +73,54 @@ function get_manager_quotation_total(doc) {
 	return get_manager_quotation_subtotal(doc) + get_manager_quotation_tax(doc);
 }
 
+// The Builder's global +/- % adjustment is baked into the saved item rates, and
+// only the type/percent is stored on the quotation. Reversing it (the same way
+// open_quotation_in_builder does) recovers the pre-adjustment figures so both can
+// be shown. Server-generated service rows (custom_auto_generated) are priced by
+// the validate hook, not the Builder, so they are never reversed.
+function get_manager_price_adjustment(doc) {
+	let percent = flt((doc && doc.custom_price_adjustment_percent) || 0);
+	let type = doc && doc.custom_price_adjustment_type;
+	if (!type || !percent) {
+		return null;
+	}
+	let multiplier = type === '-' ? (1 - percent / 100) : (1 + percent / 100);
+	return multiplier ? { type, percent, multiplier } : null;
+}
+
+function get_manager_unadjusted_value(value, doc) {
+	let adjustment = get_manager_price_adjustment(doc);
+	return adjustment ? flt(value || 0) / adjustment.multiplier : flt(value || 0);
+}
+
+// Pre-adjustment subtotal: every Builder-priced row reversed, service rows as-is.
+function get_manager_unadjusted_subtotal(doc) {
+	let subtotal = get_manager_quotation_subtotal(doc);
+	let adjustment = get_manager_price_adjustment(doc);
+	if (!adjustment) {
+		return subtotal;
+	}
+	let manual_amount = (doc.items || [])
+		.filter(item => !item.custom_auto_generated)
+		.reduce((sum, item) => sum + flt(item.amount || 0), 0);
+	return subtotal - manual_amount + manual_amount / adjustment.multiplier;
+}
+
+// Adjusted value, with the pre-adjustment one struck through beneath it while
+// the quotation carries an adjustment.
+function format_manager_adjusted_value(value, doc, unadjusted = null) {
+	let currency = doc ? doc.currency : 'KES';
+	let adjusted_html = format_currency(value, currency);
+	if (!get_manager_price_adjustment(doc)) {
+		return adjusted_html;
+	}
+	let before = unadjusted === null ? get_manager_unadjusted_value(value, doc) : unadjusted;
+	if (flt(before, 2) === flt(value, 2)) {
+		return adjusted_html;
+	}
+	return `${adjusted_html}<div title="Before price adjustment" style="font-size:11px;font-weight:400;color:var(--text-muted);text-decoration:line-through;">${format_currency(before, currency)}</div>`;
+}
+
 function is_manager_ceiling_board_item(item) {
 	return QM_CEILING_BOARD_ITEM_CODES.has((item.item_code || '').trim());
 }
@@ -300,8 +348,8 @@ function render_manager_review_aluminium_row(item, index, doc) {
 			<td style="text-align:center;">
 				<span style="background:var(--subtle-fg);padding:2px 8px;border-radius:6px;font-size:12px;">${price_list}</span>
 			</td>
-			<td style="text-align:right;">${format_currency(rate_per_m, doc ? doc.currency : 'KES')}</td>
-			<td style="text-align:right;font-weight:600;">${format_currency(item.amount, doc ? doc.currency : 'KES')}</td>
+			<td style="text-align:right;">${format_manager_adjusted_value(rate_per_m, doc)}</td>
+			<td style="text-align:right;font-weight:600;">${format_manager_adjusted_value(item.amount, doc)}</td>
 		</tr>
 	`;
 }
@@ -317,13 +365,13 @@ function render_manager_review_fittings_row(item, index, doc) {
 			<td style="text-align:center;">
 				<span style="background:var(--subtle-fg);padding:2px 8px;border-radius:6px;font-size:12px;">${price_list}</span>
 			</td>
-			<td style="text-align:right;">${format_currency(item.rate, doc ? doc.currency : 'KES')}</td>
-			<td style="text-align:right;font-weight:600;">${format_currency(item.amount, doc ? doc.currency : 'KES')}</td>
+			<td style="text-align:right;">${format_manager_adjusted_value(item.rate, doc)}</td>
+			<td style="text-align:right;font-weight:600;">${format_manager_adjusted_value(item.amount, doc)}</td>
 		</tr>
 	`;
 }
 
-function render_manager_review_ceiling_row(item, index, doc, display_amount = null) {
+function render_manager_review_ceiling_row(item, index, doc, display_amount = null, display_unadjusted = null) {
 	let price_list = doc ? doc.selling_price_list : 'Retail';
 	let quantity = flt(item.custom_ceiling_sq_m || 0);
 	let is_bundle = quantity > 0;
@@ -349,13 +397,13 @@ function render_manager_review_ceiling_row(item, index, doc, display_amount = nu
 			<td style="text-align:center;">
 				<span style="background:var(--subtle-fg);padding:2px 8px;border-radius:6px;font-size:12px;">${price_list}</span>
 			</td>
-			<td style="text-align:right;">${format_currency(rate, doc ? doc.currency : 'KES')}</td>
-			<td style="text-align:right;font-weight:600;">${format_currency(amount, doc ? doc.currency : 'KES')}</td>
+			<td style="text-align:right;">${format_manager_adjusted_value(rate, doc)}</td>
+			<td style="text-align:right;font-weight:600;">${format_manager_adjusted_value(amount, doc, display_amount === null ? null : display_unadjusted)}</td>
 		</tr>
 	`;
 }
 
-function render_manager_review_other_row(item, index, doc, display_amount = null) {
+function render_manager_review_other_row(item, index, doc, display_amount = null, display_unadjusted = null) {
 	let category = item.custom_product_category || item.item_group || 'Other';
 	let cat_color = {'Fittings':'#e67e22','Rubber':'#8e44ad','Silicone':'#16a085'}[category] || '#7f8c8d';
 	let price_list = doc ? doc.selling_price_list : 'Retail';
@@ -373,8 +421,8 @@ function render_manager_review_other_row(item, index, doc, display_amount = null
 			<td style="text-align:center;">
 				<span style="background:var(--subtle-fg);padding:2px 8px;border-radius:6px;font-size:12px;">${price_list}</span>
 			</td>
-			<td style="text-align:right;">${format_currency(rate, doc ? doc.currency : 'KES')}</td>
-			<td style="text-align:right;font-weight:600;">${format_currency(amount, doc ? doc.currency : 'KES')}</td>
+			<td style="text-align:right;">${format_manager_adjusted_value(rate, doc)}</td>
+			<td style="text-align:right;font-weight:600;">${format_manager_adjusted_value(amount, doc, display_amount === null ? null : display_unadjusted)}</td>
 		</tr>
 	`;
 }
@@ -448,6 +496,43 @@ function render_quotation_dashboard(page, quotation_name, wrapper, auto_amend) {
 		let subtotal_amount = get_manager_quotation_subtotal(doc);
 		let tax_amount = get_manager_quotation_tax(doc);
 		let total_amount = get_manager_quotation_total(doc);
+
+		// With a Builder +/- % adjustment on this quotation, show what it came to
+		// before the adjustment and the difference, above the real totals.
+		let adjustment_totals_html = '';
+		let price_adjustment_info = get_manager_price_adjustment(doc);
+		if (price_adjustment_info) {
+			let unadjusted_subtotal = get_manager_unadjusted_subtotal(doc);
+			// A real tax row scales with the subtotal; visual VAT is a flat 16%.
+			let unadjusted_tax = subtotal_amount ? tax_amount * (unadjusted_subtotal / subtotal_amount) : 0;
+			let unadjusted_total = unadjusted_subtotal + unadjusted_tax;
+			let difference = total_amount - unadjusted_total;
+			let sign = price_adjustment_info.type === '-' ? '−' : '+';
+			let color = price_adjustment_info.type === '-' ? '#c0392b' : '#27ae60';
+			adjustment_totals_html = `
+				<div class="qm-total-row" style="display:block; border-bottom:1px dashed var(--border-color);">
+					<div style="font-size:12px; font-weight:600; color:var(--text-muted); text-transform:uppercase; margin-bottom:8px;">
+						Before price adjustment <span style="color:${color};">(${sign}${price_adjustment_info.percent}% on all rates)</span>
+					</div>
+					<div style="display:flex; justify-content:space-between; align-items:center; font-size:13px; color:var(--text-muted); text-transform:uppercase; margin-bottom:8px;">
+						<span>Subtotal</span>
+						<span>${format_currency(unadjusted_subtotal, doc.currency)}</span>
+					</div>
+					<div style="display:flex; justify-content:space-between; align-items:center; font-size:13px; color:var(--text-muted); text-transform:uppercase; margin-bottom:8px;">
+						<span>V.A.T (16%)</span>
+						<span>${format_currency(unadjusted_tax, doc.currency)}</span>
+					</div>
+					<div style="display:flex; justify-content:space-between; align-items:center; font-size:13px; text-transform:uppercase; margin-bottom:8px;">
+						<span style="color:var(--text-muted);">Grand Total</span>
+						<span style="font-weight:600;">${format_currency(unadjusted_total, doc.currency)}</span>
+					</div>
+					<div style="display:flex; justify-content:space-between; align-items:center; font-size:13px; text-transform:uppercase;">
+						<span style="color:var(--text-muted);">Adjustment</span>
+						<span style="font-weight:600; color:${color};">${difference < 0 ? '−' : '+'}${format_currency(Math.abs(difference), doc.currency)}</span>
+					</div>
+				</div>
+			`;
+		}
 		let manual_items = doc.items.filter(item => !item.custom_auto_generated);
 		let glass_items = manual_items.filter(i => i.custom_product_category === 'Glass');
 		let aluminium_items = manual_items.filter(i => i.custom_product_category === 'Aluminium');
@@ -473,6 +558,17 @@ function render_quotation_dashboard(page, quotation_name, wrapper, auto_amend) {
 			let child_rows = service_rows_by_parent[item.idx] || [];
 			return item.amount + child_rows.reduce((sum, child) => sum + (child.amount || 0), 0);
 		};
+		// Same, with the Builder's adjustment reversed on the item's own row only.
+		let get_item_unadjusted_total = (item) => get_item_total(item) - flt(item.amount || 0) + get_manager_unadjusted_value(item.amount, doc);
+		let get_section_unadjusted_total = (rows) => rows.reduce((s, i) => s + get_item_unadjusted_total(i), 0);
+		let format_section_subtotal = (total, rows) => {
+			let html = format_currency(total, doc.currency);
+			let before = get_section_unadjusted_total(rows);
+			if (!get_manager_price_adjustment(doc) || flt(before, 2) === flt(total, 2)) {
+				return html;
+			}
+			return `${html} <span title="Before price adjustment" style="text-decoration:line-through;font-weight:400;">${format_currency(before, doc.currency)}</span>`;
+		};
 
 		let glass_total = glass_items.reduce((s, i) => s + get_item_total(i), 0);
 		let aluminium_total = aluminium_items.reduce((s, i) => s + get_item_total(i), 0);
@@ -488,7 +584,7 @@ function render_quotation_dashboard(page, quotation_name, wrapper, auto_amend) {
 				<div style="margin-bottom:24px;">
 					<h5 style="margin:0 0 10px 0;font-size:15px;font-weight:600;color:#3498db;display:flex;align-items:center;gap:8px;">
 						<span style="background:#3498db20;padding:3px 10px;border-radius:10px;font-size:12px;">🔷</span> Glass Items
-						<span style="margin-left:auto;font-size:13px;color:var(--text-muted);font-weight:500;">Subtotal: ${format_currency(glass_total, doc.currency)}</span>
+						<span style="margin-left:auto;font-size:13px;color:var(--text-muted);font-weight:500;">Subtotal: ${format_section_subtotal(glass_total, glass_items)}</span>
 					</h5>
 					<div class="qm-table-wrap">
 						<table class="qm-table qm-review-table" style="background:var(--card-bg); margin-bottom:0;">
@@ -526,7 +622,7 @@ function render_quotation_dashboard(page, quotation_name, wrapper, auto_amend) {
 				<div style="margin-bottom:24px;">
 					<h5 style="margin:0 0 10px 0;font-size:15px;font-weight:600;color:#95a5a6;display:flex;align-items:center;gap:8px;">
 						<span style="background:#95a5a620;padding:3px 10px;border-radius:10px;font-size:12px;">⬜</span> Aluminium Items
-						<span style="margin-left:auto;font-size:13px;color:var(--text-muted);font-weight:500;">Subtotal: ${format_currency(aluminium_total, doc.currency)}</span>
+						<span style="margin-left:auto;font-size:13px;color:var(--text-muted);font-weight:500;">Subtotal: ${format_section_subtotal(aluminium_total, aluminium_items)}</span>
 					</h5>
 					<div class="qm-table-wrap">
 						<table class="qm-table qm-review-table" style="background:var(--card-bg); margin-bottom:0; min-width:800px;">
@@ -557,7 +653,7 @@ function render_quotation_dashboard(page, quotation_name, wrapper, auto_amend) {
 				<div style="margin-bottom:24px;">
 					<h5 style="margin:0 0 10px 0;font-size:15px;font-weight:600;color:#e67e22;display:flex;align-items:center;gap:8px;">
 						<span style="background:#e67e2220;padding:3px 10px;border-radius:10px;font-size:12px;">🔶</span> Fittings Items
-						<span style="margin-left:auto;font-size:13px;color:var(--text-muted);font-weight:500;">Subtotal: ${format_currency(fittings_total, doc.currency)}</span>
+						<span style="margin-left:auto;font-size:13px;color:var(--text-muted);font-weight:500;">Subtotal: ${format_section_subtotal(fittings_total, fittings_items)}</span>
 					</h5>
 					<div class="qm-table-wrap">
 						<table class="qm-table qm-review-table" style="background:var(--card-bg); margin-bottom:0; min-width:800px;">
@@ -587,7 +683,7 @@ function render_quotation_dashboard(page, quotation_name, wrapper, auto_amend) {
 				<div style="margin-bottom:24px;">
 					<h5 style="margin:0 0 10px 0;font-size:15px;font-weight:600;color:#8e44ad;display:flex;align-items:center;gap:8px;">
 						<span style="background:#8e44ad20;padding:3px 10px;border-radius:10px;font-size:12px;">🟪</span> Rubber Items
-						<span style="margin-left:auto;font-size:13px;color:var(--text-muted);font-weight:500;">Subtotal: ${format_currency(rubber_total, doc.currency)}</span>
+						<span style="margin-left:auto;font-size:13px;color:var(--text-muted);font-weight:500;">Subtotal: ${format_section_subtotal(rubber_total, rubber_items)}</span>
 					</h5>
 					<div class="qm-table-wrap">
 						<table class="qm-table qm-review-table" style="background:var(--card-bg); margin-bottom:0; min-width:800px;">
@@ -617,7 +713,7 @@ function render_quotation_dashboard(page, quotation_name, wrapper, auto_amend) {
 				<div style="margin-bottom:24px;">
 					<h5 style="margin:0 0 10px 0;font-size:15px;font-weight:600;color:#16a085;display:flex;align-items:center;gap:8px;">
 						<span style="background:#16a08520;padding:3px 10px;border-radius:10px;font-size:12px;">🟢</span> Silicone Items
-						<span style="margin-left:auto;font-size:13px;color:var(--text-muted);font-weight:500;">Subtotal: ${format_currency(silicone_total, doc.currency)}</span>
+						<span style="margin-left:auto;font-size:13px;color:var(--text-muted);font-weight:500;">Subtotal: ${format_section_subtotal(silicone_total, silicone_items)}</span>
 					</h5>
 					<div class="qm-table-wrap">
 						<table class="qm-table qm-review-table" style="background:var(--card-bg); margin-bottom:0; min-width:800px;">
@@ -647,7 +743,7 @@ function render_quotation_dashboard(page, quotation_name, wrapper, auto_amend) {
 				<div style="margin-bottom:24px;">
 					<h5 style="margin:0 0 10px 0;font-size:15px;font-weight:600;color:#2ecc71;display:flex;align-items:center;gap:8px;">
 						<span style="background:#2ecc7120;padding:3px 10px;border-radius:10px;font-size:12px;">🟩</span> Ceiling Items
-						<span style="margin-left:auto;font-size:13px;color:var(--text-muted);font-weight:500;">Subtotal: ${format_currency(ceiling_total, doc.currency)}</span>
+						<span style="margin-left:auto;font-size:13px;color:var(--text-muted);font-weight:500;">Subtotal: ${format_section_subtotal(ceiling_total, ceiling_items)}</span>
 					</h5>
 					<div class="qm-table-wrap">
 						<table class="qm-table qm-review-table" style="background:var(--card-bg); margin-bottom:0; min-width:1180px;">
@@ -664,7 +760,7 @@ function render_quotation_dashboard(page, quotation_name, wrapper, auto_amend) {
 								</tr>
 							</thead>
 							<tbody>
-								${ceiling_items.map((i, index) => render_manager_review_ceiling_row(i, index, doc, get_item_total(i))).join('')}
+								${ceiling_items.map((i, index) => render_manager_review_ceiling_row(i, index, doc, get_item_total(i), get_item_unadjusted_total(i))).join('')}
 							</tbody>
 						</table>
 					</div>
@@ -678,7 +774,7 @@ function render_quotation_dashboard(page, quotation_name, wrapper, auto_amend) {
 				<div style="margin-bottom:24px;">
 					<h5 style="margin:0 0 10px 0;font-size:15px;font-weight:600;color:#e67e22;display:flex;align-items:center;gap:8px;">
 						<span style="background:#e67e2220;padding:3px 10px;border-radius:10px;font-size:12px;">🔶</span> Other Items
-						<span style="margin-left:auto;font-size:13px;color:var(--text-muted);font-weight:500;">Subtotal: ${format_currency(other_total, doc.currency)}</span>
+						<span style="margin-left:auto;font-size:13px;color:var(--text-muted);font-weight:500;">Subtotal: ${format_section_subtotal(other_total, other_items)}</span>
 					</h5>
 					<div class="qm-table-wrap">
 						<table class="qm-table qm-review-table" style="background:var(--card-bg); margin-bottom:0; min-width:800px;">
@@ -695,7 +791,7 @@ function render_quotation_dashboard(page, quotation_name, wrapper, auto_amend) {
 								</tr>
 							</thead>
 							<tbody>
-								${other_items.map((i, index) => render_manager_review_other_row(i, index, doc, get_item_total(i))).join('')}
+								${other_items.map((i, index) => render_manager_review_other_row(i, index, doc, get_item_total(i), get_item_unadjusted_total(i))).join('')}
 							</tbody>
 						</table>
 					</div>
@@ -797,6 +893,7 @@ function render_quotation_dashboard(page, quotation_name, wrapper, auto_amend) {
 					${other_html}
 					${(!glass_html && !aluminium_html && !fittings_html && !ceiling_html && !rubber_html && !silicone_html && !other_html) ? '<p style="text-align:center;color:var(--text-muted);padding:20px;">No items in this quotation.</p>' : ''}
 				</div>
+				${adjustment_totals_html}
 				<div class="qm-total-row" style="display:block;">
 					<div style="display:flex; justify-content:space-between; align-items:center; font-size:13px; color:var(--text-muted); text-transform:uppercase; margin-bottom:8px;">
 						<span>Subtotal</span>

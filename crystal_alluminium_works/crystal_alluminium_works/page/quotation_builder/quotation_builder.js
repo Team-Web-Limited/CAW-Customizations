@@ -525,6 +525,7 @@ function apply_price_adjustment_to_item(item, adjustment) {
 
 	item.amount = calculate_item_amount(item);
 	item._price_adj_key = price_adjustment_key(adjustment);
+	item._adjusted_rate = item.rate;
 }
 
 function sync_price_adjustment() {
@@ -532,10 +533,46 @@ function sync_price_adjustment() {
 	let key = price_adjustment_key(adjustment);
 
 	window.qb_state.items.forEach(function (item) {
-		if (item._price_adj_key !== key) {
+		// The edit dialogs rebuild an item with Object.assign({}, it, ...), which
+		// carries the old _base_rate/_price_adj_key over while writing a freshly
+		// priced (unadjusted) rate. A rate that no longer matches what we last
+		// set is that new base price, so re-base on it and adjust it again.
+		let rate_replaced = item._adjusted_rate !== undefined && flt(item.rate) !== flt(item._adjusted_rate);
+		if (rate_replaced) {
+			item._base_rate = flt(item.rate || 0);
+		}
+		if (rate_replaced || item._price_adj_key !== key) {
 			apply_price_adjustment_to_item(item, adjustment);
 		}
 	});
+}
+
+function is_price_adjustment_active() {
+	let adjustment = window.qb_state.price_adjustment;
+	return !!(adjustment && adjustment.percent);
+}
+
+// The item's rate/amount before the global adjustment, for the Review tab.
+function get_item_unadjusted_rate(item) {
+	return item._base_rate === undefined || item._base_rate === null ? flt(item.rate || 0) : flt(item._base_rate);
+}
+
+function get_item_unadjusted_amount(item) {
+	return calculate_item_amount(Object.assign({}, item, { rate: get_item_unadjusted_rate(item) }));
+}
+
+function get_builder_unadjusted_subtotal() {
+	return window.qb_state.items.reduce((sum, item) => sum + get_item_unadjusted_amount(item), 0);
+}
+
+// Rate/amount cell for the Review tables: the adjusted figure, with the
+// pre-adjustment one struck through beneath it while an adjustment is on.
+function format_review_adjusted_value(adjusted, unadjusted) {
+	let adjusted_html = format_currency(adjusted, 'KES');
+	if (!is_price_adjustment_active() || flt(adjusted, 2) === flt(unadjusted, 2)) {
+		return adjusted_html;
+	}
+	return `${adjusted_html}<div title="Before price adjustment" style="font-size:11px;font-weight:400;color:var(--text-muted);text-decoration:line-through;">${format_currency(unadjusted, 'KES')}</div>`;
 }
 
 function get_builder_subtotal() {
@@ -922,8 +959,8 @@ function render_review_aluminium_row(item, index) {
 			<td style="text-align:center;">
 				<span style="background:var(--subtle-fg);padding:2px 8px;border-radius:6px;font-size:12px;">${get_item_selling_price_label(item)}</span>
 			</td>
-			<td style="text-align:right;">${format_currency(item.rate, 'KES')}</td>
-			<td style="text-align:right;font-weight:600;">${format_currency(item.amount, 'KES')}</td>
+			<td style="text-align:right;">${format_review_adjusted_value(item.rate, get_item_unadjusted_rate(item))}</td>
+			<td style="text-align:right;font-weight:600;">${format_review_adjusted_value(item.amount, get_item_unadjusted_amount(item))}</td>
 		</tr>
 	`;
 }
@@ -938,8 +975,8 @@ function render_review_fittings_row(item, index) {
 			<td style="text-align:center;">
 				<span style="background:var(--subtle-fg);padding:2px 8px;border-radius:6px;font-size:12px;">${get_item_selling_price_label(item)}</span>
 			</td>
-			<td style="text-align:right;">${format_currency(item.rate, 'KES')}</td>
-			<td style="text-align:right;font-weight:600;">${format_currency(item.amount, 'KES')}</td>
+			<td style="text-align:right;">${format_review_adjusted_value(item.rate, get_item_unadjusted_rate(item))}</td>
+			<td style="text-align:right;font-weight:600;">${format_review_adjusted_value(item.amount, get_item_unadjusted_amount(item))}</td>
 		</tr>
 	`;
 }
@@ -971,8 +1008,8 @@ function render_review_other_row(item, index, ceiling_review = null) {
 			<td style="text-align:center;">
 				<span style="background:var(--subtle-fg);padding:2px 8px;border-radius:6px;font-size:12px;">${get_item_selling_price_label(item)}</span>
 			</td>
-			<td style="text-align:right;">${format_currency(item.rate, 'KES')}</td>
-			<td style="text-align:right;font-weight:600;">${format_currency(item.amount, 'KES')}</td>
+			<td style="text-align:right;">${format_review_adjusted_value(item.rate, get_item_unadjusted_rate(item))}</td>
+			<td style="text-align:right;font-weight:600;">${format_review_adjusted_value(item.amount, get_item_unadjusted_amount(item))}</td>
 		</tr>
 	`;
 }
@@ -1254,6 +1291,41 @@ function render_review_step(page) {
 	let vat_total = get_builder_vat_total();
 	let grand_total = get_builder_grand_total();
 
+	// With a global +/- % on, show what the quotation came to before it and the
+	// difference, so the adjusted totals below can be checked against the originals.
+	let adjustment_totals_html = '';
+	if (is_price_adjustment_active()) {
+		let adjustment = window.qb_state.price_adjustment;
+		let unadjusted_subtotal = get_builder_unadjusted_subtotal();
+		let unadjusted_grand_total = unadjusted_subtotal * (1 + QB_VAT_RATE);
+		let difference = grand_total - unadjusted_grand_total;
+		let sign = adjustment.type === '-' ? '−' : '+';
+		let color = adjustment.type === '-' ? '#c0392b' : '#27ae60';
+		adjustment_totals_html = `
+			<div style="background:var(--card-bg); border:1px dashed var(--border-color); border-radius:6px; padding:14px 20px; margin-top:8px;">
+				<div style="font-size:12px;font-weight:600;text-transform:uppercase;color:var(--text-muted);padding-bottom:8px;">
+					Before price adjustment <span style="color:${color};">(${sign}${adjustment.percent}% on all rates)</span>
+				</div>
+				<div style="display:flex; justify-content:space-between; align-items:center; gap:16px; padding-bottom:8px;">
+					<span style="color:var(--text-muted);">Subtotal</span>
+					<span>${format_currency(unadjusted_subtotal, 'KES')}</span>
+				</div>
+				<div style="display:flex; justify-content:space-between; align-items:center; gap:16px; padding:8px 0; border-top:1px solid var(--border-color);">
+					<span style="color:var(--text-muted);">VAT (16%)</span>
+					<span>${format_currency(unadjusted_subtotal * QB_VAT_RATE, 'KES')}</span>
+				</div>
+				<div style="display:flex; justify-content:space-between; align-items:center; gap:16px; padding:8px 0; border-top:1px solid var(--border-color);">
+					<span style="color:var(--text-muted);">Grand Total</span>
+					<span style="font-weight:600;">${format_currency(unadjusted_grand_total, 'KES')}</span>
+				</div>
+				<div style="display:flex; justify-content:space-between; align-items:center; gap:16px; padding-top:8px; border-top:1px solid var(--border-color);">
+					<span style="color:var(--text-muted);">Adjustment</span>
+					<span style="font-weight:600;color:${color};">${difference < 0 ? '−' : '+'}${format_currency(Math.abs(difference), 'KES')}</span>
+				</div>
+			</div>
+		`;
+	}
+
 	let html = `
 		<div style="background:var(--control-bg); padding:16px; border-radius:8px; border:1px solid var(--border-color);">
 			<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
@@ -1278,6 +1350,7 @@ function render_review_step(page) {
 			${other_html}
 			${empty_html}
 
+			${adjustment_totals_html}
 			<div style="background:var(--card-bg); border:1px solid var(--border-color); border-radius:6px; padding:14px 20px; margin-top:8px;">
 				<div style="display:flex; justify-content:space-between; align-items:center; gap:16px; padding-bottom:8px;">
 					<span style="color:var(--text-muted);">Subtotal</span>
@@ -3053,6 +3126,28 @@ function open_glass_batch_details_dialog(page, items) {
 		primary_action: function () {
 			let $wrapper = d.fields_dict.batch_table.$wrapper;
 
+			// A row without both a width and a height is a leftover (an extra
+			// multi-select pick or an unused duplicate), so drop it instead of
+			// pricing a zero-size piece. On a re-edit the original_ids check
+			// below also removes it from the quotation.
+			let skipped = 0;
+			items = items.filter(function (it) {
+				let $row = $wrapper.find(`tr[data-id="${it.id}"]`);
+				let has_size = flt($row.find('[data-field="width_mm"]').val()) > 0
+					&& flt($row.find('[data-field="height_mm"]').val()) > 0;
+				if (!has_size) {
+					$row.remove();
+					skipped++;
+				}
+				return has_size;
+			});
+			if (skipped) {
+				frappe.show_alert({
+					message: __('{0} glass row(s) without width/height were removed', [skipped]),
+					indicator: 'orange'
+				});
+			}
+
 			let calls = items.map(function (it) {
 				let $row = $wrapper.find(`tr[data-id="${it.id}"]`);
 				function val(field) {
@@ -3155,16 +3250,23 @@ function open_glass_batch_details_dialog(page, items) {
 	d.show();
 	bind_batch_table_keynav(d);
 
-	// Same item, different size — clone whatever is currently in the row
-	// (including anything the user has already typed, e.g. polish/holes/
-	// notches/qty that tend to repeat across pieces) right below it, blank
-	// out width/height/numbering so the new row visibly needs its own size,
-	// and push it into `items` so Save picks it up like any other row.
+	// Clone the whole row exactly as it currently stands (including anything
+	// the user has already typed — size, numbering, polish/holes/notches/qty)
+	// right below it, and push it into `items` so Save picks it up like any
+	// other row. Tweak whatever differs on the copy afterwards.
 	//
 	// The row's "copies" input lets the user type how many duplicates they
 	// need instead of clicking ⧉ repeatedly — Enter in that field (or a
 	// click on ⧉) clones the row that many times in one go.
 	let $batch_wrapper = d.fields_dict.batch_table.$wrapper;
+
+	// Hole/notch/polish types are usually the same for the whole batch, so
+	// picking one cascades down the column the same way the Aluminium colour
+	// does: the changed row overwrites every row below it, rows above stay put.
+	$batch_wrapper.on('change', 'select[data-field="hole_type"], select[data-field="notch_type"], select[data-field="polish_type"]', function () {
+		let field = $(this).data('field');
+		$(this).closest('tr').nextAll('tr').find(`select[data-field="${field}"]`).val($(this).val());
+	});
 
 	function duplicate_glass_row($row, count) {
 		let source_id = $row.data('id');
@@ -3182,8 +3284,8 @@ function open_glass_batch_details_dialog(page, items) {
 		for (let i = 0; i < count; i++) {
 			let clone = Object.assign({}, source, {
 				id: frappe.utils.get_random(8),
-				width_mm: 0,
-				height_mm: 0,
+				width_mm: dimension_input_to_mm(val('width_mm'), dimension_uom),
+				height_mm: dimension_input_to_mm(val('height_mm'), dimension_uom),
 				width_allowance: flt(val('width_allowance') || 0),
 				height_allowance: flt(val('height_allowance') || 0),
 				polish_width_sides: cint(val('polish_width_sides') || 0),
@@ -3195,13 +3297,17 @@ function open_glass_batch_details_dialog(page, items) {
 				notch_type: val('notch_type') || QB_DEFAULT_NOTCH_TYPE,
 				sandblast_type: val('sandblast_type') || 'None',
 				qty: flt(val('qty') || 1) || 1,
-				numbering: '',
+				numbering: val('numbering') || '',
 				description: val('description') || ''
 			});
 			items.push(clone);
 
 			$insert_after.after(build_row_html(clone, 0));
 			$insert_after = $batch_wrapper.find(`tr[data-id="${clone.id}"]`);
+			// Copy the size text verbatim — an inches→mm→inches round trip can
+			// leave float noise like 12.000000000000002 in the cell.
+			$insert_after.find('[data-field="width_mm"]').val(val('width_mm'));
+			$insert_after.find('[data-field="height_mm"]').val(val('height_mm'));
 			if (!$first_clone_row) {
 				$first_clone_row = $insert_after;
 			}
@@ -3395,12 +3501,24 @@ function open_aluminium_batch_details_dialog(page, items) {
 		// only ever offer "None". On the way out the typed text is snapped to a real colour.
 		let $color_cells = d.fields_dict.batch_table.$wrapper;
 		$color_cells.on('focus', '.qb-aluminium-color-input', function () {
-			if (resolve_aluminium_color_option($(this).val(), color_options) === 'None') {
+			let current = resolve_aluminium_color_option($(this).val(), color_options);
+			$(this).data('qb-prev-color', current);
+			if (current === 'None') {
 				$(this).val('');
 			}
 		});
 		$color_cells.on('blur', '.qb-aluminium-color-input', function () {
-			$(this).val(resolve_aluminium_color_option($(this).val(), color_options));
+			let resolved = resolve_aluminium_color_option($(this).val(), color_options);
+			$(this).val(resolved);
+
+			// Most batches are all one colour, so a colour change cascades down the
+			// column: whichever row is changed overwrites every row below it (rows
+			// above are untouched). Changing row 1 therefore recolours the whole table.
+			let prev = $(this).data('qb-prev-color') || 'None';
+			if (resolved === 'None' || resolved === prev) {
+				return;
+			}
+			$(this).closest('tr').nextAll('tr').find('.qb-aluminium-color-input').val(resolved);
 		});
 
 		// Same aluminium item, different color/coating — clone whatever is
