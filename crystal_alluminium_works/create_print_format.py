@@ -655,10 +655,11 @@ def build_crystal_job_card_print_format_html():
 </style>
 
 {#
-    Items are split into one table per category, in the same order and
-    grouping as the Quotation Builder's Review step: Glass (Cut Size and
-    Sheet as separate tables), Aluminium, Fittings, Ceiling, Rubber,
-    Silicone, then anything else under "Other Items".
+    Items are split into four download groups: Glass (Cut Size and Sheet
+    as separate tables, since their columns differ), Aluminium, Accessories
+    and Ceiling. Fittings, Rubber, Silicone and anything uncategorised share
+    the same Code/Item/Qty/UOM layout, so they go out as one Accessories
+    table rather than a sheet each. section_filter is a group name.
 #}
 {% set has_ceiling_parent = namespace(value=false) %}
 {% set has_ceiling_bundle = namespace(value=false) %}
@@ -680,17 +681,14 @@ def build_crystal_job_card_print_format_html():
 {% endfor %}
 
 {% set job_card_sections = [
-    {'key': 'Glass Cut Size', 'label': 'Glass Items — Cut Size'},
-    {'key': 'Glass Sheet', 'label': 'Glass Items — Sheet'},
-    {'key': 'Aluminium', 'label': 'Aluminium Items'},
-    {'key': 'Fittings', 'label': 'Fittings Items'},
-    {'key': 'Ceiling', 'label': 'Ceiling Items'},
-    {'key': 'Rubber', 'label': 'Rubber Items'},
-    {'key': 'Silicone', 'label': 'Silicone Items'},
-    {'key': 'Other', 'label': 'Other Items'},
+    {'key': 'Glass Cut Size', 'group': 'Glass', 'label': 'Glass Items — Cut Size'},
+    {'key': 'Glass Sheet', 'group': 'Glass', 'label': 'Glass Items — Sheet'},
+    {'key': 'Aluminium', 'group': 'Aluminium', 'label': 'Aluminium Items'},
+    {'key': 'Accessories', 'group': 'Accessories', 'label': 'Accessories'},
+    {'key': 'Ceiling', 'group': 'Ceiling', 'label': 'Ceiling Items'},
 ] %}
 
-{% for section in job_card_sections if not section_filter or section.key == section_filter %}
+{% for section in job_card_sections if not section_filter or section.group == section_filter %}
 {% if section.key == 'Ceiling' %}
 {% if has_ceiling_parent.value %}
 {% set ceiling_columns = ceiling_component_labels if has_ceiling_bundle.value else ceiling_single_labels.items %}
@@ -764,10 +762,10 @@ def build_crystal_job_card_print_format_html():
         {% set row_category = row.custom_product_category or '' %}
         {% if row_category == 'Glass' %}
             {% set row_section = 'Glass Sheet' if row.custom_glass_sale_mode == 'Sheet' else 'Glass Cut Size' %}
-        {% elif row_category in ['Aluminium', 'Fittings', 'Ceiling', 'Rubber', 'Silicone'] %}
+        {% elif row_category in ['Aluminium', 'Ceiling'] %}
             {% set row_section = row_category %}
         {% else %}
-            {% set row_section = 'Other' %}
+            {% set row_section = 'Accessories' %}
         {% endif %}
         {% if row_section == section.key %}
             {% set section_data.rows = section_data.rows + [row] %}

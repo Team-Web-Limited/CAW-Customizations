@@ -626,6 +626,8 @@ function open_jc_operations_modal(page, job_card, quotation) {
 		`;
 
 		d.fields_dict.html.$wrapper.html(html);
+		// Scroll the body only, so the title and Save button stay visible.
+		d.$wrapper.find('.modal-body').css({ 'max-height': '70vh', 'overflow-y': 'auto' });
 
 		let produce_name_by_code = {};
 		produce_options.forEach(o => { produce_name_by_code[o.code] = o.name; });
@@ -1235,25 +1237,22 @@ function get_job_card_print_table_context(quotation) {
 	};
 }
 
-// Same section keys, labels and order as JOB_CARD_PDF_SECTIONS in api.py and the
-// Crystal Job Card print template (which mirror the Quotation Builder's Review step).
+// Same group keys and order as JOB_CARD_PDF_SECTIONS in api.py and the Crystal
+// Job Card print template. Glass covers both the Cut Size and Sheet tables;
+// Fittings, Rubber, Silicone and uncategorised items all go under Accessories.
 const JC_PDF_SECTIONS = [
-	{ key: 'Glass Cut Size', label: 'Glass Items — Cut Size' },
-	{ key: 'Glass Sheet', label: 'Glass Items — Sheet' },
+	{ key: 'Glass', label: 'Glass Items' },
 	{ key: 'Aluminium', label: 'Aluminium Items' },
-	{ key: 'Fittings', label: 'Fittings Items' },
-	{ key: 'Ceiling', label: 'Ceiling Items' },
-	{ key: 'Rubber', label: 'Rubber Items' },
-	{ key: 'Silicone', label: 'Silicone Items' },
-	{ key: 'Other', label: 'Other Items' }
+	{ key: 'Accessories', label: 'Accessories' },
+	{ key: 'Ceiling', label: 'Ceiling Items' }
 ];
 
 function get_job_card_pdf_section_key(row) {
 	let category = row.custom_product_category || '';
-	if (category === 'Glass') {
-		return row.custom_glass_sale_mode === 'Sheet' ? 'Glass Sheet' : 'Glass Cut Size';
+	if (category === 'Glass' || category === 'Aluminium' || category === 'Ceiling') {
+		return category;
 	}
-	return JC_PDF_SECTIONS.some(section => section.key === category) ? category : 'Other';
+	return 'Accessories';
 }
 
 function get_job_card_pdf_sections(quotation) {

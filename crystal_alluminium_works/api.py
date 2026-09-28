@@ -526,18 +526,15 @@ def download_crystal_sales_invoice_pdf(name):
     )
 
 
-# Section keys shared with the Crystal Job Card print template and the
+# Section groups shared with the Crystal Job Card print template and the
 # job_card_detail page's Download picker. Long orders are downloaded one
-# section at a time so the workshop gets shorter sheets per item type.
+# group at a time so the workshop gets shorter sheets per item type.
+# Fittings, Rubber, Silicone and uncategorised items all go under Accessories.
 JOB_CARD_PDF_SECTIONS = (
-    "Glass Cut Size",
-    "Glass Sheet",
+    "Glass",
     "Aluminium",
-    "Fittings",
+    "Accessories",
     "Ceiling",
-    "Rubber",
-    "Silicone",
-    "Other",
 )
 
 
