@@ -1240,6 +1240,32 @@ function validate_job_card_payment_capture(dialog) {
 	return true;
 }
 
+async function validate_job_card_mpesa_code(dialog) {
+	// The Job Card is created before the payment is recorded, so an M-Pesa code the server
+	// would reject (already used on another payment, or more than M-Pesa received) must be
+	// caught here — otherwise the Job Card would be left behind with no payment. Same rule
+	// Payments.validate enforces; see mpesa_link.py.
+	let is_cash = normalize_job_card_payment_mode(dialog.get_value('payment_mode')) === 'cash';
+	let amount = flt(dialog.get_value('payment_amount') || 0);
+	let reference = (dialog.get_value('reference') || '').trim();
+	let mop_is_phone_type = (dialog._mode_of_payment_type || '').toLowerCase() === 'phone';
+	if (!is_cash || amount <= 0 || !reference || !mop_is_phone_type) {
+		return true;
+	}
+
+	try {
+		await frappe.xcall('crystal_alluminium_works.mpesa_link.check_mpesa_reference', {
+			reference: reference,
+			amount: amount,
+			payment_method: dialog.get_value('payment_option')
+		});
+		return true;
+	} catch (e) {
+		// The server's own error dialog has already explained why.
+		return false;
+	}
+}
+
 function validate_job_card_phone_number(dialog) {
 	let is_invoice = normalize_job_card_payment_mode(dialog.get_value('payment_mode')) === 'invoice';
 
@@ -1584,7 +1610,7 @@ async function open_job_card_modal(page, doc) {
 			{ fieldtype: 'Data', fieldname: 'reference', label: 'Reference', hidden: 1 }
 		],
 		primary_action_label: 'Save',
-		primary_action: function(values) {
+		primary_action: async function(values) {
 			if (!validate_job_card_payment_amount(d)) {
 				return;
 			}
@@ -1594,6 +1620,10 @@ async function open_job_card_modal(page, doc) {
 			}
 
 			if (!validate_job_card_phone_number(d)) {
+				return;
+			}
+
+			if (!(await validate_job_card_mpesa_code(d))) {
 				return;
 			}
 

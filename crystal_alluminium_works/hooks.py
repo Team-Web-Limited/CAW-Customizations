@@ -211,6 +211,11 @@ doc_events = {
 	"Payments": {
 		"on_trash": "crystal_alluminium_works.api.on_payments_trash"
 	},
+	# Safaricom confirmations (Navari frappe_mpsa_payments) that arrive after staff already
+	# recorded the Paybill payment get linked to it — see mpesa_link.py.
+	"Mpesa C2B Payment Register": {
+		"after_insert": "crystal_alluminium_works.mpesa_link.link_late_confirmation"
+	},
 	# Currency leaving a USD account is credited at what those dollars cost,
 	# oldest lots first, rather than at a rate someone types. before_validate so
 	# ERPNext derives every downstream figure from the rate we set.

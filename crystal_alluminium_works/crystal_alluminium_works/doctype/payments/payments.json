@@ -17,6 +17,7 @@
   "payment_method",
   "deposit_to",
   "reference",
+  "mpesa_transaction",
   "allocations",
   "payment_entry",
   "correction_section",
@@ -105,6 +106,15 @@
    "label": "Reference"
   },
   {
+   "description": "The Safaricom-confirmed Paybill transaction (Mpesa C2B Payment Register) whose code was entered as this payment's Reference. Claimed automatically on save, or when a late confirmation arrives; one live payment per transaction. See mpesa_link.py.",
+   "fieldname": "mpesa_transaction",
+   "fieldtype": "Link",
+   "label": "M-Pesa Transaction",
+   "options": "Mpesa C2B Payment Register",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
    "description": "Split this payment across one or more job cards. Any amount left unallocated is treated as the customer's advance / credit.",
    "fieldname": "allocations",
    "fieldtype": "Table",
@@ -179,7 +189,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-06-05 12:40:04.473853",
+ "modified": "2026-09-28 12:30:00.000000",
  "modified_by": "Administrator",
  "module": "Crystal Alluminium Works",
  "name": "Payments",

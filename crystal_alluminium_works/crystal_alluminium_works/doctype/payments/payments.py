@@ -6,4 +6,7 @@ from frappe.model.document import Document
 
 
 class Payments(Document):
-	pass
+	def validate(self):
+		from crystal_alluminium_works.mpesa_link import link_payment_to_mpesa
+
+		link_payment_to_mpesa(self)
