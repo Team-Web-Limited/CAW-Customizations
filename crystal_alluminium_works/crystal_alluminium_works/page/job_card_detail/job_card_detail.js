@@ -1770,7 +1770,10 @@ async function open_partial_invoice_modal(job_card) {
 }
 
 function bind_single_job_card_detail_events(page, $body, job_card, quotation, history, sales_invoices, released_items) {
-	$body.off('click.job-card-detail');
+	// $body is reused across job cards within a session, so drop every handler the previous
+	// job card bound — including the View menu's change handler, which otherwise keeps the old
+	// job card's data, runs first, and clears the select before the current one reads it.
+	$body.off('.job-card-detail');
 
 	$body.on('click.job-card-detail', '[data-action="open-quotation"]', function() {
 		if (job_card.quotation) {
