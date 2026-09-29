@@ -423,7 +423,9 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
 </table>
 {{% endif %}}
 
-{{% set has_real_tax = frappe.utils.flt(doc.total_taxes_and_charges or 0) > 0 %}}
+{{# A credit note's tax is negative, so test for any tax at all — '> 0' sent returns down the
+   'no tax row, add a visual 16%' path and printed VAT on top of an already VAT-inclusive total. #}}
+{{% set has_real_tax = frappe.utils.flt(doc.total_taxes_and_charges or 0) != 0 %}}
 {{% set subtotal_amount = frappe.utils.flt(doc.grand_total or 0) - frappe.utils.flt(doc.total_taxes_and_charges or 0) if has_real_tax else frappe.utils.flt(doc.grand_total or 0) %}}
 {{% set vat_amount = frappe.utils.flt(doc.total_taxes_and_charges or 0) if has_real_tax else subtotal_amount * 0.16 %}}
 {{% set total_amount = frappe.utils.flt(doc.grand_total or 0) if has_real_tax else subtotal_amount + vat_amount %}}
