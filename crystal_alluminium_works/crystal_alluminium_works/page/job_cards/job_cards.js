@@ -64,7 +64,7 @@ function load_job_cards(page, page_no) {
 		page_length: 30
 	};
 
-	$tbody.html('<tr><td colspan="9" style="padding:24px;text-align:center;color:var(--text-muted);">Loading job cards...</td></tr>');
+	$tbody.html('<tr><td colspan="8" style="padding:24px;text-align:center;color:var(--text-muted);">Loading job cards...</td></tr>');
 
 	frappe.call({
 		method: 'crystal_alluminium_works.api.get_job_cards_page',
@@ -74,7 +74,7 @@ function load_job_cards(page, page_no) {
 			let rows = message.rows || [];
 
 			if (!rows.length) {
-				$tbody.html('<tr><td colspan="9" style="padding:24px;text-align:center;color:var(--text-muted);">No job cards found.</td></tr>');
+				$tbody.html('<tr><td colspan="8" style="padding:24px;text-align:center;color:var(--text-muted);">No job cards found.</td></tr>');
 				$body.find('.jc-list-pagination').html('');
 				return;
 			}
@@ -91,7 +91,6 @@ function render_job_card_row(row) {
 			<td style="font-weight:600;">${frappe.utils.escape_html(row.name || '')}</td>
 			<td>${frappe.utils.escape_html(row.quotation || '-')}</td>
 			<td>${frappe.utils.escape_html(row.customer_name || row.customer || '-')}</td>
-			<td>${frappe.utils.escape_html(row.payment_mode || '-')}</td>
 			<td>${frappe.utils.escape_html(row.payment_option || '-')}</td>
 			<td style="text-align:right;">${format_currency(row.quotation_amount || 0, 'KES')}</td>
 			<td style="text-align:right;">${format_currency(row.payment_amount || 0, 'KES')}</td>
@@ -169,8 +168,8 @@ function get_job_cards_html() {
 		.jc-list-table-wrap { background: var(--fg-color); border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; box-shadow: var(--shadow-xs); }
 		.jc-list-table-scroller { height: 660px; overflow: auto; }
 		.jc-list-table { width: 100%; min-width: 980px; border-collapse: separate; border-spacing: 0; }
-		.jc-list-table th { position: sticky; top: 0; z-index: 2; padding: 12px 16px; font-size: 12px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; text-align: left; letter-spacing: 0.5px; background: var(--subtle-fg); border-bottom: 1px solid var(--border-color); }
-		.jc-list-table td { padding: 12px 16px; font-size: 14px; color: var(--text-color); vertical-align: middle; }
+		.jc-list-table th { position: sticky; top: 0; z-index: 2; padding: 12px 12px; font-size: 12px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; text-align: left; letter-spacing: 0.5px; background: var(--subtle-fg); border-bottom: 1px solid var(--border-color); white-space: nowrap; }
+		.jc-list-table td { padding: 12px 12px; font-size: 13px; color: var(--text-color); vertical-align: middle; white-space: nowrap; }
 		.jc-list-table tbody tr { cursor: pointer; }
 		.jc-list-table tbody tr:hover { background: var(--subtle-fg); }
 		.jc-list-table tbody tr:not(:last-child) td { border-bottom: 1px solid var(--border-color); }
@@ -216,7 +215,6 @@ function get_job_cards_html() {
 							<th>Job Card</th>
 							<th>Quotation</th>
 							<th>Customer</th>
-							<th>Payment Mode</th>
 							<th>Payment Option</th>
 							<th style="text-align:right;">Quotation Amount</th>
 							<th style="text-align:right;">Payment</th>
@@ -225,7 +223,7 @@ function get_job_cards_html() {
 						</tr>
 					</thead>
 					<tbody class="jc-list-body">
-						<tr><td colspan="9" style="padding:24px;text-align:center;color:var(--text-muted);">Loading job cards...</td></tr>
+						<tr><td colspan="8" style="padding:24px;text-align:center;color:var(--text-muted);">Loading job cards...</td></tr>
 					</tbody>
 				</table>
 			</div>
