@@ -25,6 +25,7 @@ def _build_sidebar_items():
         {"label": "Customer Manager", "type": "Link", "link_type": "Page", "link_to": "customer-manager", "icon": "users", "child": 1, "idx": 20},
         {"label": "Payments", "type": "Section Break", "keep_closed": 1, "idx": 21},
         {"label": "Payments Page", "type": "Link", "link_type": "Page", "link_to": "payments-page", "icon": "credit-card", "child": 1, "idx": 22},
+        {"label": "M-Pesa Transactions", "type": "Link", "link_type": "Page", "link_to": "mpesa-transactions", "icon": "smartphone", "child": 1, "idx": 23},
     ]
 
 

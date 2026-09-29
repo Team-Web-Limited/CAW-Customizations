@@ -14,14 +14,22 @@ field. This module is the only bridge between the two:
     after_insert hook links it retrospectively.
 
 The Job Card / Payments flow stays the source of truth for balances; this never posts or
-alters any accounting."""
+alters any accounting. For the same reason the register is read-only for staff roles (see
+apply_mpesa_register_permissions), and the M-Pesa Transactions page gives them a plain view
+of what has arrived and whether it has been recorded yet."""
 
 import re
 
 import frappe
-from frappe.utils import flt, fmt_money
+from frappe.utils import add_days, cint, flt, fmt_money, getdate
 
 C2B_DOCTYPE = "Mpesa C2B Payment Register"
+
+# Staff see the register but never change it: submitting a row makes Navari post its own
+# Payment Entry (double-counting money crystal's Payments flow already posts), and the
+# read-only amount/code fields are not enforced server-side on a plain write.
+READ_ONLY_REGISTER_ROLES = ("Sales User", "Accounts User", "Accounts Manager")
+_REGISTER_WRITE_PTYPES = ("write", "create", "delete", "submit", "cancel", "amend", "import")
 
 
 def normalize_mpesa_code(reference):
@@ -153,3 +161,175 @@ def link_late_confirmation(doc, method=None):
 			)
 	except Exception:
 		frappe.log_error(title=f"M-Pesa late link failed for {doc.name}")
+
+
+def apply_mpesa_register_permissions():
+	"""after_migrate: make the M-Pesa register read-only for staff roles.
+
+	Copies Navari's standard permissions into Custom DocPerm the first time (Frappe's own way of
+	overriding another app's doctype), then strips every write-type right from the staff roles.
+	Idempotent, and re-applied on every migrate so a Navari update can't hand Submit back."""
+	if not _c2b_installed():
+		return
+
+	from frappe.permissions import setup_custom_perms
+
+	setup_custom_perms(C2B_DOCTYPE)
+
+	for name in frappe.get_all(
+		"Custom DocPerm",
+		filters={"parent": C2B_DOCTYPE, "role": ["in", READ_ONLY_REGISTER_ROLES]},
+		pluck="name",
+	):
+		perm = frappe.get_doc("Custom DocPerm", name)
+		changed = False
+		for ptype in _REGISTER_WRITE_PTYPES:
+			if perm.get(ptype):
+				perm.set(ptype, 0)
+				changed = True
+		if not perm.read:
+			perm.read = 1
+			changed = True
+		if changed:
+			perm.save(ignore_permissions=True)
+
+	frappe.clear_cache(doctype=C2B_DOCTYPE)
+
+
+_QTN_ACCOUNT = re.compile(r"^QTN0*(\d+)$")
+
+
+def _quotation_for_account(bill_ref, cache):
+	"""The quotation a Paybill account number points at. Customers type QTN<number>
+	(QTN127, qtn-127, QTN 0127 ...); a full quotation name is accepted too. The series resets
+	each year, so the most recent quotation with that number wins."""
+	cleaned = re.sub(r"[^A-Za-z0-9-]", "", bill_ref or "").upper()
+	if not cleaned:
+		return None
+	if cleaned in cache:
+		return cache[cleaned]
+
+	quotation = None
+	if frappe.db.exists("Quotation", cleaned):
+		quotation = cleaned
+	else:
+		match = _QTN_ACCOUNT.match(cleaned.replace("-", ""))
+		if match:
+			number = f"{int(match.group(1)):05d}"
+			rows = frappe.get_all(
+				"Quotation",
+				or_filters=[["name", "like", f"%-{number}"], ["name", "like", f"%-{number}-%"]],
+				fields=["name"],
+				order_by="creation desc",
+				limit_page_length=1,
+			)
+			quotation = rows[0].name if rows else None
+
+	cache[cleaned] = quotation
+	return quotation
+
+
+def _live_claims(transaction_names=None):
+	"""transaction name -> the live Payments row that recorded it."""
+	filters = {"mpesa_transaction": ["is", "set"], "is_corrected": 0, "payment_type": ["!=", "Refund"]}
+	if transaction_names is not None:
+		if not transaction_names:
+			return {}
+		filters["mpesa_transaction"] = ["in", transaction_names]
+	return {
+		row.mpesa_transaction: row
+		for row in frappe.get_all(
+			"Payments",
+			filters=filters,
+			fields=["name", "mpesa_transaction", "job_card", "quotation", "customer", "date"],
+			order_by="creation asc",
+		)
+	}
+
+
+@frappe.whitelist()
+def get_mpesa_transactions_page(search=None, status=None, from_date=None, to_date=None, page=1, page_length=30):
+	"""Rows for the M-Pesa Transactions page: what Safaricom confirmed on the Paybill, and
+	whether staff have recorded each one as a Payment yet. frappe.get_list enforces read access."""
+	if not _c2b_installed():
+		return {"rows": [], "total_count": 0, "page": 1, "page_length": 30, "has_next": False, "totals": {}}
+
+	page = max(cint(page) or 1, 1)
+	page_length = min(max(cint(page_length) or 30, 1), 100)
+
+	filters = [["docstatus", "<", 2]]
+	if from_date:
+		filters.append(["creation", ">=", str(getdate(from_date))])
+	if to_date:
+		filters.append(["creation", "<", str(add_days(getdate(to_date), 1))])
+
+	or_filters = None
+	search = (search or "").strip()
+	if search:
+		like = f"%{search}%"
+		or_filters = [
+			["transid", "like", like],
+			["billrefnumber", "like", like],
+			["full_name", "like", like],
+			["firstname", "like", like],
+		]
+
+	matching = frappe.get_list(
+		C2B_DOCTYPE,
+		filters=filters,
+		or_filters=or_filters,
+		fields=["name", "transamount"],
+		order_by="creation desc",
+		limit_page_length=0,
+	)
+	claims = _live_claims([row.name for row in matching])
+
+	if status == "unrecorded":
+		matching = [row for row in matching if row.name not in claims]
+	elif status == "recorded":
+		matching = [row for row in matching if row.name in claims]
+
+	totals = {
+		"count": len(matching),
+		"amount": sum(flt(row.transamount) for row in matching),
+		"unrecorded_count": sum(1 for row in matching if row.name not in claims),
+		"unrecorded_amount": sum(flt(row.transamount) for row in matching if row.name not in claims),
+	}
+
+	start = (page - 1) * page_length
+	page_names = [row.name for row in matching[start : start + page_length]]
+	details = {
+		row.name: row
+		for row in frappe.get_all(
+			C2B_DOCTYPE,
+			filters={"name": ["in", page_names or [""]]},
+			fields=["name", "transid", "transamount", "billrefnumber", "full_name", "firstname", "transtime", "creation"],
+		)
+	}
+
+	quotation_cache = {}
+	rows = []
+	for name in page_names:
+		row = details[name]
+		claim = claims.get(name)
+		rows.append({
+			"name": name,
+			"received_at": row.creation,
+			"mpesa_code": row.transid,
+			"amount": flt(row.transamount),
+			"account_number": row.billrefnumber,
+			"quotation": _quotation_for_account(row.billrefnumber, quotation_cache),
+			"paid_by": (row.full_name or row.firstname or "").strip(),
+			"payment": str(claim.name) if claim else None,
+			"job_card": claim.job_card if claim else None,
+			"customer": claim.customer if claim else None,
+		})
+
+	return {
+		"rows": rows,
+		"total_count": totals["count"],
+		"page": page,
+		"page_length": page_length,
+		"has_next": start + page_length < totals["count"],
+		"totals": totals,
+	}

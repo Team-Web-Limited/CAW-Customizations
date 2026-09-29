@@ -280,7 +280,11 @@ doc_events = {
 
 # before_tests = "crystal_alluminium_works.install.before_tests"
 
-after_migrate = "crystal_alluminium_works.patches.refresh_workspace_sidebar_links.execute"
+after_migrate = [
+	"crystal_alluminium_works.patches.refresh_workspace_sidebar_links.execute",
+	# Keep the M-Pesa register read-only for staff roles — see mpesa_link.py.
+	"crystal_alluminium_works.mpesa_link.apply_mpesa_register_permissions",
+]
 
 # Extend DocType Class
 # ------------------------------
