@@ -8,10 +8,11 @@ field. This module is the only bridge between the two:
 
   * Payments.validate claims the confirmed transaction the code names, refusing a code that is
     already claimed by another live payment or an amount larger than M-Pesa received.
-  * A code with no confirmation on file yet is still accepted (callbacks can arrive late, or
-    the code may be mistyped) — the payment simply stays unlinked.
-  * When a confirmation arrives after the payment was already recorded, the C2B row's
-    after_insert hook links it retrospectively.
+  * The M-Pesa code is optional, but a code that is entered must be one Safaricom has actually
+    confirmed: an unknown (guessed / mistyped) code is refused, and the Create/Edit Job Card
+    modals run the same check before the Job Card is saved.
+  * Payments recorded before this rule (blank or unconfirmed codes) keep saving as before, and
+    a confirmation arriving after such a payment still links it via the C2B after_insert hook.
 
 The Job Card / Payments flow stays the source of truth for balances; this never posts or
 alters any accounting. For the same reason the register is read-only for staff roles (see
@@ -46,9 +47,11 @@ def _c2b_installed():
 	return bool(frappe.db.exists("DocType", C2B_DOCTYPE))
 
 
-def _resolve_mpesa_claim(reference, amount, payment_method, payment_type=None, exclude=None, lock=False):
+def _resolve_mpesa_claim(reference, amount, payment_method, payment_type=None, exclude=None, lock=False, require_confirmed=False):
 	"""Name of the confirmed M-Pesa transaction this payment should claim, or None when there is
-	nothing to link. Throws if the code is already claimed or the amount exceeds what was received.
+	nothing to link. Throws if the code is already claimed or the amount exceeds what was received,
+	and — with require_confirmed — if a code was entered that Safaricom never sent. A blank code
+	is allowed (the code is optional).
 
 	`exclude` lists Payments that may legitimately share the claim: the row itself when re-saved,
 	and the original a correction replaces (it is only flagged is_corrected after the replacement
@@ -68,6 +71,16 @@ def _resolve_mpesa_claim(reference, amount, payment_method, payment_type=None, e
 		for_update=lock,
 	)
 	if not transaction:
+		if require_confirmed:
+			# Safaricom posts every Paybill payment here within seconds, so a code that isn't on
+			# file is mistyped or was never paid — recording it would mark money as received
+			# that the Paybill never got.
+			frappe.throw(
+				f"M-Pesa code {code} has not been received from Safaricom. Check the code on the "
+				"customer's M-Pesa SMS (it must match exactly) or open M-Pesa Transactions to find "
+				"the payment. If the customer has just paid, wait a moment and try again.",
+				title="M-Pesa code not found",
+			)
 		return None
 
 	exclude = [str(name) for name in (exclude or []) if name]
@@ -112,14 +125,28 @@ def link_payment_to_mpesa(doc):
 		payment_type=doc.payment_type,
 		exclude=[None if doc.is_new() else doc.name, doc.corrects_payment],
 		lock=True,
+		require_confirmed=_must_confirm_code(doc),
 	)
+
+
+def _must_confirm_code(doc):
+	"""Only a code being entered now has to be Safaricom-confirmed: a new payment, or an
+	existing one whose code changed. Payments recorded before the rule (blank or unconfirmed
+	codes) can still be re-saved, re-allocated or corrected without re-typing a code."""
+	if doc.is_new():
+		if doc.corrects_payment:
+			original = frappe.db.get_value("Payments", doc.corrects_payment, "reference")
+			return normalize_mpesa_code(original) != normalize_mpesa_code(doc.reference)
+		return True
+	before = doc.get_doc_before_save()
+	return bool(before) and normalize_mpesa_code(before.reference) != normalize_mpesa_code(doc.reference)
 
 
 @frappe.whitelist()
 def check_mpesa_reference(reference, amount, payment_method):
-	"""Pre-flight for the Create Job Card modal, which creates the Job Card before it records the
+	"""Pre-flight for the Create/Edit Job Card modals, which save the Job Card before recording the
 	payment — a code rejected only at that second step would leave a Job Card with no payment."""
-	_resolve_mpesa_claim(reference, amount, payment_method)
+	_resolve_mpesa_claim(reference, amount, payment_method, require_confirmed=True)
 	return True
 
 

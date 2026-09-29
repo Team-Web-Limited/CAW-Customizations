@@ -714,9 +714,11 @@
 					onchange: function() {
 						let payment_method = d.get_value('payment_method');
 
-						// Reference is only mandatory for Bank Transfer / Cheque — Mpesa (Paybill)
-						// and everything else can save without one.
+						// Reference is mandatory for Bank Transfer / Cheque. For Paybill it becomes the
+						// optional M-Pesa Code — when entered it must be a code Safaricom has confirmed
+						// (mpesa_link.py enforces that server-side).
 						d.set_df_property('reference', 'reqd', is_reference_required_method(payment_method) ? 1 : 0);
+						d.set_df_property('reference', 'label', __('Reference'));
 
 						// The account follows the method — derive it from Mode of Payment Account.
 						// It's where the money lands for a receipt and where it's drawn from for a
@@ -731,6 +733,9 @@
 							callback: function(r) {
 								let info = (r && r.message) || {};
 								d.set_value('deposit_to', info.default_account || '');
+								if ((info.mode_of_payment_type || '').toLowerCase() === 'phone') {
+									d.set_df_property('reference', 'label', __('M-Pesa Code'));
+								}
 							}
 						});
 					}

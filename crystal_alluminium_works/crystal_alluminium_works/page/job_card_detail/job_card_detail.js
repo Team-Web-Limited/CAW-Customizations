@@ -142,6 +142,8 @@ function refresh_job_card_payment_capture_fields(dialog) {
 	let reference_visible = has_new_payment && (mop_is_bank_type || mop_is_phone_type);
 	dialog.set_df_property('reference', 'label', mop_is_phone_type ? 'M-Pesa Code' : 'Reference');
 	dialog.set_df_property('reference', 'hidden', reference_visible ? 0 : 1);
+	// Bank types need their reference; the Paybill M-Pesa code is optional but, when entered, must be
+	// one Safaricom has confirmed (see validate_job_card_mpesa_code / mpesa_link.py).
 	dialog.set_df_property('reference', 'reqd', (reference_visible && mop_is_bank_type) ? 1 : 0);
 }
 
@@ -277,7 +279,7 @@ function validate_job_card_payment_capture(dialog) {
 
 async function validate_job_card_mpesa_code(dialog) {
 	// The Job Card is saved before the payment is recorded, so an M-Pesa code the server
-	// would reject (already used on another payment, or more than M-Pesa received) must be
+	// would reject (never sent by Safaricom, already used, or more than M-Pesa received) must be
 	// caught here — otherwise the save would go through with no payment behind it. Same rule
 	// Payments.validate enforces; see mpesa_link.py.
 	let amount = flt(dialog.get_value('payment_amount') || 0);
