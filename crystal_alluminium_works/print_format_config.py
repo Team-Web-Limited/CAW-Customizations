@@ -237,9 +237,16 @@ def build_payment_details_html(print_format, values=None):
         paybill_account_no
         and str(paybill_account_no).strip().upper() in PAYBILL_ACCOUNT_NO_DOC_NAME_PLACEHOLDERS
     ):
-        # Emit raw Jinja so the built print format substitutes the actual
-        # document's name (e.g. SAL-QTN-2026-00021) at render/download time.
-        paybill_account_no_html = "{{ doc.name }}"
+        # Emit raw Jinja so the built print format substitutes the actual document at
+        # render/download time. A Quotation prints just its number (SAL-QTN-2026-60057 and
+        # its amendments -> 60057): that is what customers type as the Paybill account and
+        # what mpesa_link._quotation_for_account resolves. Other documents keep their full
+        # name so an invoice number can never be mistaken for a quotation number.
+        paybill_account_no_html = (
+            "{% if doc.doctype == 'Quotation' %}{% set account_parts = doc.name.split('-') %}"
+            "{{ (account_parts[3] if account_parts|length > 3 else account_parts[-1])|int }}"
+            "{% else %}{{ doc.name }}{% endif %}"
+        )
     else:
         paybill_account_no_html = _escape(paybill_account_no)
 

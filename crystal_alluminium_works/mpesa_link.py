@@ -196,13 +196,14 @@ def apply_mpesa_register_permissions():
 	frappe.clear_cache(doctype=C2B_DOCTYPE)
 
 
-_QTN_ACCOUNT = re.compile(r"^QTN0*(\d+)$")
+_QTN_ACCOUNT = re.compile(r"^(?:QTN)?0*(\d+)$")
 
 
 def _quotation_for_account(bill_ref, cache):
-	"""The quotation a Paybill account number points at. Customers type QTN<number>
-	(QTN127, qtn-127, QTN 0127 ...); a full quotation name is accepted too. The series resets
-	each year, so the most recent quotation with that number wins."""
+	"""The quotation a Paybill account number points at. The quotation print format gives the
+	bare number (60057) as the account; QTN<number> (QTN127, qtn-127, QTN 0127 ...) and a full
+	quotation name are accepted too. The series resets each year, so the most recent quotation
+	with that number wins."""
 	cleaned = re.sub(r"[^A-Za-z0-9-]", "", bill_ref or "").upper()
 	if not cleaned:
 		return None

@@ -87,7 +87,7 @@ function render_mpesa_transactions_page(page) {
 				<div class="mpx-filter-grid">
 					<div class="mpx-filter-field mpx-filter-search">
 						<label>Search</label>
-						<input type="search" class="form-control" data-filter="search" placeholder="M-Pesa code, account number (QTN…) or payer name">
+						<input type="search" class="form-control" data-filter="search" placeholder="M-Pesa code, account number or payer name">
 					</div>
 					<div class="mpx-filter-field">
 						<label>Status</label>
