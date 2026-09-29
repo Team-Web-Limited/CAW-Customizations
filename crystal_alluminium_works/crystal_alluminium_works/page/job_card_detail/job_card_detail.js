@@ -442,10 +442,25 @@ function jc_ledger_from_saved_data(items, saved_data) {
 	let item_by_row = {};
 	items.forEach(item => { item_by_row[item.name] = item; });
 
+	// jc_allocate_ledger_to_rows gives a code's real sheets to its first row and a lone
+	// Cutoffs placeholder to every other row of that code. Those placeholders are not
+	// something the user entered — reading them back used to surface a phantom
+	// "Cutoffs → <code>" row on reopen. Skip them whenever the code has real sheets saved.
+	let is_placeholder = sheets => (sheets || []).length === 1 &&
+		(!!sheets[0].is_cutoff || jc_is_cutoff_item(sheets[0].item_consumed));
+	let codes_with_real_sheets = new Set();
+	Object.keys(saved_data || {}).forEach(row_name => {
+		let item = item_by_row[row_name];
+		if (item && !is_placeholder(saved_data[row_name]) && (saved_data[row_name] || []).length) {
+			codes_with_real_sheets.add(item.item_code);
+		}
+	});
+
 	let by_key = {};
 	Object.keys(saved_data || {}).forEach(row_name => {
 		let item = item_by_row[row_name];
 		if (!item) return;
+		if (codes_with_real_sheets.has(item.item_code) && is_placeholder(saved_data[row_name])) return;
 		(saved_data[row_name] || []).forEach(sheet => {
 			let is_cutoff = !!sheet.is_cutoff || jc_is_cutoff_item(sheet.item_consumed);
 			let entry = {
@@ -478,8 +493,13 @@ function open_jc_operations_modal(page, job_card, quotation) {
 		frappe.db.get_doc('Quotation', job_card.quotation),
 		frappe.db.get_value('CAW Job Card', job_card.name, 'custom_sheet_consumption_json'),
 		new Promise(resolve => frappe.call({ method: 'crystal_alluminium_works.api.get_glass_sheet_configs', callback: r => resolve(r.message || []) })),
-		new Promise(resolve => frappe.call({ method: 'crystal_alluminium_works.api.get_all_glass_items', callback: r => resolve(r.message || []) }))
-	]).then(([full_quotation, saved_json_r, configs, glass_items]) => {
+		new Promise(resolve => frappe.call({ method: 'crystal_alluminium_works.api.get_all_glass_items', callback: r => resolve(r.message || []) })),
+		new Promise(resolve => frappe.call({
+			method: 'crystal_alluminium_works.api.get_jc_operations_locked_items',
+			args: { job_card_name: job_card.name },
+			callback: r => resolve(r.message || [])
+		}))
+	]).then(([full_quotation, saved_json_r, configs, glass_items, locked_item_codes]) => {
 		let items = (full_quotation.items || []).filter(item =>
 			item.custom_product_category === 'Glass' &&
 			(item.custom_glass_sale_mode === 'Resized' || item.custom_glass_type === 'Laminated')
@@ -517,6 +537,11 @@ function open_jc_operations_modal(page, job_card, quotation) {
 		});
 
 		let ledger = jc_ledger_from_saved_data(items, saved_data);
+		// Codes whose stock entry is already posted — their Glass Consumed entries can't be
+		// edited or removed any more (see api.py get_jc_operations_locked_items).
+		let locked_codes = new Set(locked_item_codes || []);
+		// Index into `ledger` of the row currently open for inline editing, if any.
+		let editing_idx = null;
 
 		let d = new frappe.ui.Dialog({
 			title: 'JC Operations (Glass Consumed)',
@@ -524,6 +549,10 @@ function open_jc_operations_modal(page, job_card, quotation) {
 			fields: [{ fieldname: 'html', fieldtype: 'HTML' }],
 			primary_action_label: 'Save',
 			primary_action: function() {
+				if (editing_idx !== null) {
+					frappe.msgprint('Finish editing the Glass Consumed row first — press ✓ to apply the change or ✕ to discard it.');
+					return;
+				}
 				let { consumption, missing, zero_area_rows } = jc_allocate_ledger_to_rows(items, ledger);
 				if (missing.length > 0 || zero_area_rows.length > 0) {
 					let lines = missing.map(m =>
@@ -649,21 +678,124 @@ function open_jc_operations_modal(page, job_card, quotation) {
 		let produce_name_by_code = {};
 		produce_options.forEach(o => { produce_name_by_code[o.code] = o.name; });
 
+		let render_ledger_view_row = function(entry, idx) {
+			let actions = locked_codes.has(entry.produces)
+				? `<span class="text-muted" title="Stock for ${jc_escape(entry.produces)} was already deducted when this Job Card was saved — cancel that Stock Entry before changing this row."><i class="fa fa-lock"></i></span>`
+				: `<button class="btn btn-default btn-xs jc-ledger-edit-btn" data-idx="${idx}" title="Edit"><i class="fa fa-pencil"></i></button>
+				   <button class="btn btn-default btn-xs jc-ledger-remove-btn" data-idx="${idx}" title="Remove"><i class="fa fa-trash text-danger"></i></button>`;
+			return `
+				<tr>
+					<td>${jc_escape(entry.item_consumed)}</td>
+					<td>${jc_escape(entry.size)}</td>
+					<td style="text-align:right;">${entry.is_cutoff ? 'N/A' : jc_number(entry.pcs, 0)}</td>
+					<td>${jc_escape(entry.produces)} — ${jc_escape(produce_name_by_code[entry.produces] || '')}</td>
+					<td style="white-space:nowrap;">${actions}</td>
+				</tr>
+			`;
+		};
+
+		let render_ledger_edit_row = function(entry, idx) {
+			let produces_options = produce_options
+				.map(o => `<option value="${jc_escape(o.code)}" ${o.code === entry.produces ? 'selected' : ''}>${jc_escape(o.code)} — ${jc_escape(o.name)}</option>`)
+				.join('');
+			return `
+				<tr class="jc-ledger-edit-row" data-idx="${idx}">
+					<td><input type="text" class="form-control input-sm jc-edit-consumed" list="all-glass-items" value="${jc_escape(entry.item_consumed)}"></td>
+					<td>
+						<select class="form-control input-sm jc-edit-size">
+							<option value=""></option>
+							${jc_sheet_size_options_html(configs, entry.is_cutoff ? '' : entry.size)}
+						</select>
+					</td>
+					<td><input type="number" class="form-control input-sm jc-edit-pcs" min="1" step="1" style="text-align:right;" value="${entry.is_cutoff ? '' : jc_escape(entry.pcs)}"></td>
+					<td>
+						<select class="form-control input-sm jc-edit-produces">
+							<option value="">Select item...</option>
+							${produces_options}
+						</select>
+					</td>
+					<td style="white-space:nowrap;">
+						<button class="btn btn-primary btn-xs jc-ledger-apply-btn" title="Apply (Enter)"><i class="fa fa-check"></i></button>
+						<button class="btn btn-default btn-xs jc-ledger-cancel-btn" title="Cancel (Esc)"><i class="fa fa-times"></i></button>
+					</td>
+				</tr>
+			`;
+		};
+
 		let render_ledger_rows = function() {
 			let $rows = d.$wrapper.find('.jc-ledger-rows');
 			if (ledger.length === 0) {
 				$rows.html('<tr><td colspan="5" class="text-muted text-center">No Glass Consumed entries yet.</td></tr>');
 				return;
 			}
-			$rows.html(ledger.map((entry, idx) => `
-				<tr>
-					<td>${jc_escape(entry.item_consumed)}</td>
-					<td>${jc_escape(entry.size)}</td>
-					<td style="text-align:right;">${entry.is_cutoff ? 'N/A' : jc_number(entry.pcs, 0)}</td>
-					<td>${jc_escape(entry.produces)} — ${jc_escape(produce_name_by_code[entry.produces] || '')}</td>
-					<td><button class="btn btn-default btn-xs jc-ledger-remove-btn" data-idx="${idx}" title="Remove"><i class="fa fa-trash text-danger"></i></button></td>
-				</tr>
-			`).join(''));
+			$rows.html(ledger.map((entry, idx) =>
+				idx === editing_idx ? render_ledger_edit_row(entry, idx) : render_ledger_view_row(entry, idx)
+			).join(''));
+			if (editing_idx !== null) {
+				sync_edit_row_fields();
+				d.$wrapper.find('.jc-edit-consumed').trigger('focus');
+			}
+		};
+
+		// Same Cutoffs / auto-matched-code rules the Add form applies (update_produces_visibility).
+		let sync_edit_row_fields = function() {
+			let $row = d.$wrapper.find('.jc-ledger-edit-row');
+			let consumed = ($row.find('.jc-edit-consumed').val() || '').trim();
+			let is_cutoff = jc_is_cutoff_item(consumed);
+			let $size = $row.find('.jc-edit-size');
+			let $pcs = $row.find('.jc-edit-pcs');
+			let $produces = $row.find('.jc-edit-produces');
+			if (is_cutoff) {
+				$size.val('').prop('disabled', true);
+				$pcs.val('').prop('disabled', true).attr('placeholder', 'N/A');
+			} else {
+				$size.prop('disabled', false);
+				$pcs.prop('disabled', false).attr('placeholder', '');
+			}
+			if (!is_cutoff && cut_size_codes.has(consumed)) {
+				$produces.val(consumed).prop('disabled', true);
+			} else {
+				$produces.prop('disabled', false);
+			}
+		};
+
+		let apply_ledger_edit = function() {
+			let $row = d.$wrapper.find('.jc-ledger-edit-row');
+			let consumed = ($row.find('.jc-edit-consumed').val() || '').trim();
+			let is_cutoff = jc_is_cutoff_item(consumed);
+			let size = is_cutoff ? JC_CUTOFF_SIZE_VALUE : $row.find('.jc-edit-size').val();
+			let pcs = is_cutoff ? 0 : parseInt($row.find('.jc-edit-pcs').val(), 10);
+			let auto_produces = !is_cutoff && cut_size_codes.has(consumed) ? consumed : null;
+			let produces = auto_produces || $row.find('.jc-edit-produces').val();
+
+			if (!consumed || !size || (!is_cutoff && (!pcs || pcs <= 0))) {
+				frappe.msgprint('Enter Consumed, Size, and a whole Pcs > 0 (or set Consumed to Cutoffs).');
+				return;
+			}
+			if (!produces) {
+				frappe.msgprint('Select which item this Glass Consumed entry produces.');
+				return;
+			}
+			if (locked_codes.has(produces)) {
+				frappe.msgprint(`Stock for ${jc_escape(produces)} was already deducted when this Job Card was saved, so no more Glass Consumed can be logged against it.`);
+				return;
+			}
+
+			let updated = { item_consumed: is_cutoff ? JC_CUTOFF_ITEM_CONSUMED : consumed, size, pcs: is_cutoff ? 0 : pcs, is_cutoff, produces };
+			let key = jc_ledger_entry_key(updated);
+			let other_idx = ledger.findIndex((e, i) => i !== editing_idx && jc_ledger_entry_key(e) === key);
+			if (other_idx !== -1) {
+				// The edit now matches another row exactly — fold into it, the same way Add
+				// merges a duplicate, rather than leaving two rows for the same sheet.
+				if (!is_cutoff) {
+					ledger[other_idx].pcs += pcs;
+				}
+				ledger.splice(editing_idx, 1);
+			} else {
+				ledger[editing_idx] = updated;
+			}
+			editing_idx = null;
+			refresh();
 		};
 
 		let refresh = function() {
@@ -774,6 +906,10 @@ function open_jc_operations_modal(page, job_card, quotation) {
 				frappe.msgprint('Select which item this Glass Consumed entry produces.');
 				return;
 			}
+			if (locked_codes.has(produces)) {
+				frappe.msgprint(`Stock for ${jc_escape(produces)} was already deducted when this Job Card was saved, so no more Glass Consumed can be logged against it.`);
+				return;
+			}
 
 			let entry = { item_consumed: is_cutoff ? JC_CUTOFF_ITEM_CONSUMED : consumed, size, pcs: is_cutoff ? 0 : pcs, is_cutoff, produces };
 			let key = jc_ledger_entry_key(entry);
@@ -794,8 +930,41 @@ function open_jc_operations_modal(page, job_card, quotation) {
 		});
 
 		d.$wrapper.on('click', '.jc-ledger-remove-btn', function() {
-			ledger.splice(parseInt($(this).attr('data-idx'), 10), 1);
+			let idx = parseInt($(this).attr('data-idx'), 10);
+			ledger.splice(idx, 1);
+			// Removing a row above the one being edited shifts its index down by one.
+			if (editing_idx !== null && idx < editing_idx) {
+				editing_idx -= 1;
+			}
 			refresh();
+		});
+
+		d.$wrapper.on('click', '.jc-ledger-edit-btn', function() {
+			// Opening another row discards any unapplied change on the current one.
+			editing_idx = parseInt($(this).attr('data-idx'), 10);
+			refresh();
+		});
+
+		d.$wrapper.on('click', '.jc-ledger-apply-btn', apply_ledger_edit);
+
+		d.$wrapper.on('click', '.jc-ledger-cancel-btn', function() {
+			editing_idx = null;
+			refresh();
+		});
+
+		d.$wrapper.on('change awesomplete-selectcomplete input', '.jc-edit-consumed', sync_edit_row_fields);
+
+		d.$wrapper.on('keydown', '.jc-ledger-edit-row input, .jc-ledger-edit-row select', function(e) {
+			if (e.key === 'Enter') {
+				e.preventDefault();
+				apply_ledger_edit();
+			} else if (e.key === 'Escape') {
+				// Esc would otherwise close the whole dialog and lose every unsaved row.
+				e.preventDefault();
+				e.stopPropagation();
+				editing_idx = null;
+				refresh();
+			}
 		});
 
 		d.show();
@@ -2402,16 +2571,20 @@ function render_job_card_glass_deduction_row(row) {
 		saved_on_str += ' ' + row.saved_on.split(' ')[1].substring(0, 8);
 	}
 
-	let sheets_display = '-';
-	let sheets_title = '';
-	if (row.sheets_consumed && row.sheets_consumed !== '-') {
-		sheets_title = row.sheets_consumed;
-		let parts = row.sheets_consumed.split(', ');
-		if (parts.length > 1) {
-			sheets_display = parts[0] + '...';
-		} else {
-			sheets_display = row.sheets_consumed;
-		}
+	// Every sheet size on its own line — a job card consuming two sizes used to show only
+	// the first one followed by "...".
+	let sheets_html = row.is_cutoff ? '' : (row.sheets_consumed && row.sheets_consumed !== '-'
+		? row.sheets_consumed.split(', ').map(jc_escape).join('<br>')
+		: '-');
+
+	// Cutoffs placeholders for the item's other Quotation rows are folded server-side into
+	// one count (see _collapse_cutoff_deductions in api.py) instead of a row each.
+	let cutoff_rows = cint(row.cutoff_rows || 0);
+	if (cutoff_rows) {
+		let note = row.is_cutoff
+			? `Cutoffs — ${cutoff_rows} row${cutoff_rows === 1 ? '' : 's'}, no stock deducted`
+			: `+ Cutoffs on ${cutoff_rows} other row${cutoff_rows === 1 ? '' : 's'} (covered by this deduction)`;
+		sheets_html += `${sheets_html ? '<br>' : ''}<span class="text-muted small">${jc_escape(note)}</span>`;
 	}
 
 	return `
@@ -2421,7 +2594,7 @@ function render_job_card_glass_deduction_row(row) {
 			<td>${jc_escape(row.quotation_item_name || row.quotation_item_code || '-')}</td>
 			<td style="text-align:right;">${jc_number(row.qty, 4)}</td>
 			<td>${jc_escape(row.item_code || '')}</td>
-			<td title="${jc_escape(sheets_title)}">${jc_escape(sheets_display)}</td>
+			<td>${sheets_html}</td>
 			<td>${jc_stock_deduction_status_label(row)}</td>
 		</tr>
 	`;

@@ -743,6 +743,38 @@ def _is_cutoff_sheet(sheet):
     return bool((sheet or {}).get("is_cutoff"))
 
 
+def _collapse_cutoff_deductions(rows):
+    """Fold JC Operations' Cutoffs placeholders into one count per item for Stock Deducted.
+
+    When one code is split over several Quotation rows, JC Operations hands the real sheets to
+    the first row and marks every other row covered with a "Cutoffs" placeholder so stock is
+    deducted once (jc_allocate_ledger_to_rows in job_card_detail.js). Listed row by row, a
+    81-row order showed one real deduction followed by 80 identical "Cutoffs / Saved" rows.
+    Now the count rides on the item's real row (cutoff_rows); an item logged purely as
+    Cutoffs collapses to a single row carrying the count instead."""
+    cutoff_counts = {}
+    has_real = set()
+    for row in rows:
+        code = row.get("quotation_item_code")
+        if row.get("is_cutoff"):
+            cutoff_counts[code] = cutoff_counts.get(code, 0) + 1
+        else:
+            has_real.add(code)
+
+    collapsed, noted = [], set()
+    for row in rows:
+        code = row.get("quotation_item_code")
+        if code not in cutoff_counts or code in noted:
+            if not row.get("is_cutoff"):
+                collapsed.append(row)
+            continue
+        if row.get("is_cutoff") and code in has_real:
+            continue  # its count is carried by the real row
+        collapsed.append(dict(row, cutoff_rows=cutoff_counts[code]))
+        noted.add(code)
+    return collapsed
+
+
 def _format_consumed_sheet(sheet):
     """Human-readable label for one JC Operations sheet entry, used in the
     Stock Deduction preview/history tables."""
@@ -2284,9 +2316,11 @@ def get_job_card_detail(name):
                         "sheets_consumed": sheets_str,
                         "status": "Deducted" if repack_entry_name else "Saved",
                         "category": "Glass",
+                        "is_cutoff": all(_is_cutoff_sheet(s) for s in itm_sheets),
                     })
         except Exception:
             pass
+        stock_deductions = _collapse_cutoff_deductions(stock_deductions)
 
     # 2. Fetch "Deducted" items from Stock Entries, across every product category
     # Build a lookup: deducted item_code → quotation item_code/name/category via CAW Job Card Release
@@ -8253,6 +8287,32 @@ def get_standard_stock_ledger(item_code, warehouse=None, from_date=None, to_date
     _attach_sales_invoices_to_entries(entries)
 
     return entries
+
+
+@frappe.whitelist()
+def get_jc_operations_locked_items(job_card_name):
+    """Item codes on this Job Card whose JC Operations stock entry is already posted — the
+    Repack (Laminated) or Deduction (Resized) that save_jc_operations_consumption creates.
+
+    That save posts each row's stock entry once and skips the row on every later save, so a
+    Glass Consumed entry changed or removed afterwards would no longer match the stock actually
+    deducted. The JC Operations modal locks those entries instead of letting them drift."""
+    job_card = frappe.get_doc("CAW Job Card", job_card_name)
+    job_card.check_permission("read")
+    if not job_card.quotation:
+        return []
+
+    locked = set()
+    for row in frappe.get_all(
+        "Quotation Item", filters={"parent": job_card.quotation}, fields=["name", "item_code"]
+    ):
+        # Matches both "Repacked for CAW Job Card: …" and "Deducted for CAW Job Card: …".
+        if frappe.db.exists(
+            "Stock Entry",
+            {"remarks": ["like", f"%for CAW Job Card: {job_card.name} Row: {row.name}%"], "docstatus": 1},
+        ):
+            locked.add(row.item_code)
+    return sorted(locked)
 
 
 @frappe.whitelist()
