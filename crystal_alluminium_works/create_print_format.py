@@ -93,12 +93,17 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
         {{% else %}}
         <div style="color: #7f8c8d; font-size: 12px; text-transform: uppercase; margin-top: 10px;">{ref_label}:</div>
         <div style="font-size: 14px;">{{{{ doc.name }}}}</div>
+        {{% if doc.get('is_return') and doc.get('return_against') %}}
+        <!-- A credit note names the invoice it reverses. -->
+        <div style="color: #7f8c8d; font-size: 12px; text-transform: uppercase; margin-top: 8px;">Against Invoice:</div>
+        <div style="font-size: 14px;">{{{{ doc.return_against }}}}</div>
+        {{% endif %}}
         {{% endif %}}
     </div>
 </div>
 {{% if doc.doctype in ('Sales Invoice', 'Quotation') %}}
 <div class="text-center" style="margin-bottom: 20px; font-size: 26px; font-weight: bold; color: #2c3e50; text-transform: uppercase; letter-spacing: 1px;">
-    {{{{ 'Invoice' if doc.doctype == 'Sales Invoice' else 'Quotation' }}}}
+    {{{{ ('Credit Note' if doc.get('is_return') else 'Invoice') if doc.doctype == 'Sales Invoice' else 'Quotation' }}}}
 </div>
 {{% else %}}
 <div style="margin-bottom: 20px;"></div>
@@ -987,6 +992,11 @@ def setup_formats():
     create_crystal_print_format(
         doctype="Sales Invoice",
         print_format_name="Crystal Sales Invoice",
+    )
+
+    create_crystal_print_format(
+        doctype="Sales Invoice",
+        print_format_name="Crystal Credit Note",
     )
 
     create_crystal_print_format(

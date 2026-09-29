@@ -517,11 +517,13 @@ def download_crystal_quotation_pdf(name):
 
 @frappe.whitelist()
 def download_crystal_sales_invoice_pdf(name):
+    # A return (is_return) is a credit note — it gets its own format instead of reading as an invoice.
+    is_return = frappe.db.get_value("Sales Invoice", name, "is_return")
     _download_crystal_pdf(
         "Sales Invoice",
         name,
-        "Crystal Sales Invoice",
-        "Invoice Number",
+        "Crystal Credit Note" if is_return else "Crystal Sales Invoice",
+        "Credit Note Number" if is_return else "Invoice Number",
         "",
     )
 

@@ -111,6 +111,25 @@ PRINT_FORMAT_CONFIGS = {
             "paybill_account_no": "QUOTE NO",
         },
     },
+    # Sales Invoice returns (is_return). Same layout as Crystal Sales Invoice, titled CREDIT NOTE
+    # with the invoice it reverses, and no payment block — nobody pays a credit note.
+    "Crystal Credit Note": {
+        "doctype": "Sales Invoice",
+        "ref_label": "Credit Note Number",
+        "sections": [
+            {
+                "title": "Notes",
+                "fields": [
+                    {"fieldname": "credit_note_purpose", "label": "Purpose", "fieldtype": "Data"},
+                    {"fieldname": "credit_note_settlement", "label": "Settlement", "fieldtype": "Data"},
+                ],
+            },
+        ],
+        "defaults": {
+            "credit_note_purpose": "This credit note reverses the amounts shown against the original invoice.",
+            "credit_note_settlement": "The credit will be applied to your account or refunded as agreed.",
+        },
+    },
     "Crystal Job Card": {
         "doctype": "CAW Job Card",
         "ref_label": "Job Card No",
@@ -204,6 +223,11 @@ def build_terms_html(print_format, values=None):
             _escape(values.get("invoice_payment_terms")),
             _escape(values.get("ownership_note")),
             f"Any discrepancies must be reported within {discrepancy_days} days of delivery.",
+        ]
+    elif print_format == "Crystal Credit Note":
+        terms = [
+            _escape(values.get("credit_note_purpose")),
+            _escape(values.get("credit_note_settlement")),
         ]
     else:
         terms = []

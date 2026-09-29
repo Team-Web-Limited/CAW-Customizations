@@ -25,6 +25,7 @@ fixtures = [
 				[
 					"Crystal Quotation",
 					"Crystal Sales Invoice",
+					"Crystal Credit Note",
 					"Crystal Sales Order",
 					"Crystal Job Card",
 					"Crystal Statement of Accounts",
