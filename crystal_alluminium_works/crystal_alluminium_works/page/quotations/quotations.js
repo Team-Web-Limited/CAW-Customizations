@@ -34,7 +34,6 @@ function bind_quotations_events(page) {
 
 	$body.on('click', '.quo-list-clear', function() {
 		$body.find('[data-filter="search"]').val('');
-		$body.find('[data-filter="customer"]').val('');
 		$body.find('[data-filter="status"]').val('All');
 		$body.find('[data-filter="from_date"]').val('');
 		$body.find('[data-filter="to_date"]').val('');
@@ -77,7 +76,6 @@ function load_quotations(page, page_number) {
 
 	let filters = {
 		search: $body.find('[data-filter="search"]').val() || '',
-		customer: $body.find('[data-filter="customer"]').val() || '',
 		status: $body.find('[data-filter="status"]').val() || 'All',
 		from_date: $body.find('[data-filter="from_date"]').val() || '',
 		to_date: $body.find('[data-filter="to_date"]').val() || '',
@@ -185,7 +183,7 @@ function get_quotations_html() {
 	return `
 	<style>
 		.quo-list-page {
-			max-width: 1100px;
+			max-width: 1400px;
 			margin: 0 auto;
 			padding: 20px 16px;
 			font-family: var(--font-stack);
@@ -284,10 +282,6 @@ function get_quotations_html() {
 				<div>
 					<label class="control-label">Search</label>
 					<input type="text" class="form-control" data-filter="search" placeholder="Quotation, customer, order type">
-				</div>
-				<div>
-					<label class="control-label">Customer</label>
-					<input type="text" class="form-control" data-filter="customer" placeholder="Exact party ID">
 				</div>
 				<div>
 					<label class="control-label">Status</label>
