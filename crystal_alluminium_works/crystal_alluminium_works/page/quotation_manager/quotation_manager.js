@@ -1701,7 +1701,6 @@ async function open_job_card_modal(page, doc) {
 				label: 'Deposit To',
 				options: 'Account',
 				read_only: 1,
-				description: 'Auto-derived from the selected payment method.'
 			},
 			{ fieldtype: 'Column Break' },
 			{ fieldtype: 'Data', fieldname: 'reference', label: 'Reference', hidden: 1 }

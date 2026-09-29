@@ -133,24 +133,16 @@ function refresh_job_card_payment_capture_fields(dialog) {
 	// deposit_to is auto-derived (read-only) and only relevant when a deposit is captured.
 	dialog.set_df_property('deposit_to', 'hidden', has_new_payment ? 0 : 1);
 
-	// The visible Reference field is for bank transactions only (cheque/transfer number),
-	// entered manually. M-Pesa/Paybill gets its own simulated transaction code generated
-	// separately at save time (see generate_simulated_mpesa_reference) — the two are not
-	// the same field and are not interchangeable.
-	let mop_is_bank_type = (dialog._mode_of_payment_type || '').toLowerCase() === 'bank';
-	let reference_visible = has_new_payment && mop_is_bank_type;
+	// The Reference field is entered manually: cheque/transfer number for bank-type modes of
+	// payment (required), the M-Pesa transaction code for phone-type (Paybill) — same as the
+	// Create Job Card modal in quotation_manager.js.
+	let mop_type = (dialog._mode_of_payment_type || '').toLowerCase();
+	let mop_is_bank_type = mop_type === 'bank';
+	let mop_is_phone_type = mop_type === 'phone';
+	let reference_visible = has_new_payment && (mop_is_bank_type || mop_is_phone_type);
+	dialog.set_df_property('reference', 'label', mop_is_phone_type ? 'M-Pesa Code' : 'Reference');
 	dialog.set_df_property('reference', 'hidden', reference_visible ? 0 : 1);
-	dialog.set_df_property('reference', 'reqd', reference_visible ? 1 : 0);
-}
-
-function generate_simulated_mpesa_reference() {
-	// TODO: replace with the real M-Pesa transaction code once automated Paybill integration lands.
-	const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-	let code = '';
-	for (let i = 0; i < 10; i++) {
-		code += chars.charAt(Math.floor(Math.random() * chars.length));
-	}
-	return code;
+	dialog.set_df_property('reference', 'reqd', (reference_visible && mop_is_bank_type) ? 1 : 0);
 }
 
 async function refresh_job_card_deposit_to_options(dialog) {
@@ -281,6 +273,31 @@ function validate_job_card_payment_capture(dialog) {
 	}
 
 	return true;
+}
+
+async function validate_job_card_mpesa_code(dialog) {
+	// The Job Card is saved before the payment is recorded, so an M-Pesa code the server
+	// would reject (already used on another payment, or more than M-Pesa received) must be
+	// caught here — otherwise the save would go through with no payment behind it. Same rule
+	// Payments.validate enforces; see mpesa_link.py.
+	let amount = flt(dialog.get_value('payment_amount') || 0);
+	let reference = (dialog.get_value('reference') || '').trim();
+	let mop_is_phone_type = (dialog._mode_of_payment_type || '').toLowerCase() === 'phone';
+	if (amount <= 0 || !reference || !mop_is_phone_type) {
+		return true;
+	}
+
+	try {
+		await frappe.xcall('crystal_alluminium_works.mpesa_link.check_mpesa_reference', {
+			reference: reference,
+			amount: amount,
+			payment_method: dialog.get_value('payment_option')
+		});
+		return true;
+	} catch (e) {
+		// The server's own error dialog has already explained why.
+		return false;
+	}
 }
 
 async function apply_job_card_customer_defaults(dialog) {
@@ -862,18 +879,21 @@ async function open_edit_job_card_modal(page, job_card, quotation) {
 				label: 'Deposit To',
 				options: 'Account',
 				read_only: 1,
-				description: 'Auto-derived from the selected payment method.'
 			},
 			{ fieldtype: 'Column Break' },
 			{ fieldtype: 'Data', fieldname: 'reference', label: 'Reference', hidden: 1 }
 		],
 		primary_action_label: 'Save',
-		primary_action: function(values) {
+		primary_action: async function(values) {
 			if (!validate_job_card_payment_amount(d)) {
 				return;
 			}
 
 			if (!validate_job_card_payment_capture(d)) {
+				return;
+			}
+
+			if (!(await validate_job_card_mpesa_code(d))) {
 				return;
 			}
 
@@ -903,11 +923,6 @@ async function open_edit_job_card_modal(page, job_card, quotation) {
 					let job_card_name = r.message;
 
 					if (new_payment_amount > 0) {
-						let is_phone_payment_method = (d._mode_of_payment_type || '').toLowerCase() === 'phone';
-						let payment_reference = is_phone_payment_method
-							? generate_simulated_mpesa_reference()
-							: values.reference;
-
 						frappe.call({
 							method: 'crystal_alluminium_works.api.record_customer_payment',
 							args: {
@@ -917,7 +932,7 @@ async function open_edit_job_card_modal(page, job_card, quotation) {
 								date: frappe.datetime.get_today(),
 								payment_method: values.payment_option,
 								deposit_to: values.deposit_to,
-								reference: payment_reference
+								reference: values.reference
 							},
 							freeze: true,
 							freeze_message: 'Recording Payment...',
@@ -1118,7 +1133,6 @@ function open_job_card_refund_modal(page, job_card, refund_amount) {
 				label: 'Deposit To',
 				options: 'Account',
 				read_only: 1,
-				description: 'Auto-derived from the selected payment method.'
 			},
 			{ fieldtype: 'Section Break' },
 			{
