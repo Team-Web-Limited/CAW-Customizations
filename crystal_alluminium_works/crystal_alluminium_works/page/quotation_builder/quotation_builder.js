@@ -356,6 +356,13 @@ function bind_events(page) {
 		open_aluminium_batch_details_dialog(page, aluminium_items);
 	});
 
+	$(page.body).on('click.qbbuilder', '.qb-edit-simple-details-btn', function () {
+		let category = $(this).data('category');
+		let category_items = (window.qb_state.items || []).filter(function (it) { return it.category === category; });
+		if (!category_items.length) return;
+		open_simple_batch_details_dialog(page, category, category_items);
+	});
+
 	$(page.body).on('click.qbbuilder', '.qb-edit-glass-details-btn', function () {
 		// Sheet-mode glass goes through its own single-item editor (no batch
 		// grid of its own), so only resized pieces belong back in this dialog.
@@ -1976,6 +1983,11 @@ function render_items_table(page) {
 	});
 	$(page.body).find('.qb-edit-glass-details-btn').toggle(has_resized_glass_items);
 
+	QB_SIMPLE_BATCH_CATEGORIES.forEach(function (category) {
+		let has_items = (window.qb_state.items || []).some(function (it) { return it.category === category; });
+		$(page.body).find(`.qb-edit-simple-details-btn[data-category="${category}"]`).toggle(has_items);
+	});
+
 	if (window.qb_state.items.length === 0) {
 		$tbody.html('<tr><td colspan="10" style="padding:20px;text-align:center;color:var(--text-muted);">No items added yet. Use the buttons above to add products.</td></tr>');
 		return;
@@ -2371,10 +2383,10 @@ function open_item_editor(page, item, is_new = false) {
 						open_glass_batch_details_dialog(page, new_items);
 					} else if (item.category === 'Aluminium') {
 						open_aluminium_batch_details_dialog(page, new_items);
-					} else if (item.category === 'Fittings') {
-						open_fittings_batch_details_dialog(page, new_items);
+					} else if (QB_SIMPLE_BATCH_CATEGORIES.includes(item.category)) {
+						open_simple_batch_details_dialog(page, item.category, new_items);
 					} else {
-						// Ceiling/Rubber/Silicone have no batch-detail step of their own,
+						// Ceiling has no batch-detail step of its own,
 						// so unlike the categories above they'd otherwise land on the
 						// review table stuck at rate 0 / amount 0 until someone opens the
 						// row's ✏️ and re-triggers fetch_rate() by hand. Same Item Price →
@@ -3609,23 +3621,46 @@ function open_aluminium_batch_details_dialog(page, items) {
 	});
 }
 
-// Fittings has no per-piece formula of its own — Rate is always whatever the
-// chosen Selling Price's Item Price resolves to, so Save just fetches that
-// once per row and multiplies by Pcs.
-function open_fittings_batch_details_dialog(page, items) {
+// Categories whose rate is just the chosen Selling Price's Item Price (no
+// per-piece formula of their own) — they share one simple Fill Details grid.
+const QB_SIMPLE_BATCH_CATEGORIES = ['Fittings', 'Rubber', 'Silicone'];
+
+// Fittings/Rubber/Silicone have no per-piece formula — Rate is whatever the
+// chosen Selling Price's Item Price resolves to, so Save only fetches it for
+// rows that don't have one yet (keeping any rate already set via ✏️) and
+// multiplies by Qty. Same add/re-edit/duplicate/remove flow as Aluminium.
+function open_simple_batch_details_dialog(page, category, items) {
 	if (!items || !items.length) {
 		return;
 	}
 
-	let rows_html = items.map(function (it, index) {
+	// Ids already in qb_state.items (a re-edit via "Edit ... Details") — used on
+	// Save to drop rows the user removed from the grid.
+	let original_ids = items.filter(function (it) {
+		return window.qb_state.items.some(function (existing) { return existing.id === it.id; });
+	}).map(function (it) { return it.id; });
+
+	let qty_step = category === 'Fittings' ? '1' : 'any';
+
+	function build_row_html(it, row_number) {
 		return `
 			<tr data-id="${it.id}">
-				<td style="text-align:center;white-space:nowrap;">${index + 1}</td>
+				<td style="text-align:center;white-space:nowrap;" class="qb-batch-row-no">${row_number}</td>
 				<td style="white-space:nowrap;">${frappe.utils.escape_html(it.item_name || it.item_code)}</td>
-				<td><input type="number" min="1" step="1" class="form-control input-sm qb-batch-input" data-field="qty" value="1" style="width:60px;"></td>
-				<td><input type="text" class="form-control input-sm qb-batch-input" data-field="description" value="" style="width:200px;"></td>
+				<td><input type="number" min="0" step="${qty_step}" class="form-control input-sm qb-batch-input" data-field="qty" value="${flt(it.qty || 1) || 1}" style="width:80px;"></td>
+				<td style="white-space:nowrap;">${frappe.utils.escape_html(get_item_uom_label(it) || '-')}</td>
+				<td><input type="text" class="form-control input-sm qb-batch-input" data-field="description" value="${frappe.utils.escape_html(it.description || '')}" style="width:200px;"></td>
+				<td style="text-align:center;white-space:nowrap;">
+					<input type="number" min="1" step="1" value="1" class="form-control input-sm qb-duplicate-count" title="Number of copies — press Enter here to clone" style="width:46px;display:inline-block;vertical-align:middle;margin-right:2px;">
+					<button type="button" class="btn btn-xs btn-default qb-duplicate-row" title="Duplicate row — clones the count field's number of copies">⧉</button>
+					<button type="button" class="btn btn-xs btn-danger qb-remove-row" title="Remove row">✕</button>
+				</td>
 			</tr>
 		`;
+	}
+
+	let rows_html = items.map(function (it, index) {
+		return build_row_html(it, index + 1);
 	}).join('');
 
 	let table_html = `
@@ -3636,7 +3671,9 @@ function open_fittings_batch_details_dialog(page, items) {
 						<th style="text-align:center;white-space:nowrap;">No</th>
 						<th style="white-space:nowrap;">Item</th>
 						<th style="white-space:nowrap;">Qty</th>
+						<th style="white-space:nowrap;">UOM</th>
 						<th style="white-space:nowrap;">Description</th>
+						<th style="white-space:nowrap;"></th>
 					</tr>
 				</thead>
 				<tbody>${rows_html}</tbody>
@@ -3645,7 +3682,7 @@ function open_fittings_batch_details_dialog(page, items) {
 	`;
 
 	let d = new frappe.ui.Dialog({
-		title: 'Fittings Items — Fill Details',
+		title: `${category} Items — Fill Details`,
 		size: 'large',
 		fields: [
 			{ fieldtype: 'HTML', fieldname: 'batch_table', options: table_html }
@@ -3665,6 +3702,11 @@ function open_fittings_batch_details_dialog(page, items) {
 					description: val('description') || ''
 				});
 
+				if (flt(final_item.rate) > 0) {
+					final_item.amount = calculate_item_amount(final_item);
+					return Promise.resolve(final_item);
+				}
+
 				return fetch_item_selling_rate(final_item.item_code, final_item.price_list).then(function (rate) {
 					final_item.rate = rate;
 					final_item.amount = calculate_item_amount(final_item);
@@ -3675,7 +3717,19 @@ function open_fittings_batch_details_dialog(page, items) {
 			frappe.dom.freeze('Calculating...');
 			Promise.all(calls).then(function (finished_items) {
 				frappe.dom.unfreeze();
-				window.qb_state.items.push(...finished_items);
+				finished_items.forEach(function (final_item) {
+					let existing_index = window.qb_state.items.findIndex(function (it) { return it.id === final_item.id; });
+					if (existing_index === -1) {
+						window.qb_state.items.push(final_item);
+					} else {
+						window.qb_state.items[existing_index] = final_item;
+					}
+				});
+				let kept_ids = finished_items.map(function (it) { return it.id; });
+				let dropped_ids = original_ids.filter(function (id) { return kept_ids.indexOf(id) === -1; });
+				if (dropped_ids.length) {
+					window.qb_state.items = window.qb_state.items.filter(function (it) { return dropped_ids.indexOf(it.id) === -1; });
+				}
 				close_builder_dialog(d);
 				render_items_table(page);
 			});
@@ -3684,6 +3738,73 @@ function open_fittings_batch_details_dialog(page, items) {
 
 	d.show();
 	bind_batch_table_keynav(d);
+
+	let $wrapper = d.fields_dict.batch_table.$wrapper;
+
+	function renumber_rows() {
+		$wrapper.find('tbody tr').each(function (idx) {
+			$(this).find('.qb-batch-row-no').text(idx + 1);
+		});
+	}
+
+	// Clone the row (with whatever has been typed into it) `count` times right
+	// below itself, and push the clones into `items` so Save picks them up.
+	function duplicate_row($row, count) {
+		let source = items.find(function (it) { return it.id === $row.data('id'); });
+		if (!source) {
+			return null;
+		}
+
+		let $insert_after = $row;
+		let $first_clone_row = null;
+		for (let i = 0; i < count; i++) {
+			let clone = Object.assign({}, source, {
+				id: frappe.utils.get_random(8),
+				qty: flt($row.find('[data-field="qty"]').val() || 1) || 1,
+				description: $row.find('[data-field="description"]').val() || ''
+			});
+			items.push(clone);
+
+			$insert_after.after(build_row_html(clone, 0));
+			$insert_after = $wrapper.find(`tr[data-id="${clone.id}"]`);
+			if (!$first_clone_row) {
+				$first_clone_row = $insert_after;
+			}
+		}
+
+		renumber_rows();
+		return $first_clone_row;
+	}
+
+	function handle_duplicate_trigger($row, $count_input) {
+		let count = Math.max(1, cint($count_input.val()) || 1);
+		let $first_clone_row = duplicate_row($row, count);
+		if ($first_clone_row) {
+			$first_clone_row.find('[data-field="qty"]').trigger('focus');
+		}
+	}
+
+	$wrapper.on('click', '.qb-duplicate-row', function () {
+		let $row = $(this).closest('tr');
+		handle_duplicate_trigger($row, $row.find('.qb-duplicate-count'));
+	});
+
+	$wrapper.on('keydown', '.qb-duplicate-count', function (e) {
+		if (e.key !== 'Enter') {
+			return;
+		}
+		e.preventDefault();
+		e.stopPropagation();
+		handle_duplicate_trigger($(this).closest('tr'), $(this));
+	});
+
+	$wrapper.on('click', '.qb-remove-row', function () {
+		let $row = $(this).closest('tr');
+		let source_id = $row.data('id');
+		items = items.filter(function (it) { return it.id !== source_id; });
+		$row.remove();
+		renumber_rows();
+	});
 }
 
 function open_glass_import_dialog(page, dimension_uom = QB_DEFAULT_GLASS_DIMENSION_UOM) {
@@ -4127,9 +4248,12 @@ function get_builder_html() {
 					<button class="qb-add-btn" data-category="Aluminium">+ Aluminium</button>
 					<button class="qb-nav-btn primary qb-edit-aluminium-details-btn" style="display:none;" title="Reopen the Fill Details grid for the Aluminium items already added">✎ Edit Aluminium Details</button>
 					<button class="qb-add-btn" data-category="Fittings">+ Fittings</button>
+					<button class="qb-nav-btn primary qb-edit-simple-details-btn" data-category="Fittings" style="display:none;" title="Reopen the Fill Details grid for the Fittings items already added">✎ Edit Fittings Details</button>
 					<button class="qb-add-btn" data-category="Ceiling">+ Ceiling</button>
 					<button class="qb-add-btn" data-category="Rubber">+ Rubber</button>
+					<button class="qb-nav-btn primary qb-edit-simple-details-btn" data-category="Rubber" style="display:none;" title="Reopen the Fill Details grid for the Rubber items already added">✎ Edit Rubber Details</button>
 					<button class="qb-add-btn" data-category="Silicone">+ Silicone</button>
+					<button class="qb-nav-btn primary qb-edit-simple-details-btn" data-category="Silicone" style="display:none;" title="Reopen the Fill Details grid for the Silicone items already added">✎ Edit Silicone Details</button>
 				</div>
 
 				<table class="qb-items-table">
