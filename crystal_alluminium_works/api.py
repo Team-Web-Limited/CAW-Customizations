@@ -775,6 +775,18 @@ def _collapse_cutoff_deductions(rows):
     return collapsed
 
 
+def _consumed_sheet_row(sheet, default_item=None):
+    """One JC Operations sheet entry as plain fields, for the Stock Deducted sheets modal."""
+    if _is_cutoff_sheet(sheet):
+        return {"item_consumed": "Cutoffs", "size": "", "pcs": None, "is_cutoff": 1}
+    return {
+        "item_consumed": sheet.get("item_consumed") or default_item or "",
+        "size": sheet.get("size") or "",
+        "pcs": frappe.utils.flt(sheet.get("pcs")),
+        "is_cutoff": 0,
+    }
+
+
 def _format_consumed_sheet(sheet):
     """Human-readable label for one JC Operations sheet entry, used in the
     Stock Deduction preview/history tables."""
@@ -2314,6 +2326,7 @@ def get_job_card_detail(name):
                         "qty": sft_release_qty,
                         "uom": "SFT",
                         "sheets_consumed": sheets_str,
+                        "sheets": [_consumed_sheet_row(s, itm) for s in itm_sheets],
                         "status": "Deducted" if repack_entry_name else "Saved",
                         "category": "Glass",
                         "is_cutoff": all(_is_cutoff_sheet(s) for s in itm_sheets),
@@ -2356,6 +2369,7 @@ def get_job_card_detail(name):
         )
         for item in st_items:
             sheets_str = ""
+            sheets_rows = []
             if item.description and "Sheets Consumed: " in item.description:
                 idx = item.description.find("Sheets Consumed: ") + len("Sheets Consumed: ")
                 raw_json = item.description[idx:].strip()
@@ -2365,6 +2379,7 @@ def get_job_card_detail(name):
                     sheets_data = json.loads(raw_json)
                     if isinstance(sheets_data, list):
                         sheets_str = ", ".join([_format_consumed_sheet(s) for s in sheets_data])
+                        sheets_rows = [_consumed_sheet_row(s, item.item_code) for s in sheets_data]
                     else:
                         sheets_str = raw_json
                 except Exception:
@@ -2382,6 +2397,7 @@ def get_job_card_detail(name):
                 "qty": frappe.utils.flt(item.qty),
                 "uom": item.uom or "",
                 "sheets_consumed": sheets_str,
+                "sheets": sheets_rows,
                 "status": "Deducted",
                 "category": rel.get("category", ""),
             })

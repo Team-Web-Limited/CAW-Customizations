@@ -2071,6 +2071,10 @@ function bind_single_job_card_detail_events(page, $body, job_card, quotation, hi
 		$(this).val('');
 	});
 
+	$body.on('click.job-card-detail', '.jc-view-sheets-btn', function() {
+		open_jc_sheets_consumed_dialog($(this));
+	});
+
 	$body.on('click.job-card-detail', '.jc-released-invoice-link', function(e) {
 		e.preventDefault();
 		let invoice_name = $(this).attr('data-invoice');
@@ -2563,6 +2567,62 @@ function jc_stock_deduction_date_str(row) {
 	return date_str;
 }
 
+function open_jc_sheets_consumed_dialog($btn) {
+	let sheets = [];
+	try {
+		sheets = JSON.parse($btn.attr('data-sheets') || '[]');
+	} catch (e) {}
+	let cutoff_rows = cint($btn.attr('data-cutoff-rows') || 0);
+	let only_cutoffs = cint($btn.attr('data-is-cutoff') || 0) === 1;
+
+	let body_rows = sheets.filter(s => !s.is_cutoff).map(s => `
+		<tr>
+			<td>${jc_escape(s.item_consumed || '-')}</td>
+			<td>${jc_escape(s.size || '-')}</td>
+			<td style="text-align:right;">${jc_number(s.pcs, 0)}</td>
+		</tr>
+	`);
+	if (only_cutoffs || sheets.some(s => s.is_cutoff)) {
+		body_rows.push(`
+			<tr>
+				<td>Cutoffs</td>
+				<td class="text-muted">—</td>
+				<td style="text-align:right;" class="text-muted">N/A</td>
+			</tr>
+		`);
+	}
+
+	// Rows of the same item that JC Operations marked as covered by this deduction
+	// (see _collapse_cutoff_deductions in api.py).
+	let note = '';
+	if (cutoff_rows) {
+		note = only_cutoffs
+			? `Logged as Cutoffs on ${cutoff_rows} row${cutoff_rows === 1 ? '' : 's'} — no stock deducted.`
+			: `Also covers ${cutoff_rows} other row${cutoff_rows === 1 ? '' : 's'} of this item (marked Cutoffs, nothing extra deducted).`;
+	}
+
+	let d = new frappe.ui.Dialog({
+		title: __('Sheets Consumed'),
+		size: 'small',
+		fields: [{ fieldtype: 'HTML', fieldname: 'sheets_html' }]
+	});
+	d.fields_dict.sheets_html.$wrapper.html(`
+		<div class="text-muted small" style="margin-bottom:8px;">${jc_escape($btn.attr('data-item') || '')}</div>
+		<table class="table table-bordered table-sm" style="margin-bottom:${note ? '8px' : '0'};">
+			<thead>
+				<tr>
+					<th>Item Consumed</th>
+					<th>Size</th>
+					<th style="text-align:right;">Pcs</th>
+				</tr>
+			</thead>
+			<tbody>${body_rows.join('') || '<tr><td colspan="3" class="text-muted text-center">No sheets recorded.</td></tr>'}</tbody>
+		</table>
+		${note ? `<div class="text-muted small">${jc_escape(note)}</div>` : ''}
+	`);
+	d.show();
+}
+
 function render_job_card_glass_deduction_row(row) {
 	let date_str = jc_stock_deduction_date_str(row);
 
@@ -2571,21 +2631,16 @@ function render_job_card_glass_deduction_row(row) {
 		saved_on_str += ' ' + row.saved_on.split(' ')[1].substring(0, 8);
 	}
 
-	// Every sheet size on its own line — a job card consuming two sizes used to show only
-	// the first one followed by "...".
-	let sheets_html = row.is_cutoff ? '' : (row.sheets_consumed && row.sheets_consumed !== '-'
-		? row.sheets_consumed.split(', ').map(jc_escape).join('<br>')
-		: '-');
-
-	// Cutoffs placeholders for the item's other Quotation rows are folded server-side into
-	// one count (see _collapse_cutoff_deductions in api.py) instead of a row each.
-	let cutoff_rows = cint(row.cutoff_rows || 0);
-	if (cutoff_rows) {
-		let note = row.is_cutoff
-			? `Cutoffs — ${cutoff_rows} row${cutoff_rows === 1 ? '' : 's'}, no stock deducted`
-			: `+ Cutoffs on ${cutoff_rows} other row${cutoff_rows === 1 ? '' : 's'} (covered by this deduction)`;
-		sheets_html += `${sheets_html ? '<br>' : ''}<span class="text-muted small">${jc_escape(note)}</span>`;
-	}
+	// The sheets themselves open in a small modal (open_jc_sheets_consumed_dialog) rather
+	// than crowding the table cell.
+	let has_sheets = (row.sheets || []).length > 0 || cint(row.cutoff_rows || 0) > 0;
+	let sheets_html = has_sheets
+		? `<button class="btn btn-default btn-xs jc-view-sheets-btn"
+				data-item="${jc_escape(row.quotation_item_name || row.quotation_item_code || '')}"
+				data-sheets="${jc_escape(JSON.stringify(row.sheets || []))}"
+				data-cutoff-rows="${cint(row.cutoff_rows || 0)}"
+				data-is-cutoff="${row.is_cutoff ? 1 : 0}">View</button>`
+		: '-';
 
 	return `
 		<tr>
