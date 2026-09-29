@@ -2592,14 +2592,11 @@ function open_jc_sheets_consumed_dialog($btn) {
 		`);
 	}
 
-	// Rows of the same item that JC Operations marked as covered by this deduction
-	// (see _collapse_cutoff_deductions in api.py).
-	let note = '';
-	if (cutoff_rows) {
-		note = only_cutoffs
-			? `Logged as Cutoffs on ${cutoff_rows} row${cutoff_rows === 1 ? '' : 's'} — no stock deducted.`
-			: `Also covers ${cutoff_rows} other row${cutoff_rows === 1 ? '' : 's'} of this item (marked Cutoffs, nothing extra deducted).`;
-	}
+	// Only an item logged purely as Cutoffs gets a note — the placeholder rows JC Operations
+	// adds alongside real sheets (see _collapse_cutoff_deductions in api.py) aren't shown.
+	let note = (only_cutoffs && cutoff_rows)
+		? `Logged as Cutoffs on ${cutoff_rows} row${cutoff_rows === 1 ? '' : 's'} — no stock deducted.`
+		: '';
 
 	let d = new frappe.ui.Dialog({
 		title: __('Sheets Consumed'),
