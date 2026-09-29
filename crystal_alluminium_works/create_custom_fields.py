@@ -641,6 +641,19 @@ def add_custom_fields():
                 "hidden": 1,
             },
             {
+                # The walk-in's own KRA PIN, mirrored from Quotation.custom_customer_pin the
+                # same way as custom_customer_name above. The shared Cash Customer record has
+                # no tax_id, so without this the Crystal Sales Invoice print format (which reads
+                # custom_customer_pin first) printed "PIN Number: -" for every walk-in.
+                "fieldname": "custom_customer_pin",
+                "label": "Customer PIN (Walk-in)",
+                "fieldtype": "Data",
+                "insert_after": "custom_customer_name",
+                "read_only": 1,
+                "no_copy": 1,
+                "hidden": 1,
+            },
+            {
                 "fieldname": "custom_source_quotation",
                 "label": "Source Quotation",
                 "fieldtype": "Link",
