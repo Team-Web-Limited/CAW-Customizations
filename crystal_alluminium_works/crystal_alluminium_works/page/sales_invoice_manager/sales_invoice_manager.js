@@ -1387,9 +1387,6 @@ function open_edit_invoice_items_dialog(page, doc) {
 		$wrap.html(`
 			<div style="font-size:12px; color:var(--text-muted); margin-bottom:10px;">
 				The grand total is <b>locked</b> — rebalance quantities and rates so the total stays within <b>±2</b> of the original.
-				Stock for aluminium, fittings, ceiling and plain glass is auto-adjusted.
-				Laminated / JC-resized glass stock must be corrected via the Job Card's JC Operations.
-				Service rows (polishing, holes, etc.) are regenerated automatically on save.
 			</div>
 			<div style="overflow-x:auto;">
 				<table class="table table-bordered" style="margin-bottom:8px;">
