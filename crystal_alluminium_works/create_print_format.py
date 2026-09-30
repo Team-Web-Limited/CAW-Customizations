@@ -64,6 +64,13 @@ PRINT_UOM_BY_ITEM_CODE = {
     **dict.fromkeys(["F91", "F92"], "Sqm"),
 }
 
+# Frappe gives a PDF with no separate header a 15mm top page margin, which left a blank band
+# above the letterhead. get_pdf reads margin overrides from a `.print-format { ... }` rule in the
+# page itself (read_options_from_html), so every Crystal template starts with this to pull the
+# letterhead up to the top of the page.
+CRYSTAL_PAGE_STYLE = "<style>.print-format { margin-top: 5mm; }</style>\n"
+
+
 def build_crystal_print_format_html(ref_label, terms, payment_details=""):
     html = f"""
 {{% macro short_uom(value) %}}
@@ -559,14 +566,14 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
 {{% endif %}}
 """
 
-    return html
+    return CRYSTAL_PAGE_STYLE + html
 
 
 def build_crystal_invoice_list_html():
     """The Invoices / Cash Sales pages' Download: the filtered invoice list on the Crystal
     letterhead, styled like the Crystal Quotation. Plain Jinja (not a .format() string), rendered
     by api.download_sales_invoices_pdf; Cash Sales leaves out the PIN and Balance columns."""
-    return """
+    return CRYSTAL_PAGE_STYLE + """
 <div class="letterhead" style="margin-bottom: 20px;">
     <img src="/assets/crystal_alluminium_works/images/crystal-alluminium-works-letterhead.jpeg" style="max-width: 100%; height: auto;" alt="Crystal Aluminium Works">
 </div>
@@ -646,7 +653,7 @@ def build_crystal_invoice_list_html():
 
 
 def build_crystal_payment_receipt_print_format_html():
-    return """
+    return CRYSTAL_PAGE_STYLE + """
 {% set history = doc %}
 
 <div style="width: 100%; margin-bottom: 22px;">
@@ -743,7 +750,7 @@ def build_crystal_payment_receipt_print_format_html():
 
 
 def build_crystal_job_card_print_format_html():
-    return """
+    return CRYSTAL_PAGE_STYLE + """
 {% set job_card = doc %}
 {% set quotation = frappe.get_doc('Quotation', job_card.quotation) if job_card.quotation else None %}
 {% set print_items = quotation.items if quotation else [] %}
