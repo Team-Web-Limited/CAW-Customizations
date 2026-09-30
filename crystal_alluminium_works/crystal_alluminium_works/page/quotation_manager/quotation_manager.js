@@ -1179,16 +1179,19 @@ function update_job_card_save_button_visibility(dialog) {
 
 function refresh_job_card_payment_capture_fields(dialog) {
 	let is_cash = normalize_job_card_payment_mode(dialog.get_value('payment_mode')) === 'cash';
+	// Nothing is recorded when the advance alone funds the Job Card (Payment Amount 0), so
+	// Deposit To / Reference only show for an actual new payment.
+	let has_new_payment = is_cash && flt(dialog.get_value('payment_amount') || 0) > 0;
 
 	// deposit_to is auto-derived and read-only, so keep it visible for cash payments.
-	dialog.set_df_property('deposit_to', 'hidden', is_cash ? 0 : 1);
+	dialog.set_df_property('deposit_to', 'hidden', has_new_payment ? 0 : 1);
 
 	// The Reference field is entered manually: cheque/transfer number for bank-type
 	// modes of payment, the M-Pesa transaction code for phone-type (Paybill).
 	let mop_type = (dialog._mode_of_payment_type || '').toLowerCase();
 	let mop_is_bank_type = mop_type === 'bank';
 	let mop_is_phone_type = mop_type === 'phone';
-	let reference_visible = is_cash && (mop_is_bank_type || mop_is_phone_type);
+	let reference_visible = has_new_payment && (mop_is_bank_type || mop_is_phone_type);
 	dialog.set_df_property('reference', 'label', mop_is_phone_type ? 'M-Pesa Code' : 'Reference');
 	dialog.set_df_property('reference', 'hidden', reference_visible ? 0 : 1);
 	// Bank types need their reference; the Paybill M-Pesa code is optional but, when entered, must be
@@ -1318,9 +1321,11 @@ function validate_job_card_payment_amount(dialog) {
 	}
 
 	// payment_limit here is what's left to collect after any existing deposit credit is
-	// applied (see open_job_card_modal) — if that credit already covers the quotation in
-	// full, 0 is a legitimate "nothing more to collect" value, not a missed entry.
-	if (payment_amount <= 0 && payment_limit > 0.0001) {
+	// applied (see open_job_card_modal). 0 is legitimate when the customer has an advance:
+	// the Job Card is then funded by the advance alone, leaving the rest as its balance —
+	// create_job_card_from_quotation applies the advance and no new payment is recorded.
+	let has_advance = flt(dialog._available_credit || 0) > 0.0001;
+	if (payment_amount <= 0 && payment_limit > 0.0001 && !has_advance) {
 		frappe.msgprint(__('Please enter a payment amount to create a job card for a cash customer.'));
 		return false;
 	}
@@ -1573,7 +1578,7 @@ function apply_job_card_customer_advance(dialog, credit) {
 		dialog.set_value('payment_amount', remaining);
 	}
 	update_job_card_balance(dialog);
-	update_job_card_save_button_visibility(dialog);
+	refresh_job_card_payment_capture_fields(dialog);
 }
 
 async function apply_job_card_customer_defaults(dialog) {
