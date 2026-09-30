@@ -479,6 +479,17 @@ function get_item_uom_qty(item) {
 	return flt(item.qty || 0);
 }
 
+// calculate_glass_total / calculate_ceiling_total return base_rate net of VAT (/1.16), but an
+// item's rate here is the VAT-inclusive Inc.Rate — calculate_item_amount divides it by 1.16,
+// and "Edit in Builder" reloads rates grossed back up. Storing base_rate as-is took VAT off
+// twice on new glass/ceiling items (295 showed as 254.31) until the quotation was reopened.
+function inclusive_rate_from_server(base_rate, fallback) {
+	if (base_rate === undefined || base_rate === null) {
+		return fallback;
+	}
+	return flt(base_rate) * 1.16;
+}
+
 function calculate_item_amount(item) {
 	let qty = flt(item.qty || 0);
 	let rate = flt(item.rate || 0) / 1.16;
@@ -2447,7 +2458,7 @@ function open_item_editor(page, item, is_new = false) {
 					freeze_message: 'Calculating...',
 					callback: function (r) {
 						if (r.message) {
-							item.rate = r.message.base_rate ?? item.rate;
+							item.rate = inclusive_rate_from_server(r.message.base_rate, item.rate);
 							item.amount = r.message.total ?? calculate_item_amount(item);
 							item.ceiling_breakdown = r.message.breakdown || [];
 						} else {
@@ -2538,7 +2549,7 @@ function open_item_editor(page, item, is_new = false) {
 						freeze_message: 'Calculating...',
 						callback: function (r) {
 							if (r.message) {
-								item.rate = r.message.base_rate ?? item.rate;
+								item.rate = inclusive_rate_from_server(r.message.base_rate, item.rate);
 								item.amount = r.message.total ?? 0;
 								item.glass_breakdown = r.message.breakdown || [];
 							} else {
@@ -2621,7 +2632,7 @@ function open_item_editor(page, item, is_new = false) {
 							item.height_ft = r.message.height_ft ?? item.height_ft;
 							item.area_sqft = r.message.area_sqft ?? item.area_sqft;
 							item.perimeter_rft = r.message.perimeter_rft ?? item.perimeter_rft;
-							item.rate = r.message.base_rate ?? item.rate;
+							item.rate = inclusive_rate_from_server(r.message.base_rate, item.rate);
 							item.amount = r.message.total ?? 0;
 							item.glass_breakdown = r.message.breakdown || [];
 						} else {
@@ -3218,7 +3229,7 @@ function open_glass_batch_details_dialog(page, items) {
 								final_item.height_ft = r.message.height_ft ?? 0;
 								final_item.area_sqft = r.message.area_sqft ?? 0;
 								final_item.perimeter_rft = r.message.perimeter_rft ?? 0;
-								final_item.rate = r.message.base_rate ?? 0;
+								final_item.rate = inclusive_rate_from_server(r.message.base_rate, 0);
 								final_item.amount = r.message.total ?? 0;
 								final_item.glass_breakdown = r.message.breakdown || [];
 							} else {
