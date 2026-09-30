@@ -33,10 +33,14 @@ def _gross(amount, total_taxes_and_charges):
 	return amount * (1 + VAT_RATE) if flt(total_taxes_and_charges) == 0 else amount
 
 
-def _get_job_cards(customer):
+def _get_job_cards(customer, walkin=None):
+	filters = {"customer": customer, "status": ["!=", "Cancelled"]}
+	if walkin:
+		# A walk-in's statement covers only their own job cards on the shared Cash Customer.
+		filters["name"] = ["in", walkin.job_cards or [""]]
 	return frappe.get_all(
 		"CAW Job Card",
-		filters={"customer": customer, "status": ["!=", "Cancelled"]},
+		filters=filters,
 		fields=["name", "quotation", "quotation_amount", "payment_amount", "payment_mode", "creation", "modified"],
 	)
 
@@ -60,8 +64,9 @@ def _get_job_card_invoices(quotations):
 	return invoices_by_quotation
 
 
-def _gather_events(customer, job_cards):
-	"""Every dated charge and receipt for a customer, oldest first."""
+def _gather_events(customer, job_cards, walkin=None):
+	"""Every dated charge and receipt for a customer, oldest first. `walkin` (api.get_walkin_records)
+	narrows the shared Cash Customer's payments and invoices to one walk-in's."""
 	from crystal_alluminium_works.api import _is_job_card_settled
 
 	events = []
@@ -140,9 +145,12 @@ def _gather_events(customer, job_cards):
 				)
 			)
 
+	payment_filters = {"customer": customer}
+	if walkin:
+		payment_filters["name"] = ["in", walkin.payments or [""]]
 	for p in frappe.get_all(
 		"Payments",
-		filters={"customer": customer},
+		filters=payment_filters,
 		fields=["name", "amount", "date", "payment_type", "payment_method", "reference"],
 	):
 		is_refund = (p.payment_type or "") == "Refund"
@@ -164,9 +172,12 @@ def _gather_events(customer, job_cards):
 
 	# Sales Invoices raised outside the job card flow still belong on the statement;
 	# ones owned by a job card above are already covered by its quotation_amount.
+	invoice_filters = {"customer": customer, "docstatus": ["!=", 2]}
+	if walkin:
+		invoice_filters["name"] = ["in", walkin.invoices or [""]]
 	for inv in frappe.get_all(
 		"Sales Invoice",
-		filters={"customer": customer, "docstatus": ["!=", 2]},
+		filters=invoice_filters,
 		fields=[
 			"name",
 			"posting_date",
@@ -309,8 +320,9 @@ def get_statement_dict(doc, psoa):
 			or get_company_currency(doc.company)
 		)
 
-		job_cards = _get_job_cards(customer)
-		events = _gather_events(customer, job_cards)
+		walkin = doc.flags.walkin if customer == doc.flags.get("walkin_customer") else None
+		job_cards = _get_job_cards(customer, walkin)
+		events = _gather_events(customer, job_cards, walkin)
 		rows = _build_rows(events, from_date, to_date, currency)
 
 		# Nothing but the Opening/Total/Closing scaffolding means no activity to show.
@@ -330,7 +342,7 @@ def get_statement_dict(doc, psoa):
 				"party_name": [entry.customer_name or customer],
 				"presentation_currency": currency,
 				"show_remarks": doc.show_remarks,
-				"tax_id": frappe.db.get_value("Customer", customer, "tax_id"),
+				"tax_id": walkin.pin if walkin else frappe.db.get_value("Customer", customer, "tax_id"),
 			}
 		)
 
@@ -403,9 +415,15 @@ def download_customer_statement_of_account(customer):
 	than inserting a real one, so clicking this never leaves a throwaway record in
 	that doctype's list (same reasoning as the app's other download-only exports:
 	stream, don't save_file)."""
-	from crystal_alluminium_works.api import _get_default_company
+	from crystal_alluminium_works.api import SHARED_CASH_CUSTOMER_NAME, _get_default_company, _parse_walkin_customer_key, get_walkin_records
 
-	customer_doc = frappe.get_doc("Customer", customer)
+	# A walk-in (Customer Manager key "walk-in:<name>|<phone>") has no Customer record: their
+	# statement is the shared Cash Customer's, narrowed to their own records.
+	walkin = get_walkin_records(customer) if _parse_walkin_customer_key(customer) else None
+	if walkin:
+		customer_doc = frappe._dict(name=SHARED_CASH_CUSTOMER_NAME, customer_name=walkin.name)
+	else:
+		customer_doc = frappe.get_doc("Customer", customer)
 	psoa = _load_psoa()
 
 	doc = frappe.new_doc("Process Statement Of Accounts")
@@ -420,6 +438,9 @@ def download_customer_statement_of_account(customer):
 	doc.show_remarks = 0
 	doc.append("customers", {"customer": customer_doc.name, "customer_name": customer_doc.customer_name})
 	doc.flags.include_empty_statements = True
+	if walkin:
+		doc.flags.walkin = walkin
+		doc.flags.walkin_customer = SHARED_CASH_CUSTOMER_NAME
 
 	report = psoa.get_report_pdf(doc)
 	if not report:

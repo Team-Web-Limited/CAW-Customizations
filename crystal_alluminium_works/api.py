@@ -1794,54 +1794,37 @@ def get_customer_manager_customers(search=None, customer_type="all", page=1, pag
     }
 
 
-@frappe.whitelist()
-def get_walkin_customer_detail(key):
-    """Everything Customer Manager's detail view shows, for one walk-in: their quotations (on the
-    shared Cash Customer, stamped with their name and phone), the job cards and invoices made from
-    those, and the payments carrying their phone or tied to those quotations / job cards."""
+def get_walkin_records(key):
+    """Names of one walk-in's records on the shared Cash Customer: their quotations (stamped with
+    their name and phone), the job cards and invoices made from those, and the payments carrying
+    their phone or tied to those quotations / job cards. Shared by Customer Manager's detail view
+    and the walk-in Statement of Account."""
     walkin = _parse_walkin_customer_key(key)
     if not walkin or not walkin.name:
         frappe.throw("Not a walk-in customer.")
 
     quotation_filters = {"party_name": SHARED_CASH_CUSTOMER_NAME, "custom_customer_name": walkin.name}
-    if walkin.phone:
-        quotation_filters["custom_customer_phone"] = walkin.phone
-    else:
-        quotation_filters["custom_customer_phone"] = ["in", ["", None]]
+    quotation_filters["custom_customer_phone"] = walkin.phone if walkin.phone else ["in", ["", None]]
     quotations = frappe.get_all(
-        "Quotation",
-        filters=quotation_filters,
-        fields=["name", "transaction_date", "valid_till", "status", "currency", "grand_total", "rounded_total",
-                "total_taxes_and_charges", "docstatus", "creation", "custom_customer_pin"],
-        order_by="transaction_date desc, creation desc",
-        limit_page_length=0,
+        "Quotation", filters=quotation_filters, fields=["name", "custom_customer_pin"],
+        order_by="creation desc", limit_page_length=0,
     )
     quotation_names = [q.name for q in quotations]
     if not quotation_names:
         frappe.throw(f"No quotations found for walk-in {walkin.name}.")
 
-    job_cards = frappe.get_all(
+    job_card_names = frappe.get_all(
         "CAW Job Card",
         filters={"customer": SHARED_CASH_CUSTOMER_NAME, "quotation": ["in", quotation_names]},
-        fields=["name", "quotation", "payment_mode", "payment_option", "quotation_amount", "payment_amount",
-                "balance_amount", "status", "creation", "modified"],
-        order_by="creation desc",
-        limit_page_length=0,
+        pluck="name",
     )
-    job_card_names = [j.name for j in job_cards]
 
     invoice_or_filters = [["custom_source_quotation", "in", quotation_names]]
     if job_card_names:
         invoice_or_filters.append(["custom_source_job_card", "in", job_card_names])
-    invoices = frappe.get_list(
-        "Sales Invoice",
-        filters={"customer": SHARED_CASH_CUSTOMER_NAME},
-        or_filters=invoice_or_filters,
-        fields=SALES_INVOICE_LIST_FIELDS,
-        order_by="creation desc",
-        limit_page_length=0,
+    invoice_names = frappe.get_all(
+        "Sales Invoice", filters={"customer": SHARED_CASH_CUSTOMER_NAME}, or_filters=invoice_or_filters, pluck="name"
     )
-    _attach_job_card_balance_status(invoices)
 
     payment_names = set()
     if walkin.phone:
@@ -1860,11 +1843,54 @@ def get_walkin_customer_detail(key):
                 pluck="parent",
             )
         }
+
+    return frappe._dict(
+        key=_walkin_customer_key(walkin.name, walkin.phone),
+        name=walkin.name,
+        phone=walkin.phone,
+        pin=next((q.custom_customer_pin for q in quotations if (q.custom_customer_pin or "").strip()), ""),
+        quotations=quotation_names,
+        job_cards=job_card_names,
+        invoices=invoice_names,
+        payments=list(payment_names),
+    )
+
+
+@frappe.whitelist()
+def get_walkin_customer_detail(key):
+    """Everything Customer Manager's detail view shows, for one walk-in (see get_walkin_records)."""
+    records = get_walkin_records(key)
+
+    quotations = frappe.get_all(
+        "Quotation",
+        filters={"name": ["in", records.quotations]},
+        fields=["name", "transaction_date", "valid_till", "status", "currency", "grand_total", "rounded_total",
+                "total_taxes_and_charges", "docstatus", "creation"],
+        order_by="transaction_date desc, creation desc",
+        limit_page_length=0,
+    )
+    job_cards = frappe.get_all(
+        "CAW Job Card",
+        filters={"name": ["in", records.job_cards or [""]]},
+        fields=["name", "quotation", "payment_mode", "payment_option", "quotation_amount", "payment_amount",
+                "balance_amount", "status", "creation", "modified"],
+        order_by="creation desc",
+        limit_page_length=0,
+    )
+    invoices = frappe.get_list(
+        "Sales Invoice",
+        filters={"name": ["in", records.invoices or [""]]},
+        fields=SALES_INVOICE_LIST_FIELDS,
+        order_by="creation desc",
+        limit_page_length=0,
+    )
+    _attach_job_card_balance_status(invoices)
+
     payments = []
-    if payment_names:
+    if records.payments:
         payments = frappe.get_all(
             "Payments",
-            filters={"name": ["in", list(payment_names)]},
+            filters={"name": ["in", records.payments]},
             fields=["name", "amount", "date", "payment_method", "deposit_to", "reference", "job_card", "payment_type", "creation"],
             order_by="date desc, creation desc",
             limit_page_length=0,
@@ -1880,15 +1906,14 @@ def get_walkin_customer_detail(key):
         for payment in payments:
             payment["allocations"] = allocations.get(str(payment.name), [])
 
-    pin = next((q.custom_customer_pin for q in quotations if (q.custom_customer_pin or "").strip()), "")
     return {
         "customer": {
-            "name": _walkin_customer_key(walkin.name, walkin.phone),
-            "customer_name": walkin.name,
+            "name": records.key,
+            "customer_name": records.name,
             "custom_customer_billing_type": "Cash Customer",
             "customer_type": "Walk-in",
-            "tax_id": pin,
-            "mobile_no": walkin.phone,
+            "tax_id": records.pin,
+            "mobile_no": records.phone,
             "is_walkin": 1,
         },
         "invoices": invoices,
