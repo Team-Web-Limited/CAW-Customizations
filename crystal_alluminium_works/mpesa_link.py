@@ -135,8 +135,16 @@ def _must_confirm_code(doc):
 	codes) can still be re-saved, re-allocated or corrected without re-typing a code."""
 	if doc.is_new():
 		if doc.corrects_payment:
-			original = frappe.db.get_value("Payments", doc.corrects_payment, "reference")
-			return normalize_mpesa_code(original) != normalize_mpesa_code(doc.reference)
+			# A correction only skips the check when it keeps an M-Pesa payment's own code. A code
+			# carried over from a Cash / bank payment was never checked as an M-Pesa code, so
+			# switching that payment to Paybill must confirm it like a newly typed one.
+			original = frappe.db.get_value(
+				"Payments", doc.corrects_payment, ["reference", "payment_method"], as_dict=True
+			)
+			return (
+				not _is_phone_payment_method(original.payment_method)
+				or normalize_mpesa_code(original.reference) != normalize_mpesa_code(doc.reference)
+			)
 		return True
 	before = doc.get_doc_before_save()
 	return bool(before) and normalize_mpesa_code(before.reference) != normalize_mpesa_code(doc.reference)
