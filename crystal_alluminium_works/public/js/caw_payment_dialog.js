@@ -61,7 +61,13 @@
 					return row;
 				}
 				let names = description.slice(WALKIN_DESCRIPTION_PREFIX.length).trim();
-				return names ? Object.assign({}, row, { label: names, description: '' }) : row;
+				// Also keep the walk-ins themselves on the row ("Name (phone)" each), so picking
+				// it can fill the dialog's Name field — see on_customer_pick below.
+				let walkins = names.split(', ').map(function(entry) {
+					let match = entry.match(/^(.*?)\s*\(([^()]*)\)$/);
+					return match ? { name: match[1].trim(), phone: match[2].trim() } : { name: entry.trim(), phone: '' };
+				}).filter(function(walkin) { return walkin.name; });
+				return names ? Object.assign({}, row, { label: names, description: '', walkins: walkins }) : row;
 			});
 		};
 	}
@@ -383,8 +389,16 @@
 						done();
 						return;
 					}
-					// What was typed into Customer is what the user meant — adopt it when it
-					// identifies exactly one walk-in, so the scoping below matches what they
+					// The search row the user clicked, when it carried a single walk-in.
+					let picked = (d._customer_picked_walkin || '').trim();
+					d._customer_picked_walkin = '';
+					if (picked && names.indexOf(picked) !== -1) {
+						set_walkin_name(picked);
+						done();
+						return;
+					}
+					// Otherwise what was typed into Customer is what the user meant — adopt it when
+					// it identifies exactly one walk-in, so the scoping below matches what they
 					// picked. Matched against the phone number too, since that's the half of the
 					// search row staff use when the name alone is ambiguous.
 					let typed = (d._customer_typed_text || '').trim().toLowerCase();
@@ -928,6 +942,28 @@
 		// resolve_walkin_quotation).
 		d.fields_dict.customer.$input.on('input', function() {
 			d._customer_typed_text = $(this).val() || '';
+		});
+		// The row actually clicked is a surer clue than the typed text: when it carries exactly
+		// one walk-in, that is who was picked, so Name fills itself (refresh_walkin_field).
+		d.fields_dict.customer.$input.on('awesomplete-select', function(e) {
+			let control = d.fields_dict.customer;
+			let text = e.originalEvent && e.originalEvent.text;
+			let item = text && control.awesomplete && control.awesomplete.get_item
+				? control.awesomplete.get_item(text.value) : null;
+			let walkins = (item && item.walkins) || [];
+			d._customer_picked_walkin = walkins.length === 1 ? walkins[0].name : '';
+
+			// Picking another walk-in while Customer already reads Cash Customer leaves the
+			// field's value unchanged, so its onchange never runs — switch the walk-in here.
+			let picked = d._customer_picked_walkin;
+			let customer = item && item.value;
+			if (picked && customer && customer === loaded_customer && picked !== current_walkin) {
+				d._customer_picked_walkin = '';
+				set_walkin_name(picked);
+				d.set_value('quotation', '');
+				load_customer_allocations(customer, false);
+				resolve_walkin_quotation(customer);
+			}
 		});
 		show_walkin_names_in_customer_search(d.fields_dict.customer);
 
