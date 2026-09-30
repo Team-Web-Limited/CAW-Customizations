@@ -65,9 +65,8 @@
   },
   {
    "fieldname": "payment_option",
-   "fieldtype": "Select",
-   "label": "Payment Option",
-   "options": "Cash\nPaybill\nBank Transfer i.e RTGS, TT\nPESALINK\nCheque"
+   "fieldtype": "Data",
+   "label": "Payment Option"
   },
   {
    "fieldname": "customer_pin",
@@ -163,7 +162,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-06-05 00:00:00.000000",
+ "modified": "2026-10-01 00:30:00.000000",
  "modified_by": "Administrator",
  "module": "Crystal Alluminium Works",
  "name": "CAW Job Card History",

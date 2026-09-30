@@ -1194,6 +1194,10 @@ function refresh_job_card_payment_capture_fields(dialog) {
 	let reference_visible = has_new_payment && (mop_is_bank_type || mop_is_phone_type);
 	dialog.set_df_property('reference', 'label', mop_is_phone_type ? 'M-Pesa Code' : 'Reference');
 	dialog.set_df_property('reference', 'hidden', reference_visible ? 0 : 1);
+	// A hidden reference is still submitted, so it must not keep a value typed earlier.
+	if (!reference_visible && dialog.get_value('reference')) {
+		dialog.set_value('reference', '');
+	}
 	// Bank types need their reference; the Paybill M-Pesa code is optional but, when entered, must be
 	// one Safaricom has confirmed (see validate_job_card_mpesa_code / mpesa_link.py).
 	dialog.set_df_property('reference', 'reqd', (reference_visible && mop_is_bank_type) ? 1 : 0);
@@ -1388,9 +1392,21 @@ async function validate_job_card_mpesa_code(dialog) {
 		});
 		return true;
 	} catch (e) {
-		// The server's own error dialog has already explained why.
+		// The server's own error dialog has already explained why. Nothing is saved; the
+		// payment part of the form goes back to how it opened, so the rejected code can't
+		// be kept and re-submitted under another method.
+		reset_job_card_payment_capture(dialog);
 		return false;
 	}
+}
+
+function reset_job_card_payment_capture(dialog) {
+	refresh_job_card_payment_options(dialog);
+	dialog.set_value('reference', '');
+	dialog._autofilled_payment_amount = flt(dialog._payment_limit || 0);
+	dialog.set_value('payment_amount', flt(dialog._payment_limit || 0));
+	update_job_card_balance(dialog);
+	refresh_job_card_payment_capture_fields(dialog);
 }
 
 function validate_job_card_phone_number(dialog) {
@@ -1672,6 +1688,9 @@ async function open_job_card_modal(page, doc) {
 				default: get_job_card_payment_option_choices(get_job_card_payment_mode_label(defaults.payment_mode))[0],
 				reqd: 1,
 				change: function() {
+					// A reference belongs to the method it was typed for — never carry an
+					// M-Pesa code over to Cash or a bank transfer.
+					d.set_value('reference', '');
 					refresh_job_card_deposit_to_options(d);
 				}
 			},

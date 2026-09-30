@@ -71,5 +71,9 @@ class CAWJobCard(Document):
 
 		for fieldname, value in snapshot.items():
 			history.set(fieldname, value)
+		# How this row's money was actually paid (e.g. "Cash + Paybill (advance)"), set by
+		# create_job_card_from_quotation; the Job Card's own payment_option is only a default.
+		if self.flags.history_payment_option:
+			history.payment_option = self.flags.history_payment_option
 
 		history.insert(ignore_permissions=True)

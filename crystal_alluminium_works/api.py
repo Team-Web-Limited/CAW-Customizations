@@ -2135,6 +2135,19 @@ def create_job_card_from_quotation(quotation, customer, customer_name=None, paym
     job_card.payment_amount = paid_amount
     job_card.balance_amount = balance_amount
 
+    # Payment History shows how this save's money was really paid: the new payment's method
+    # and the methods of whatever advance it draws, e.g. "Cash + Paybill (advance)". A cash
+    # Job Card funded by advance alone took no payment here, so its payment_option says
+    # "Advance" rather than whichever method the modal happened to default to.
+    advance_methods = _advance_methods_drawn(credit_pool, credit_to_apply)
+    history_parts = [payment_option] if payment_amount > 0.0001 else []
+    if advance_methods:
+        history_parts.append(f"{' / '.join(advance_methods)} (advance)")
+    if history_parts:
+        job_card.flags.history_payment_option = " + ".join(history_parts)
+    if payment_mode == "Cash Customer" and payment_amount <= 0.0001 and credit_to_apply > 0.0001:
+        job_card.payment_option = "Advance"
+
     is_new_job_card = bool(job_card.get("__islocal"))
 
     if is_new_job_card:
@@ -2178,6 +2191,35 @@ def create_job_card_from_quotation(quotation, customer, customer_name=None, paym
     _mark_quotation_as_converted(quotation_doc.name)
 
     return job_card.name
+
+
+def _advance_methods_drawn(pool, amount_to_apply):
+    """Payment methods of the advance Payments that _draw_advance_pool will draw on for
+    amount_to_apply (same order, nothing mutated), deduplicated in draw order."""
+    remaining = flt(amount_to_apply)
+    names = []
+    for row in pool:
+        if remaining <= 0.0001:
+            break
+        take = min(flt(row["unallocated"]), remaining)
+        if take > 0.0001:
+            names.append(row["name"])
+            remaining -= take
+    if not names:
+        return []
+    # Payments.name is an int; pool rows may carry it as a str.
+    method_by_payment = {
+        str(name): method
+        for name, method in frappe.get_all(
+            "Payments", filters={"name": ["in", names]}, fields=["name", "payment_method"], as_list=True
+        )
+    }
+    methods = []
+    for name in names:
+        method = method_by_payment.get(str(name)) or "Advance"
+        if method not in methods:
+            methods.append(method)
+    return methods
 
 
 def _draw_advance_pool(pool, job_card_name, amount_to_apply):
