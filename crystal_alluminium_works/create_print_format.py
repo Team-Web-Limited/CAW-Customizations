@@ -47,7 +47,9 @@ PRINT_UOM_BY_CATEGORY = {
 PRINT_UOM_BY_ITEM_CODE = {
     **dict.fromkeys(
         ["F09", "F10", "F10.1", "F10.2", "F10.3", "F10.4", "F68.0", "F68.1", "F68.2",
-         "F68.2.0", "F68.2.1", "F68.2.2", "F68.3", "F68.3.1"],
+         "F68.2.0", "F68.2.1", "F68.2.2", "F68.3", "F68.3.1",
+         # Friction arms
+         "F32", "F33", "F34", "F35", "F36", "F37", "F37.1", "F38"],
         "Pair(s)",
     ),
     **dict.fromkeys(
@@ -530,13 +532,19 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
     </div>
 </div>
 
-{{% if doc.doctype == 'Sales Invoice' and not doc.get('is_return') %}}
+{{% if doc.doctype == 'Sales Invoice' %}}
 {{# One line, not stacked. Empty inline-blocks sit on the text baseline, so each dotted
-   line lines up with its label (table-cell borders drifted below it in wkhtmltopdf). #}}
+   line lines up with its label (table-cell borders drifted below it in wkhtmltopdf).
+   A credit note has no delivery, so it drops Vehicle No and widens the other two. #}}
 <div style="margin-top: 40px; white-space: nowrap; font-size: 13px; font-weight: bold; color: #2c3e50; text-transform: uppercase;">
+    {{% if doc.get('is_return') %}}
+    Collected By <span style="display: inline-block; width: 45%; border-bottom: 1px dotted #2c3e50;"></span>
+    &nbsp;&nbsp; Signature <span style="display: inline-block; width: 30%; border-bottom: 1px dotted #2c3e50;"></span>
+    {{% else %}}
     Collected By <span style="display: inline-block; width: 36%; border-bottom: 1px dotted #2c3e50;"></span>
     &nbsp;&nbsp; Vehicle No <span style="display: inline-block; width: 16%; border-bottom: 1px dotted #2c3e50;"></span>
     &nbsp;&nbsp; Signature <span style="display: inline-block; width: 20%; border-bottom: 1px dotted #2c3e50;"></span>
+    {{% endif %}}
 </div>
 {{% endif %}}
 """
