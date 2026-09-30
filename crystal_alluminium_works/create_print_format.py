@@ -97,6 +97,11 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
         <!-- A credit note names the invoice it reverses. -->
         <div style="color: #7f8c8d; font-size: 12px; text-transform: uppercase; margin-top: 8px;">Against Invoice:</div>
         <div style="font-size: 14px;">{{{{ doc.return_against }}}}</div>
+        {{% if doc.get('custom_cu_invoice_no') %}}
+        <!-- The original invoice's KRA CU number, which TIMS needs to accept the credit note. -->
+        <div style="color: #7f8c8d; font-size: 12px; text-transform: uppercase; margin-top: 8px;">CU INV NO:</div>
+        <div style="font-size: 14px;">{{{{ doc.custom_cu_invoice_no }}}}</div>
+        {{% endif %}}
         {{% endif %}}
         {{% endif %}}
     </div>
