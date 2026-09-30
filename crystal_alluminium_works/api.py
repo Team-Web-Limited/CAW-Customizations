@@ -6298,15 +6298,40 @@ def get_payments_page(search=None, payment_method=None, from_date=None, to_date=
     # phone_number field, though, is often blank even when its own linked Quotation
     # does have one on custom_customer_phone (captured in Quotation Builder's cash-mode
     # step) — so fetch each job card's `quotation` link too and fall through to that.
+    # Job Cards a payment funds: its own job_card link plus its allocation rows (an Invoice
+    # Customer payment split across several cards may carry only the allocations).
+    allocated_job_cards = {}
+    if rows:
+        for alloc in frappe.get_all(
+            "Payment Job Card Allocation",
+            filters={"parenttype": "Payments", "parent": ["in", [str(row["name"]) for row in rows]]},
+            fields=["parent", "job_card"],
+        ):
+            if alloc.job_card:
+                allocated_job_cards.setdefault(str(alloc.parent), set()).add(alloc.job_card)
+
     job_card_ids = {row["job_card"] for row in rows if row.get("job_card")}
+    job_card_ids |= {name for cards in allocated_job_cards.values() for name in cards}
     job_cards_by_name = {}
     if job_card_ids:
         for jc in frappe.get_all(
             "CAW Job Card",
             filters={"name": ["in", list(job_card_ids)]},
-            fields=["name", "customer_name", "phone_number", "quotation"],
+            fields=["name", "customer_name", "phone_number", "quotation", "creation"],
         ):
             job_cards_by_name[jc.name] = jc
+
+    # An advance is money taken before the Job Card it pays for existed: still unapplied (no
+    # Job Card at all) or recorded before one it was later drawn onto. Shown in the Method
+    # column like Payment History does, e.g. "Paybill (advance)". Refunds never are.
+    for row in rows:
+        cards = set(allocated_job_cards.get(str(row["name"]), set()))
+        if row.get("job_card"):
+            cards.add(row["job_card"])
+        card_creations = [job_cards_by_name[c].creation for c in cards if c in job_cards_by_name]
+        row["is_advance"] = row.get("payment_type") != "Refund" and (
+            not cards or any(row.get("creation") and row["creation"] < created for created in card_creations)
+        )
 
     quotation_ids = {row["quotation"] for row in rows if row.get("quotation")}
     quotation_ids |= {jc.quotation for jc in job_cards_by_name.values() if jc.quotation}
@@ -6969,8 +6994,9 @@ def record_customer_payment(customer, amount, date, payment_method, deposit_to, 
     })
     doc.insert(ignore_permissions=True)
 
+    # doc.reference, not the argument: Payments.validate drops a reference on Cash.
     payment_entry_name = _post_customer_payment_entry(
-        customer, amount, date, payment_method, deposit_to, reference,
+        customer, amount, date, payment_method, deposit_to, doc.reference,
         is_refund=(payment_type == "Refund"), payments_doc_name=doc.name,
     )
     frappe.db.set_value("Payments", doc.name, "payment_entry", payment_entry_name, update_modified=False)
@@ -7659,7 +7685,7 @@ def correct_payment(payment, amount, payment_method, deposit_to, reason, referen
 
         payment_entry_name = _post_customer_payment_entry(
             original.customer, amount, original.date, payment_method, deposit_to,
-            reference, is_refund=False, payments_doc_name=replacement.name,
+            replacement.reference, is_refund=False, payments_doc_name=replacement.name,
         )
         frappe.db.set_value("Payments", replacement.name, "payment_entry", payment_entry_name,
                             update_modified=False)

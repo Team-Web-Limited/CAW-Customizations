@@ -228,7 +228,7 @@ function render_payment_record_rows(records) {
 				<td style="font-weight:500;">${frappe.utils.escape_html(row.display_name || '-')}</td>
 				<td>${frappe.utils.escape_html(row.display_phone || '-')}</td>
 				<td style="text-align:right;font-weight:600;white-space:nowrap;">${correction.badge}<span${correction.amount_style}>${format_currency(row.amount || 0, 'KES')}</span></td>
-				<td>${frappe.utils.escape_html(row.payment_method || '-')}</td>
+				<td>${frappe.utils.escape_html(row.payment_method || '-')}${row.is_advance ? ' <span class="pay-muted" title="Taken before its Job Card existed">(advance)</span>' : ''}</td>
 				<td>${frappe.utils.escape_html(row.deposit_to || '-')}</td>
 				<td>${frappe.utils.escape_html(row.reference || '-')}</td>
 				<td>${quotation_cell}</td>
