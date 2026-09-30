@@ -134,6 +134,11 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
         <div style="margin-top: 10px; font-size: 14px; font-weight: bold; color: #000; text-transform: uppercase; white-space: nowrap;">
             Quote No: {{{{ quote_name_parts[3 if quote_name_parts[0] == 'SAL' else 2]|int }}}}
         </div>
+        {{% elif doc.doctype == 'Sales Invoice' and not doc.get('is_return') %}}
+        <!-- Same bold one-line style as the Quotation's Quote No. -->
+        <div style="margin-top: 10px; font-size: 14px; font-weight: bold; color: #000; text-transform: uppercase; white-space: nowrap;">
+            Invoice No: {{{{ doc.name }}}}
+        </div>
         {{% else %}}
         <div style="color: #7f8c8d; font-size: 12px; text-transform: uppercase; margin-top: 10px;">{ref_label}:</div>
         <div style="font-size: 14px;">{{{{ doc.name }}}}</div>
