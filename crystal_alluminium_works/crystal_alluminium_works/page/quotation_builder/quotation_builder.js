@@ -514,7 +514,11 @@ function calculate_item_amount(item) {
 			return qty * rate;
 		}
 
-		return qty * get_glass_area_sqft(item) * rate;
+		// The priced area (server-computed on add/edit; the saved custom_area_sqft on Edit in
+		// Builder, which the reloaded per-sqft rate was derived from) — re-multiplying the
+		// rounded width_ft x height_ft drifted from the saved glass amount (2,160.93 vs 2,160.64).
+		let area_sqft = flt(item.area_sqft || 0) || get_glass_area_sqft(item);
+		return qty * area_sqft * rate;
 	}
 
 	return qty * rate;
@@ -541,14 +545,13 @@ function apply_price_adjustment_to_item(item, adjustment) {
 		item.rate = item._base_rate;
 	}
 
-	item.amount = calculate_item_amount(item);
+	item.amount = calculate_item_amount(item) + get_glass_services_amount(item);
 	item._price_adj_key = price_adjustment_key(adjustment);
 	item._adjusted_rate = item.rate;
 }
 
 function sync_price_adjustment() {
 	let adjustment = window.qb_state.price_adjustment;
-	let key = price_adjustment_key(adjustment);
 
 	window.qb_state.items.forEach(function (item) {
 		// The edit dialogs rebuild an item with Object.assign({}, it, ...), which
@@ -559,9 +562,10 @@ function sync_price_adjustment() {
 		if (rate_replaced) {
 			item._base_rate = flt(item.rate || 0);
 		}
-		if (rate_replaced || item._price_adj_key !== key) {
-			apply_price_adjustment_to_item(item, adjustment);
-		}
+		// Every row, every time — not only when the key changed — so an item's amount is
+		// derived one way whether it was just added, edited, or reloaded via Edit in Builder
+		// (the dialogs' own totals otherwise survived only on rows already seen here).
+		apply_price_adjustment_to_item(item, adjustment);
 	});
 }
 
@@ -576,7 +580,8 @@ function get_item_unadjusted_rate(item) {
 }
 
 function get_item_unadjusted_amount(item) {
-	return calculate_item_amount(Object.assign({}, item, { rate: get_item_unadjusted_rate(item) }));
+	return calculate_item_amount(Object.assign({}, item, { rate: get_item_unadjusted_rate(item) }))
+		+ get_glass_services_amount(item);
 }
 
 function get_builder_unadjusted_subtotal() {
@@ -798,11 +803,25 @@ function get_glass_breakdown_entry(item, matcher) {
 	return breakdown.find(entry => matcher(entry || {})) || null;
 }
 
+// Glass service lines in a breakdown: server labels ("Polishing (8-10)") and the quotation
+// rows Edit in Builder reloads ("Glass Polishing (8-10)") both match.
+const QB_GLASS_SERVICE_LABEL = /polish|hole|notch|sandblast/i;
+
 function get_glass_base_entry(item) {
 	return get_glass_breakdown_entry(item, entry => {
 		let label = (entry.label || '').trim().toLowerCase();
-		return label === 'glass' || label.startsWith('glass ');
+		if (QB_GLASS_SERVICE_LABEL.test(label)) return false;
+		return label === 'glass' || label.startsWith('glass ') || label === 'base material';
 	});
+}
+
+// Polishing / holes / notches / sandblasting on a glass item. Server-priced on save and never
+// touched by the +/- adjustment, but part of what the item costs.
+function get_glass_services_amount(item) {
+	if (item.category !== 'Glass') return 0;
+	return (item.glass_breakdown || [])
+		.filter(entry => QB_GLASS_SERVICE_LABEL.test((entry && entry.label) || ''))
+		.reduce((sum, entry) => sum + flt(entry.amount || 0), 0);
 }
 
 function get_glass_polishing_entry(item) {
