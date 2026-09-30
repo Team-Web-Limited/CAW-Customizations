@@ -579,7 +579,6 @@ def build_crystal_invoice_list_html():
 <div class="row" style="margin-bottom: 14px;">
     <div class="col-xs-7">
         <div style="font-size: 13px; font-weight: bold; color: #000; text-transform: uppercase;">Period: {{ period }}</div>
-        <div style="margin-top: 4px; font-size: 13px; font-weight: bold; color: #000; text-transform: uppercase;">Status: {{ status }}</div>
         {% if search %}
         <div style="margin-top: 4px; font-size: 13px; font-weight: bold; color: #000; text-transform: uppercase;">Search: {{ search }}</div>
         {% endif %}
@@ -587,7 +586,6 @@ def build_crystal_invoice_list_html():
     <div class="col-xs-5 text-right">
         <div style="color: #7f8c8d; font-size: 12px; text-transform: uppercase;">Generated</div>
         <div style="font-size: 13px;">{{ frappe.utils.format_datetime(generated_on, "dd-MM-yyyy HH:mm") }}</div>
-        <div style="font-size: 13px;">{{ generated_by }}</div>
     </div>
 </div>
 

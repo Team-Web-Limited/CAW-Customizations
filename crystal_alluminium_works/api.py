@@ -1662,12 +1662,10 @@ def download_sales_invoices_pdf(search=None, status=None, from_date=None, to_dat
             "title": title,
             "show_pin_and_balance": not is_cash,
             "period": period,
-            "status": status if status and status != "All" else "All",
             "search": (search or "").strip(),
             "total_amount": total_amount,
             "total_balance": total_balance,
             "generated_on": now_datetime(),
-            "generated_by": frappe.utils.get_fullname(frappe.session.user),
         },
     )
     pdf_file = _crystal_body_to_pdf(body, title)

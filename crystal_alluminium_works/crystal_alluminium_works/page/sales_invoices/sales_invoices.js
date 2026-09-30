@@ -5,14 +5,6 @@ frappe.pages['sales-invoices'].on_page_load = function(wrapper) {
 		single_column: true,
 	});
 
-	page.set_primary_action('New Draft Invoice', function() {
-		frappe.new_doc('Sales Invoice');
-	});
-
-	page.set_secondary_action('Sales Orders', function() {
-		frappe.set_route('sales-orders');
-	});
-
 	wrapper.sales_invoices_page = page;
 	$(page.body).html(get_sales_invoices_html());
 	bind_sales_invoices_events(page);
