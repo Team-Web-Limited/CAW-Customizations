@@ -181,9 +181,7 @@ async function open_new_customer_dialog(page) {
 
 function set_customer_detail_actions(page, customer_name) {
 	page.set_title('Customer Details');
-	page.set_primary_action('Open Customer', function () {
-		frappe.set_route('Form', 'Customer', customer_name);
-	});
+	page.clear_primary_action();
 	page.set_secondary_action('Back to Customers', function () {
 		frappe.set_route('customer-manager');
 	});
@@ -332,13 +330,6 @@ function bind_customer_manager_events(page) {
 
 	$(wrapper).on('click', '.cm-detail-back', function () {
 		frappe.set_route('customer-manager');
-	});
-
-	$(wrapper).on('click', '.cm-open-customer', function () {
-		let name = $(this).attr('data-name');
-		if (name) {
-			frappe.set_route('Form', 'Customer', name);
-		}
 	});
 
 	$(wrapper).on('click', '.cm-invoice-row', function () {
