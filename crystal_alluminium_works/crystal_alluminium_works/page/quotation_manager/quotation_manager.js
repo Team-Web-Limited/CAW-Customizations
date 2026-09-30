@@ -835,6 +835,7 @@ function render_quotation_dashboard(page, quotation_name, wrapper, auto_amend) {
 			
 			.qm-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 			.qm-actions #btn-amend-quo { order: 999; margin-left: auto; }
+			.qm-actions #btn-mark-lost { order: 999; }
 			.qm-actions > p { order: 1000; }
 			.qm-toggle-icon.rotated { transform: rotate(90deg); }
 
@@ -1084,12 +1085,12 @@ function get_action_buttons(doc, sales_invoices, existing_job_card, deposit_cred
 		`;
 	}
 
-	// The cut-list only carries Width/Height/No for Cut Size glass — Sheet rows have no
-	// cut dimensions, so with nothing but those (or no Glass at all) the export is empty.
+	// The cut-list exports cut-size (Resized) glass only — api._is_cut_size_glass — so
+	// without any such line there is nothing to export.
 	let has_layout_items = ((doc || {}).items || []).some(item =>
 		!item.custom_auto_generated &&
 		item.custom_product_category === 'Glass' &&
-		item.custom_glass_sale_mode !== 'Sheet'
+		(item.custom_glass_sale_mode || 'Resized') === 'Resized'
 	);
 	if (has_layout_items) {
 		buttons += `

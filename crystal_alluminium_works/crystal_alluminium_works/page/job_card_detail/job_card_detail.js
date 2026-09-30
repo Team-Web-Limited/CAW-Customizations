@@ -2771,12 +2771,12 @@ function render_single_job_card_detail(job_card, quotation, history, sales_invoi
 		(item.custom_glass_sale_mode === 'Resized' || item.custom_glass_type === 'Laminated')
 	);
 
-	// The cut-list only carries Width/Height/No for Cut Size glass — Sheet rows have no
-	// cut dimensions, so with nothing but those (or no Glass at all) the export is empty.
+	// The cut-list exports cut-size (Resized) glass only — api._is_cut_size_glass — so
+	// without any such line there is nothing to export.
 	let has_layout_items = ((quotation || {}).items || []).some(item =>
 		!item.custom_auto_generated &&
 		item.custom_product_category === 'Glass' &&
-		item.custom_glass_sale_mode !== 'Sheet'
+		(item.custom_glass_sale_mode || 'Resized') === 'Resized'
 	);
 	let status_color = {
 		'Draft': 'orange',

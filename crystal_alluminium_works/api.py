@@ -607,39 +607,34 @@ def _dimension_value_only(value_mm, dimension_uom=None):
     return flt(value_mm, 0)
 
 
+def _is_cut_size_glass(row):
+    """Glass cut to the customer's measurements (sale mode Resized) — the only lines
+    the workshop cut-list is for. Full Sheet / Sheet glass leaves the store uncut."""
+    return (
+        not row.get("custom_auto_generated")
+        and (row.get("custom_product_category") or "") == "Glass"
+        and (row.get("custom_glass_sale_mode") or "Resized") == "Resized"
+    )
+
+
 def _build_layout_rows(items):
-    """Cut-list rows for the workshop floor: just Code/Item/No/Width/Height/Pcs,
-    one row per quotation line — the same rows the Crystal Job Card PDF's main
-    items table shows (auto-generated service rows and Ceiling items excluded),
-    without the Qty/UOM/Color/Polish/Holes/Notches columns the PDF also carries.
-    Width/Height are exported as bare numbers (no "mm"/inch-mark suffix) so
-    they read as plain glass sizes in the spreadsheet."""
+    """Cut-list rows for the workshop floor: Code/Item/No/Width/Height/Pcs for each
+    cut-size glass line (see _is_cut_size_glass) — aluminium, fittings, ceiling and
+    sheet glass carry no cut measurements, so they are left out. Width/Height are
+    exported as bare numbers (no "mm"/inch-mark suffix) so they read as plain glass
+    sizes in the spreadsheet."""
     rows = [["Code", "Item", "No", "Width", "Height", "Pcs"]]
     for row in items:
-        if row.custom_auto_generated or (row.custom_product_category or "") == "Ceiling":
+        if not _is_cut_size_glass(row):
             continue
-
-        category = row.custom_product_category or ""
-        pieces = flt(row.qty or 0)
-        if category == "Glass" and row.custom_glass_sale_mode == "Sheet":
-            pieces = flt(row.custom_sheet_pcs or 0)
-
-        if category == "Glass":
-            numbering = row.custom_numbering or "-"
-            width = _dimension_value_only(row.custom_width_mm, row.get("custom_dimension_uom"))
-            height = _dimension_value_only(row.custom_height_mm, row.get("custom_dimension_uom"))
-        else:
-            numbering = "-"
-            width = "-"
-            height = "-"
 
         rows.append([
             row.item_code or "",
             row.item_name or row.item_code or "",
-            numbering,
-            width,
-            height,
-            flt(pieces, 2),
+            row.custom_numbering or "-",
+            _dimension_value_only(row.custom_width_mm, row.get("custom_dimension_uom")),
+            _dimension_value_only(row.custom_height_mm, row.get("custom_dimension_uom")),
+            flt(row.qty or 0, 2),
         ])
 
     return rows
