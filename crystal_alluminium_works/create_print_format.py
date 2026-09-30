@@ -49,7 +49,9 @@ PRINT_UOM_BY_ITEM_CODE = {
         ["F09", "F10", "F10.1", "F10.2", "F10.3", "F10.4", "F68.0", "F68.1", "F68.2",
          "F68.2.0", "F68.2.1", "F68.2.2", "F68.3", "F68.3.1",
          # Friction arms
-         "F32", "F33", "F34", "F35", "F36", "F37", "F37.1", "F38"],
+         "F32", "F33", "F34", "F35", "F36", "F37", "F37.1", "F38",
+         # Door and booth hinges (shower hinges stay per piece)
+         "F23", "F23.1", "F23.2", "F23.3", "F24", "F24.1", "F25", "F25.1"],
         "Pair(s)",
     ),
     **dict.fromkeys(
