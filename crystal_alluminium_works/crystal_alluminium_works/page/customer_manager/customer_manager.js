@@ -407,17 +407,34 @@ async function render_customer_detail(page, customer_name) {
 	`);
 
 	try {
-		const [customer, cash_sales, sales_invoices] = await Promise.all([
-			frappe.db.get_doc('Customer', customer_name),
-			get_customer_manager_invoices(customer_name, 'Cash'),
-			get_customer_manager_invoices(customer_name, 'Cheque'),
-		]);
+		let customer, cash_sales, sales_invoices, quotations, payments, job_cards;
+		if (is_walkin_customer_key(customer_name)) {
+			// A walk-in has no Customer record — their records are the shared Cash Customer's,
+			// narrowed to this person server-side (api.get_walkin_customer_detail).
+			const response = await frappe.call({
+				method: 'crystal_alluminium_works.api.get_walkin_customer_detail',
+				args: { key: customer_name },
+			});
+			const detail = response.message || {};
+			customer = detail.customer;
+			cash_sales = detail.invoices || [];
+			sales_invoices = [];
+			quotations = detail.quotations || [];
+			payments = detail.payments || [];
+			job_cards = detail.job_cards || [];
+		} else {
+			[customer, cash_sales, sales_invoices] = await Promise.all([
+				frappe.db.get_doc('Customer', customer_name),
+				get_customer_manager_invoices(customer_name, 'Cash'),
+				get_customer_manager_invoices(customer_name, 'Cheque'),
+			]);
 
-		const [quotations, payments, job_cards] = await Promise.all([
-			get_customer_manager_quotations(customer.name),
-			get_customer_manager_payments(customer.name),
-			get_customer_manager_job_cards(customer.name),
-		]);
+			[quotations, payments, job_cards] = await Promise.all([
+				get_customer_manager_quotations(customer.name),
+				get_customer_manager_payments(customer.name),
+				get_customer_manager_job_cards(customer.name),
+			]);
+		}
 
 		if (page.customer_manager_route_key !== frappe.get_route().join('|')) {
 			return;
@@ -450,6 +467,11 @@ async function render_customer_detail(page, customer_name) {
 		`);
 	}
 	
+}
+
+// Walk-ins (see api.WALKIN_CUSTOMER_KEY_PREFIX) are listed under "walk-in:<name>|<phone>".
+function is_walkin_customer_key(value) {
+	return String(value || '').indexOf('walk-in:') === 0;
 }
 
 async function get_customer_manager_invoices(customer_name, payment_mode) {
@@ -635,7 +657,7 @@ function get_customer_detail_html(customer, transactions) {
 
 			<div class="cm-detail-info">
 				<div class="cm-detail-info-grid">
-					${get_customer_field_html('Customer ID', customer.name)}
+					${get_customer_field_html('Customer ID', customer.is_walkin ? 'Cash Customer (walk-in)' : customer.name)}
 					${get_customer_field_html('Customer Type', customer.custom_customer_billing_type)}
 					${get_customer_field_html('Entity Type', customer.customer_type)}
 					${get_customer_field_html('PIN (Tax ID)', customer.tax_id)}

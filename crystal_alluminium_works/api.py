@@ -1692,6 +1692,25 @@ def download_sales_invoices_pdf(search=None, status=None, from_date=None, to_dat
     frappe.local.response.type = "pdf"
 
 
+# Walk-ins have no Customer record of their own — every cash sale is billed to the one shared
+# Cash Customer, with the person's name/phone/PIN stamped on each Quotation. Customer Manager
+# lists them alongside real customers under a key of their own ("walk-in:<name>|<phone>"),
+# since names repeat and the phone is what tells two apart.
+WALKIN_CUSTOMER_KEY_PREFIX = "walk-in:"
+
+
+def _walkin_customer_key(name, phone):
+    return f"{WALKIN_CUSTOMER_KEY_PREFIX}{(name or '').strip()}|{(phone or '').strip()}"
+
+
+def _parse_walkin_customer_key(key):
+    key = (key or "").strip()
+    if not key.startswith(WALKIN_CUSTOMER_KEY_PREFIX):
+        return None
+    name, _, phone = key[len(WALKIN_CUSTOMER_KEY_PREFIX):].partition("|")
+    return frappe._dict(name=name.strip(), phone=phone.strip())
+
+
 @frappe.whitelist()
 def get_customer_manager_customers(search=None, customer_type="all", page=1, page_length=30):
     search = (search or "").strip()
@@ -1700,41 +1719,65 @@ def get_customer_manager_customers(search=None, customer_type="all", page=1, pag
     page_length = min(max(frappe.utils.cint(page_length or 30), 1), 100)
     offset = (page - 1) * page_length
 
-    conditions = []
+    customer_conditions = []
+    walkin_conditions = [
+        "party_name = %(shared_customer)s",
+        "IFNULL(TRIM(custom_customer_name), '') != ''",
+    ]
     params = {
         "limit": page_length + 1,
         "offset": offset,
+        "shared_customer": SHARED_CASH_CUSTOMER_NAME,
+        "walkin_prefix": WALKIN_CUSTOMER_KEY_PREFIX,
     }
 
     if search:
         params["search"] = f"%{search}%"
-        conditions.append("(name LIKE %(search)s OR customer_name LIKE %(search)s OR IFNULL(tax_id, '') LIKE %(search)s)")
+        customer_conditions.append("(name LIKE %(search)s OR customer_name LIKE %(search)s OR IFNULL(tax_id, '') LIKE %(search)s OR IFNULL(mobile_no, '') LIKE %(search)s)")
+        walkin_conditions.append(
+            "(custom_customer_name LIKE %(search)s OR IFNULL(custom_customer_phone, '') LIKE %(search)s OR IFNULL(custom_customer_pin, '') LIKE %(search)s)"
+        )
 
     if customer_type == "invoice":
-        conditions.append("custom_customer_billing_type = 'Invoice Customer'")
+        customer_conditions.append("custom_customer_billing_type = 'Invoice Customer'")
     elif customer_type == "cash":
-        conditions.append("custom_customer_billing_type = 'Cash Customer'")
+        customer_conditions.append("custom_customer_billing_type = 'Cash Customer'")
+    include_walkins = customer_type in ("cash", "all")
 
-    where_sql = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-    total_count = frappe.db.sql(
-        f"""
-        SELECT COUNT(*) AS total
-        FROM `tabCustomer`
-        {where_sql}
-        """,
-        params,
-        as_dict=True,
-    )[0].total
-    rows = frappe.db.sql(
-        f"""
+    customer_where = f"WHERE {' AND '.join(customer_conditions)}" if customer_conditions else ""
+    union_sql = f"""
         SELECT
             name,
             customer_name,
             tax_id,
             COALESCE(NULLIF(TRIM(mobile_no), ''), '') AS phone_number,
-            custom_customer_billing_type AS customer_type
+            custom_customer_billing_type AS customer_type,
+            creation,
+            0 AS is_walkin
         FROM `tabCustomer`
-        {where_sql}
+        {customer_where}
+    """
+    if include_walkins:
+        # One row per walk-in (name + phone), with the PIN from their latest quotation.
+        union_sql += f"""
+        UNION ALL
+        SELECT
+            CONCAT(%(walkin_prefix)s, TRIM(custom_customer_name), '|', IFNULL(TRIM(custom_customer_phone), '')) AS name,
+            TRIM(custom_customer_name) AS customer_name,
+            SUBSTRING_INDEX(GROUP_CONCAT(NULLIF(TRIM(custom_customer_pin), '') ORDER BY creation DESC SEPARATOR '\\n'), '\\n', 1) AS tax_id,
+            IFNULL(TRIM(custom_customer_phone), '') AS phone_number,
+            'Cash Customer' AS customer_type,
+            MAX(creation) AS creation,
+            1 AS is_walkin
+        FROM `tabQuotation`
+        WHERE {' AND '.join(walkin_conditions)}
+        GROUP BY TRIM(custom_customer_name), IFNULL(TRIM(custom_customer_phone), '')
+        """
+
+    total_count = frappe.db.sql(f"SELECT COUNT(*) FROM ({union_sql}) AS customers", params)[0][0]
+    rows = frappe.db.sql(
+        f"""
+        SELECT * FROM ({union_sql}) AS customers
         ORDER BY creation DESC
         LIMIT %(limit)s OFFSET %(offset)s
         """,
@@ -1748,6 +1791,110 @@ def get_customer_manager_customers(search=None, customer_type="all", page=1, pag
         "page": page,
         "page_length": page_length,
         "total_count": total_count,
+    }
+
+
+@frappe.whitelist()
+def get_walkin_customer_detail(key):
+    """Everything Customer Manager's detail view shows, for one walk-in: their quotations (on the
+    shared Cash Customer, stamped with their name and phone), the job cards and invoices made from
+    those, and the payments carrying their phone or tied to those quotations / job cards."""
+    walkin = _parse_walkin_customer_key(key)
+    if not walkin or not walkin.name:
+        frappe.throw("Not a walk-in customer.")
+
+    quotation_filters = {"party_name": SHARED_CASH_CUSTOMER_NAME, "custom_customer_name": walkin.name}
+    if walkin.phone:
+        quotation_filters["custom_customer_phone"] = walkin.phone
+    else:
+        quotation_filters["custom_customer_phone"] = ["in", ["", None]]
+    quotations = frappe.get_all(
+        "Quotation",
+        filters=quotation_filters,
+        fields=["name", "transaction_date", "valid_till", "status", "currency", "grand_total", "rounded_total",
+                "total_taxes_and_charges", "docstatus", "creation", "custom_customer_pin"],
+        order_by="transaction_date desc, creation desc",
+        limit_page_length=0,
+    )
+    quotation_names = [q.name for q in quotations]
+    if not quotation_names:
+        frappe.throw(f"No quotations found for walk-in {walkin.name}.")
+
+    job_cards = frappe.get_all(
+        "CAW Job Card",
+        filters={"customer": SHARED_CASH_CUSTOMER_NAME, "quotation": ["in", quotation_names]},
+        fields=["name", "quotation", "payment_mode", "payment_option", "quotation_amount", "payment_amount",
+                "balance_amount", "status", "creation", "modified"],
+        order_by="creation desc",
+        limit_page_length=0,
+    )
+    job_card_names = [j.name for j in job_cards]
+
+    invoice_or_filters = [["custom_source_quotation", "in", quotation_names]]
+    if job_card_names:
+        invoice_or_filters.append(["custom_source_job_card", "in", job_card_names])
+    invoices = frappe.get_list(
+        "Sales Invoice",
+        filters={"customer": SHARED_CASH_CUSTOMER_NAME},
+        or_filters=invoice_or_filters,
+        fields=SALES_INVOICE_LIST_FIELDS,
+        order_by="creation desc",
+        limit_page_length=0,
+    )
+    _attach_job_card_balance_status(invoices)
+
+    payment_names = set()
+    if walkin.phone:
+        payment_names |= set(frappe.get_all(
+            "Payments", filters={"customer": SHARED_CASH_CUSTOMER_NAME, "customer_phone": walkin.phone}, pluck="name"))
+    payment_names |= set(frappe.get_all(
+        "Payments", filters={"customer": SHARED_CASH_CUSTOMER_NAME, "quotation": ["in", quotation_names]}, pluck="name"))
+    if job_card_names:
+        payment_names |= set(frappe.get_all(
+            "Payments", filters={"customer": SHARED_CASH_CUSTOMER_NAME, "job_card": ["in", job_card_names]}, pluck="name"))
+        payment_names |= {
+            int(parent) if str(parent).isdigit() else parent
+            for parent in frappe.get_all(
+                "Payment Job Card Allocation",
+                filters={"parenttype": "Payments", "job_card": ["in", job_card_names]},
+                pluck="parent",
+            )
+        }
+    payments = []
+    if payment_names:
+        payments = frappe.get_all(
+            "Payments",
+            filters={"name": ["in", list(payment_names)]},
+            fields=["name", "amount", "date", "payment_method", "deposit_to", "reference", "job_card", "payment_type", "creation"],
+            order_by="date desc, creation desc",
+            limit_page_length=0,
+        )
+        allocations = {}
+        for row in frappe.get_all(
+            "Payment Job Card Allocation",
+            filters={"parenttype": "Payments", "parent": ["in", [str(p.name) for p in payments]]},
+            fields=["parent", "job_card", "amount"],
+            limit_page_length=0,
+        ):
+            allocations.setdefault(str(row.parent), []).append({"job_card": row.job_card, "amount": row.amount})
+        for payment in payments:
+            payment["allocations"] = allocations.get(str(payment.name), [])
+
+    pin = next((q.custom_customer_pin for q in quotations if (q.custom_customer_pin or "").strip()), "")
+    return {
+        "customer": {
+            "name": _walkin_customer_key(walkin.name, walkin.phone),
+            "customer_name": walkin.name,
+            "custom_customer_billing_type": "Cash Customer",
+            "customer_type": "Walk-in",
+            "tax_id": pin,
+            "mobile_no": walkin.phone,
+            "is_walkin": 1,
+        },
+        "invoices": invoices,
+        "quotations": quotations,
+        "job_cards": job_cards,
+        "payments": payments,
     }
 
 
