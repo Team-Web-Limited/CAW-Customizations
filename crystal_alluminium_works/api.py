@@ -1536,13 +1536,41 @@ def get_sales_invoices_page(search=None, status=None, customer=None, from_date=N
     )
     total_count = (count_result[0].total_count if count_result else 0) or 0
 
+    # Totals cover every invoice the filters match, not just this page.
+    total_amount, total_balance = _sales_invoice_list_totals(
+        frappe.get_list(
+            "Sales Invoice",
+            filters=filters,
+            or_filters=or_filters,
+            fields=["grand_total", "total_taxes_and_charges", "outstanding_amount", "docstatus"],
+            page_length=0,
+        )
+    )
+
     return {
         "rows": rows,
         "page": page,
         "page_length": page_length,
         "total_count": total_count,
         "has_next": start + len(rows) < total_count,
+        "total_amount": total_amount,
+        "total_balance": total_balance,
     }
+
+
+def _sales_invoice_list_totals(rows):
+    """Amount / Balance totals for the Invoices and Cash Sales lists and their Download,
+    as shown on screen: 16% visual VAT added where the invoice has no tax row. Sets
+    display_amount / display_balance on each row. Cancelled invoices are listed but not counted."""
+    total_amount = total_balance = 0
+    for row in rows:
+        vat_multiplier = 1 + VAT_RATE if not flt(row.total_taxes_and_charges) else 1
+        row.display_amount = flt(row.grand_total) * vat_multiplier
+        row.display_balance = flt(row.outstanding_amount) * vat_multiplier
+        if row.docstatus != 2:
+            total_amount += row.display_amount
+            total_balance += row.display_balance
+    return total_amount, total_balance
 
 
 SALES_INVOICE_LIST_FIELDS = [
@@ -1635,16 +1663,9 @@ def download_sales_invoices_pdf(search=None, status=None, from_date=None, to_dat
     is_cash = payment_mode == "Cash"
     title = "Cash Sales" if is_cash else "Invoices"
 
-    total_amount = total_balance = 0
+    total_amount, total_balance = _sales_invoice_list_totals(rows)
     for row in rows:
-        vat_multiplier = 1.16 if not flt(row.total_taxes_and_charges) else 1
-        row.display_amount = flt(row.grand_total) * vat_multiplier
-        row.display_balance = flt(row.outstanding_amount) * vat_multiplier
         row.display_status = row.status if is_cash else (row.get("job_card_balance_status") or row.status)
-        # Cancelled invoices are listed but not counted.
-        if row.docstatus != 2:
-            total_amount += row.display_amount
-            total_balance += row.display_balance
 
     if from_date and to_date:
         period = f"{formatdate(from_date)} to {formatdate(to_date)}"

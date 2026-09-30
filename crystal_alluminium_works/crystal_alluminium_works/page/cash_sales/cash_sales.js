@@ -5,16 +5,11 @@ frappe.pages['cash-sales'].on_page_load = function(wrapper) {
 		single_column: true,
 	});
 
-	page.set_primary_action('New Cash Sale', function() {
-		frappe.new_doc('Sales Invoice');
-	});
-
-	page.set_secondary_action('Sales Orders', function() {
-		frappe.set_route('sales-orders');
-	});
-
 	wrapper.sales_invoices_page = page;
 	$(page.body).html(get_sales_invoices_html());
+	// Open on today's invoices; Clear empties the dates to show everything.
+	let today = frappe.datetime.get_today();
+	$(page.body).find('[data-filter="from_date"], [data-filter="to_date"]').val(today);
 	bind_sales_invoices_events(page);
 	load_sales_invoices(page, 1);
 };
@@ -139,6 +134,7 @@ function load_sales_invoices(page, page_number) {
 		page_length: state.page_length,
 	});
 
+	$body.find('.si-list-foot').empty();
 	$body.find('.si-list-body').html(`
 		<tr>
 			<td colspan="5" style="padding:24px; text-align:center; color:var(--text-muted);">
@@ -158,8 +154,11 @@ function load_sales_invoices(page, page_number) {
 			state.page_length = message.page_length || state.page_length;
 			state.total_count = message.total_count || 0;
 			state.has_next = !!message.has_next;
+			state.total_amount = message.total_amount || 0;
+			state.total_balance = message.total_balance || 0;
 
 			render_sales_invoices_table(page, rows);
+			render_sales_invoices_totals(page, rows);
 			render_sales_invoices_pagination(page);
 		},
 	});
@@ -208,6 +207,24 @@ function render_sales_invoices_table(page, rows) {
 	}).join('');
 
 	$body.html(html);
+}
+
+// Totals span every page the filters match (summed server-side), lined up under their columns.
+// Cancelled invoices are not counted.
+function render_sales_invoices_totals(page, rows) {
+	let state = get_sales_invoices_state(page);
+	let $foot = $(page.body).find('.si-list-foot');
+	if (!rows.length) {
+		$foot.empty();
+		return;
+	}
+	$foot.html(`
+		<tr>
+			<td colspan="3" style="padding:12px 16px; font-weight:700;">Total</td>
+			<td style="padding:12px 16px; text-align:right; font-weight:700;">${format_currency(state.total_amount || 0, 'KES')}</td>
+			<td></td>
+		</tr>
+	`);
 }
 
 function render_sales_invoices_pagination(page) {
@@ -337,6 +354,11 @@ function get_sales_invoices_html() {
 			background: var(--subtle-fg);
 		}
 
+		.si-list-foot td {
+			border-top: 2px solid var(--border-color);
+			background: var(--subtle-fg);
+		}
+
 		.si-list-pagination {
 			padding: 16px 18px;
 			border-top: 1px solid var(--border-color);
@@ -414,6 +436,7 @@ function get_sales_invoices_html() {
 							</td>
 						</tr>
 					</tbody>
+					<tfoot class="si-list-foot"></tfoot>
 				</table>
 			</div>
 			<div class="si-list-pagination"></div>

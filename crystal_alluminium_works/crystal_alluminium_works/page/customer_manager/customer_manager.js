@@ -135,9 +135,8 @@ async function open_new_customer_dialog(page) {
 				fieldtype: 'Data',
 				fieldname: 'tax_id',
 				label: 'KRA PIN',
-				depends_on: "eval:doc.customer_billing_type=='Invoice Customer'",
-				mandatory_depends_on: "eval:doc.customer_billing_type=='Invoice Customer'",
-				description: 'Each KRA PIN can belong to only one customer.'
+				// Shown for every customer type; only Invoice Customers must have one.
+				mandatory_depends_on: "eval:doc.customer_billing_type=='Invoice Customer'"
 			},
 			{ fieldtype: 'Data', fieldname: 'email_id', label: 'Email Address (optional)', options: 'Email' }
 		],
@@ -148,7 +147,6 @@ async function open_new_customer_dialog(page) {
 				frappe.msgprint('Mobile Number must be exactly 10 digits.');
 				return;
 			}
-			let is_invoice = values.customer_billing_type === 'Invoice Customer';
 
 			dialog.disable_primary_action();
 			try {
@@ -158,7 +156,7 @@ async function open_new_customer_dialog(page) {
 						customer_billing_type: values.customer_billing_type,
 						customer_name: (values.customer_name || '').trim(),
 						mobile_no: mobile_no,
-						tax_id: is_invoice ? (values.tax_id || '').trim() : '',
+						tax_id: (values.tax_id || '').trim(),
 						email_id: (values.email_id || '').trim()
 					},
 					freeze: true,

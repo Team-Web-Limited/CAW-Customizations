@@ -314,7 +314,9 @@ def get_statement_dict(doc, psoa):
 		rows = _build_rows(events, from_date, to_date, currency)
 
 		# Nothing but the Opening/Total/Closing scaffolding means no activity to show.
-		if len(rows) <= 3 and not flt(rows[0].balance):
+		# Bulk runs skip those customers; a single-customer download still wants the
+		# (zero-balance) statement rather than an error.
+		if len(rows) <= 3 and not flt(rows[0].balance) and not doc.flags.include_empty_statements:
 			continue
 
 		ageing = _build_ageing(job_cards, events, to_date, doc.ageing_based_on) if doc.include_ageing else ""
@@ -417,6 +419,7 @@ def download_customer_statement_of_account(customer):
 	doc.print_format = CRYSTAL_STATEMENT_PRINT_FORMAT
 	doc.show_remarks = 0
 	doc.append("customers", {"customer": customer_doc.name, "customer_name": customer_doc.customer_name})
+	doc.flags.include_empty_statements = True
 
 	report = psoa.get_report_pdf(doc)
 	if not report:

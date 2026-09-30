@@ -96,7 +96,7 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
 {{% endmacro %}}
 
 <div class="letterhead" style="margin-bottom: 20px;">
-    <img src="/assets/crystal_alluminium_works/images/crystal-alluminium-works-letterhead.jpeg" style="max-width: 100%; height: auto;" alt="Crystal Aluminium Works">
+    <img src="/assets/crystal_alluminium_works/images/crystal-alluminium-works-letterhead.jpeg" style="display: block; width: 100%; height: auto;" alt="Crystal Aluminium Works">
 </div>
 <hr style="border-top: 2px solid #ecf0f1; margin-bottom: 20px;">
 <div class="row" style="margin-bottom: 10px;">
@@ -552,10 +552,11 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
 {{% if doc.doctype == 'Sales Invoice' %}}
 {{# One line, not stacked. Empty inline-blocks sit on the text baseline, so each dotted
    line lines up with its label (table-cell borders drifted below it in wkhtmltopdf).
-   A credit note has no delivery, so it drops Vehicle No and widens the other two. #}}
+   A credit note has no delivery: it drops Vehicle No, reads APPROVED BY instead of
+   COLLECTED BY, and widens the other two. #}}
 <div style="margin-top: 40px; white-space: nowrap; font-size: 13px; font-weight: bold; color: #2c3e50; text-transform: uppercase;">
     {{% if doc.get('is_return') %}}
-    Collected By <span style="display: inline-block; width: 45%; border-bottom: 1px dotted #2c3e50;"></span>
+    APPROVED BY <span style="display: inline-block; width: 45%; border-bottom: 1px dotted #2c3e50;"></span>
     &nbsp;&nbsp; Signature <span style="display: inline-block; width: 30%; border-bottom: 1px dotted #2c3e50;"></span>
     {{% else %}}
     Collected By <span style="display: inline-block; width: 36%; border-bottom: 1px dotted #2c3e50;"></span>
@@ -575,7 +576,7 @@ def build_crystal_invoice_list_html():
     by api.download_sales_invoices_pdf; Cash Sales leaves out the PIN and Balance columns."""
     return CRYSTAL_PAGE_STYLE + """
 <div class="letterhead" style="margin-bottom: 20px;">
-    <img src="/assets/crystal_alluminium_works/images/crystal-alluminium-works-letterhead.jpeg" style="max-width: 100%; height: auto;" alt="Crystal Aluminium Works">
+    <img src="/assets/crystal_alluminium_works/images/crystal-alluminium-works-letterhead.jpeg" style="display: block; width: 100%; height: auto;" alt="Crystal Aluminium Works">
 </div>
 <hr style="border-top: 2px solid #ecf0f1; margin-bottom: 20px;">
 
@@ -1103,6 +1104,231 @@ def build_crystal_job_card_print_format_html():
 """
 
 
+STATEMENT_PRINT_FORMAT_NAME = "Crystal Statement of Accounts"
+
+
+def build_crystal_statement_print_format_html():
+    """Crystal Statement of Accounts — rendered by erpnext's Process Statement Of Accounts
+    (see process_statement_of_accounts_override.py) with its General Ledger context (data,
+    filters, ageing, terms_and_conditions). Shares the Crystal letterhead image with the other
+    formats; "Statement" sits beside the customer box with the statement date below it.
+    Plain Jinja (not a .format() string)."""
+    return CRYSTAL_PAGE_STYLE + """
+{% macro voucher_label(voucher_type) %}
+    {% set t = (voucher_type or '')|trim %}
+    {% if t == 'Job Card' %}JC
+    {% elif t == 'Payment' %}PMT
+    {% elif t == 'Refund' %}REF
+    {% elif t == 'Sales Invoice' %}INV
+    {% elif t == 'Credit Note' %}CN
+    {% else %}{{ t or '-' }}{% endif %}
+{% endmacro %}
+
+{% set customer_id = filters.party[0] if filters.party else None %}
+{% set customer_display_name = filters.party_name[0] if filters.party_name else (filters.party[0] if filters.party else '') %}
+{% set customer_tax_id = filters.tax_id or (frappe.db.get_value('Customer', customer_id, 'tax_id') if customer_id else '') %}
+{% set statement_date = filters.to_date or filters.report_date %}
+
+<style>
+    .caw-soa-box {
+        border: 1px solid #dee2e6;
+        border-radius: 4px;
+        padding: 10px 14px;
+    }
+    .caw-soa-box-flush {
+        border-bottom: none;
+        border-bottom-left-radius: 0;
+        border-bottom-right-radius: 0;
+    }
+    .caw-soa-label {
+        color: #7f8c8d;
+        font-size: 11px;
+        margin-bottom: 3px;
+    }
+    .caw-soa-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-bottom: 20px;
+    }
+    .caw-soa-table th {
+        background-color: #f8f9fa;
+        color: #2c3e50;
+        padding: 6px 8px;
+        border: 1px solid #dee2e6;
+        font-size: 10px;
+    }
+    .caw-soa-table td {
+        padding: 6px 8px;
+        border: 1px solid #dee2e6;
+        vertical-align: middle;
+        font-size: 10px;
+    }
+    .caw-soa-ageing th, .caw-soa-ageing td {
+        text-align: center;
+        font-size: 9px;
+        padding: 5px 3px;
+    }
+    .caw-soa-ageing th {
+        text-transform: uppercase;
+    }
+</style>
+
+<div class="letterhead" style="margin-bottom: 12px;">
+    <img src="/assets/crystal_alluminium_works/images/crystal-alluminium-works-letterhead.jpeg" style="display: block; width: 100%; height: auto;" alt="Crystal Aluminium Works">
+</div>
+<hr style="border-top: 2px solid #ecf0f1; margin-bottom: 20px;">
+
+<div class="row" style="margin-bottom: 20px;">
+    <div class="col-xs-8">
+        <div class="caw-soa-box" style="height: 100%;">
+            <div style="font-size: 14px; font-weight: bold; color: #000; text-transform: uppercase; white-space: nowrap;">
+                Customer: {{ customer_display_name }}
+            </div>
+            {% if customer_tax_id %}
+            <div style="margin-top: 6px; font-size: 14px; font-weight: bold; color: #000; text-transform: uppercase; white-space: nowrap;">
+                PIN: {{ customer_tax_id }}
+            </div>
+            {% endif %}
+        </div>
+    </div>
+    <div class="col-xs-4 text-right">
+        <div style="font-size: 26px; font-weight: bold; color: #2c3e50; letter-spacing: 1px; line-height: 1.1;">Statement</div>
+        <div style="margin-top: 8px; font-size: 14px; font-weight: bold; color: #000; text-transform: uppercase; white-space: nowrap;">
+            Date: {{ frappe.utils.formatdate(statement_date) }}
+        </div>
+    </div>
+</div>
+
+<div class="row" style="margin-bottom: 0;">
+    <div class="col-xs-5" style="width: 50%;">&nbsp;</div>
+    <div class="col-xs-3" style="width: 25%;">
+        <div class="caw-soa-box caw-soa-box-flush">
+            <div class="caw-soa-label">Amount Due</div>
+            <div style="font-size: 16px; font-weight: bold; color: #2c3e50; white-space: nowrap;">
+                {{ frappe.utils.fmt_money(ageing.total_due if ageing else data[-1].balance, currency=filters.presentation_currency) }}
+            </div>
+        </div>
+    </div>
+    <div class="col-xs-4" style="width: 25%;">
+        <div class="caw-soa-box caw-soa-box-flush">
+            <div class="caw-soa-label">Amount Enc.</div>
+            <div style="font-size: 16px; font-weight: bold; color: #2c3e50;">&nbsp;</div>
+        </div>
+    </div>
+</div>
+
+<table class="caw-soa-table">
+    <thead>
+        <tr>
+            <th style="width: 14%; text-align: left;">Date</th>
+            <th style="width: 40%; text-align: left;">Transaction</th>
+            <th style="width: 23%; text-align: right;">Amount</th>
+            <th style="width: 23%; text-align: right;">Balance</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for row in data %}
+        <tr>
+            {% if row.posting_date %}
+                <td>{{ frappe.format(row.posting_date, 'Date') }}</td>
+                <td>
+                    {{ voucher_label(row.voucher_type) }} #{{ row.voucher_no }}
+                    {% if not (filters.party or filters.account) %}
+                        <br>{{ row.party or row.account }}
+                    {% endif %}
+                    {% if row.bill_no %}
+                        <br>{{ _("Supplier Invoice No") }}: {{ row.bill_no }}
+                    {% endif %}
+                    {% if filters.show_remarks and row.remarks %}
+                        <br>{{ _("Remarks") }}: {{ row.remarks }}
+                    {% endif %}
+                </td>
+                <td style="text-align: right">
+                    {{ frappe.utils.fmt_money(frappe.utils.flt(row.debit) - frappe.utils.flt(row.credit), currency=filters.presentation_currency) }}
+                </td>
+                <td style="text-align: right">
+                    {{ frappe.utils.fmt_money(row.balance, currency=filters.presentation_currency) }}
+                </td>
+            {% else %}
+                <td></td>
+                <td><b>{{ frappe.format(row.account, {"fieldtype": "Link"}) or "&nbsp;" }}</b></td>
+                <td style="text-align: right">
+                    {{ row.get('account', '') and frappe.utils.fmt_money(frappe.utils.flt(row.debit) - frappe.utils.flt(row.credit), currency=filters.presentation_currency) }}
+                </td>
+                <td style="text-align: right">
+                    {{ frappe.utils.fmt_money(row.balance, currency=filters.presentation_currency) }}
+                </td>
+            {% endif %}
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+{% if ageing %}
+<table class="caw-soa-table caw-soa-ageing">
+    <thead>
+        <tr>
+            <th>Current</th>
+            <th>1-30 Days Past Due</th>
+            <th>31-60 Days Past Due</th>
+            <th>61-90 Days Past Due</th>
+            <th>Over 90 Days Past Due</th>
+            <th>Amount Due</th>
+        </tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td>{{ frappe.utils.fmt_money(ageing.current, currency=filters.presentation_currency) }}</td>
+            <td>{{ frappe.utils.fmt_money(ageing.range1, currency=filters.presentation_currency) }}</td>
+            <td>{{ frappe.utils.fmt_money(ageing.range2, currency=filters.presentation_currency) }}</td>
+            <td>{{ frappe.utils.fmt_money(ageing.range3, currency=filters.presentation_currency) }}</td>
+            <td>{{ frappe.utils.fmt_money(ageing.range4, currency=filters.presentation_currency) }}</td>
+            <td><b>{{ frappe.utils.fmt_money(ageing.total_due, currency=filters.presentation_currency) }}</b></td>
+        </tr>
+    </tbody>
+</table>
+{% endif %}
+
+{% if terms_and_conditions %}
+<div style="margin-top: 15px; font-size: 11px; color: #495057;">
+    {{ terms_and_conditions }}
+</div>
+{% endif %}
+"""
+
+
+def create_crystal_statement_print_format():
+    """Store the statement layout on its Print Format (a General Ledger report format, not a
+    doctype one, so it doesn't go through create_crystal_print_format)."""
+    html = embed_letterhead_image(build_crystal_statement_print_format_html())
+    if frappe.db.exists("Print Format", STATEMENT_PRINT_FORMAT_NAME):
+        doc = frappe.get_doc("Print Format", STATEMENT_PRINT_FORMAT_NAME)
+        doc.html = html
+    else:
+        doc = frappe.get_doc({
+            "doctype": "Print Format",
+            "name": STATEMENT_PRINT_FORMAT_NAME,
+            "module": "Accounts",
+            "print_format_for": "Report",
+            "report": "General Ledger",
+            "print_format_type": "Jinja",
+            "custom_format": 1,
+            "standard": "No",
+            "html": html,
+        })
+    previous_in_migrate = frappe.flags.in_migrate
+    frappe.flags.in_migrate = True
+    try:
+        if doc.is_new():
+            doc.insert(ignore_permissions=True)
+        else:
+            doc.save(ignore_permissions=True)
+    finally:
+        frappe.flags.in_migrate = previous_in_migrate
+    frappe.db.commit()
+    print(f"Print Format '{STATEMENT_PRINT_FORMAT_NAME}' updated successfully.")
+
+
 def create_crystal_print_format(doctype, print_format_name, ref_label=None, terms=None, payment_details=""):
     context = get_print_format_context(print_format_name)
     ref_label = ref_label or context.get("ref_label")
@@ -1176,6 +1402,8 @@ def setup_formats():
         doctype="CAW Job Card",
         print_format_name="Crystal Job Card",
     )
+
+    create_crystal_statement_print_format()
 
     ensure_default_print_format_configurations()
 
