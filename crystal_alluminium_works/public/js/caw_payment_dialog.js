@@ -646,6 +646,15 @@
 										let balance = flt(info.balance || 0);
 										row.amount = Math.max(balance, 0);
 										row.payment_status = info.payment_status || 'Pending';
+										// A settled job card is read-only here: it shows as Paid but
+										// takes no allocation (api.py refuses one too).
+										if (row.payment_status === 'Paid') {
+											row.amount = 0;
+											frappe.show_alert({
+												message: __('Job Card {0} is fully paid — it is shown for reference and can\'t take this payment.', [row.job_card]),
+												indicator: 'green'
+											});
+										}
 										// The job card's own customer_name — for a Cash Customer job
 										// card this is the walk-in's real name, so a manually-added
 										// row shows the same name the auto-populated rows do.
@@ -677,6 +686,13 @@
 							reqd: 1,
 							columns: 2,
 							onchange: function() {
+								// A fully-paid job card's row is read-only — undo any amount typed into it.
+								let row = this.doc;
+								if (row && row.payment_status === 'Paid' && flt(row.amount) !== 0) {
+									row.amount = 0;
+									if (this.grid_row) this.grid_row.refresh_field('amount');
+									frappe.show_alert({ message: __('Job Card {0} is fully paid and read-only.', [row.job_card]), indicator: 'green' });
+								}
 								// When the user manually edits a row amount, sync the top-level amount
 								// and clamp the row if it would over-allocate.
 								update_amount_from_allocations();
@@ -767,7 +783,8 @@
 				}
 
 				let allocations = (values.allocations || [])
-					.filter(row => row.job_card)
+					// Paid (settled) rows are shown for reference only and carry no allocation.
+					.filter(row => row.job_card && row.payment_status !== 'Paid')
 					.map(row => ({ job_card: row.job_card, amount: flt(row.amount || 0) }));
 
 				// A zero Amount is only legitimate when there are Job Card Allocations for the

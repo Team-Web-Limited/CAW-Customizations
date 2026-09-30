@@ -6929,6 +6929,17 @@ def record_customer_payment(customer, amount, date, payment_method, deposit_to, 
     explicit_allocations = _normalize_payment_allocations(allocations, customer, amount, available_credit=available_credit)
     cleaned_allocations = explicit_allocations
 
+    # A settled Job Card is closed to further payments from the Create Payment dialog (it shows
+    # there as Paid, read-only); money for this customer beyond it stays unallocated as advance.
+    if payment_type != "Refund":
+        for row in explicit_allocations or []:
+            if get_job_card_statement_balance(row["job_card"]).get("payment_status") == "Paid":
+                frappe.throw(
+                    f"Job Card {row['job_card']} is already fully paid, so it can't take this "
+                    "payment. Remove it from the allocations — anything not allocated stays as the "
+                    "customer's advance."
+                )
+
     # Backward-compatible single job_card argument: treat it as one full allocation. Kept off
     # the advance-first path below — callers using this legacy arg (Job Card create/edit,
     # not the Payments page dialog) still expect a plain string return and real money moved.
