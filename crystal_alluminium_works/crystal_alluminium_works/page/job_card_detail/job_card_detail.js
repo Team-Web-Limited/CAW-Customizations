@@ -18,6 +18,10 @@ frappe.pages['job-card-detail'].on_page_load = function(wrapper) {
 // Seeded with the known codes as a fallback in case something renders before the fetch resolves.
 let JC_CEILING_BOARD_ITEM_CODES = ['AC1', 'AC2'];
 
+// Mirrors api.py PAYMENT_SETTLEMENT_TOLERANCE: a customer paying to the whole shilling
+// (33,900 against 33,900.49) has settled the Job Card — cents alone are never chased.
+const JC_PAYMENT_SETTLEMENT_TOLERANCE = 1;
+
 function load_ceiling_board_item_codes() {
 	frappe.call({
 		method: 'crystal_alluminium_works.api.get_ceiling_board_item_codes',
@@ -208,11 +212,28 @@ async function get_job_card_customer_defaults(customer_name) {
 	}
 }
 
+function get_settled_job_card_balance(balance) {
+	balance = flt(Math.max(flt(balance), 0), 2);
+	return balance < JC_PAYMENT_SETTLEMENT_TOLERANCE ? 0 : balance;
+}
+
 function update_job_card_balance(dialog) {
 	let payment_limit = flt(dialog._payment_limit !== undefined && dialog._payment_limit !== null
 		? dialog._payment_limit
 		: dialog.get_value('quotation_amount') || 0);
 	dialog.set_value('balance_amount', payment_limit);
+
+	// A payment that falls short by cents alone settles the Job Card on save — say so, since
+	// the Balance shown above still carries them.
+	let payment_amount = flt(dialog.get_value('payment_amount') || 0);
+	let shortfall = flt(payment_limit - payment_amount, 2);
+	let settles = payment_amount > 0 && shortfall > 0 && get_settled_job_card_balance(shortfall) === 0;
+	let description = settles
+		? __('{0} short in cents only — the Job Card will be marked fully paid.', [format_currency(shortfall, 'KES')])
+		: '';
+	if ((dialog.fields_dict.balance_amount.df.description || '') !== description) {
+		dialog.set_df_property('balance_amount', 'description', description);
+	}
 }
 
 function get_job_card_outstanding_balance(job_card, quotation_amount) {
@@ -224,10 +245,10 @@ function get_job_card_outstanding_balance(job_card, quotation_amount) {
 	let balance = flt(job_card.balance_amount || 0);
 	let paid = flt(job_card.payment_amount || 0);
 	if (balance <= 0 && paid < total) {
-		return total - paid;
+		return get_settled_job_card_balance(total - paid);
 	}
 
-	return balance;
+	return get_settled_job_card_balance(balance);
 }
 
 function validate_job_card_payment_amount(dialog) {
@@ -1359,7 +1380,7 @@ function can_create_invoice_from_job_card(job_card, quotation, history, sales_in
 	let payment_amount = flt(job_card.payment_amount || 0);
 	return !has_sales_invoice
 		&& quotation_amount > 0
-		&& Math.abs(payment_amount - quotation_amount) < 0.0001;
+		&& get_settled_job_card_balance(quotation_amount - payment_amount) === 0;
 }
 
 function can_create_partial_invoice_from_job_card(job_card, quotation) {
@@ -2682,7 +2703,7 @@ function render_single_job_card_detail(job_card, quotation, history, sales_invoi
 	// after a Sales Invoice exists — it's the only way a cash customer who hadn't fully
 	// paid before their first release can ever reach a zero balance.
 	let is_cash_customer = normalize_job_card_payment_mode(job_card.payment_mode) === 'cash';
-	let can_edit_job_card = balance > 0 && is_cash_customer;
+	let can_edit_job_card = get_settled_job_card_balance(balance) > 0 && is_cash_customer;
 	let can_create_invoice = can_create_invoice_from_job_card(job_card, quotation, history, sales_invoices);
 	// Cash and invoice customers both release/bill items through the same Partial
 	// Invoice flow now — the Job Card tracks payment/balance either way, and the

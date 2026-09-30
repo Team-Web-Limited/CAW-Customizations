@@ -1,3 +1,4 @@
+import copy
 import json
 
 import frappe
@@ -6,109 +7,76 @@ from frappe.utils import cint, escape_html
 
 CONFIG_DOCTYPE = "CAW Print Format Configuration"
 
+# Each section is an ordered list of free-text lines, edited row by row on the Print Format
+# Configurations page and stored as {"terms": [{"text", "bold"}], "payment_details": [...]}.
+# Terms print one numbered <li> per line. Payment lines are written "LABEL: value" and print
+# with the label in bold.
+TERMS_SECTION = "terms"
+PAYMENT_DETAILS_SECTION = "payment_details"
+
+_PAYMENT_DETAILS_ROWS = [
+    {"text": "BANK: I & M BANK"},
+    {"text": "A/C: CRYSTAL ALUMINIUM WORKS LTD"},
+    {"text": "BRANCH: INDUSTRIAL AREA"},
+    {"text": "ACCOUNT NO: 04001484591810"},
+    {"text": "SWIFT CODE: IMBLKENA"},
+    {"text": "PAYBILL NO: 4051271"},
+    {"text": "ACCOUNT NO: QUOTE NO"},
+]
+
 
 PRINT_FORMAT_CONFIGS = {
     "Crystal Quotation": {
         "doctype": "Quotation",
         "ref_label": "Quotation Reference",
         "sections": [
-            {
-                "title": "Terms & Conditions",
-                "fields": [
-                    {"fieldname": "validity_days", "label": "Quotation Validity Days", "fieldtype": "Int"},
-                    {"fieldname": "advance_payment_percent", "label": "Advance Payment Percent", "fieldtype": "Percent"},
-                    {"fieldname": "production_timeline", "label": "Production Timeline", "fieldtype": "Data"},
-                    {"fieldname": "whatsapp_notice", "label": "Delay Notice Text", "fieldtype": "Data"},
-                    {"fieldname": "whatsapp_number", "label": "WhatsApp Number", "fieldtype": "Data"},
-                    {"fieldname": "collection_note", "label": "Collection Note", "fieldtype": "Data"},
-                    {"fieldname": "payment_quote_no_note", "label": "Quote Number Payment Note", "fieldtype": "Data"},
-                    {"fieldname": "confirm_details_note", "label": "Confirm Details Before Payment Note", "fieldtype": "Data"},
-                ],
-            },
-            {
-                "title": "Payment Details",
-                "fields": [
-                    {"fieldname": "bank_name", "label": "Bank", "fieldtype": "Data"},
-                    {"fieldname": "account_name", "label": "Account Name", "fieldtype": "Data"},
-                    {"fieldname": "branch", "label": "Branch", "fieldtype": "Data"},
-                    {"fieldname": "account_no", "label": "Account No", "fieldtype": "Data"},
-                    {"fieldname": "swift_code", "label": "Swift Code", "fieldtype": "Data"},
-                    {"fieldname": "paybill_no", "label": "Paybill No", "fieldtype": "Data"},
-                    {"fieldname": "paybill_account_no", "label": "Paybill Account No", "fieldtype": "Data"},
-                ],
-            },
+            {"key": TERMS_SECTION, "title": "Terms & Conditions"},
+            {"key": PAYMENT_DETAILS_SECTION, "title": "Payment Details"},
         ],
         "defaults": {
-            "validity_days": 14,
-            "advance_payment_percent": 100,
-            "production_timeline": "All glass and aluminium orders will be ready in 2-3 days.",
-            "whatsapp_notice": "If not ready, inform on WhatsApp only",
-            "whatsapp_number": "0702933965",
-            "collection_note": "All customers must count and collect goods prior to collection.",
-            "payment_quote_no_note": "All payments must include CORRECT QUOTE NO.",
-            "confirm_details_note": "Please confirm the glass sizes, number of pieces, aluminium quality, and the relevant codes before making the payment.",
-            "bank_name": "I & M BANK",
-            "account_name": "CRYSTAL ALUMINIUM WORKS LTD",
-            "branch": "INDUSTRIAL AREA",
-            "account_no": "04001484591810",
-            "swift_code": "IMBLKENA",
-            "paybill_no": "4051271",
-            "paybill_account_no": "QUOTE NO",
+            TERMS_SECTION: [
+                {"text": "Quotation valid for 14 days from date of issue."},
+                {"text": "100% advance payment required to commence production."},
+                {"text": "All glass and aluminium orders will be ready in 2-3 days."},
+                {"text": "If not ready, inform on WhatsApp only on 0702933965."},
+                {"text": "All customers must count and collect goods prior to collection."},
+                {"text": "All payments must include CORRECT QUOTE NO."},
+                {
+                    "text": "Please confirm the glass sizes, number of pieces, aluminium quality, and the relevant codes before making the payment.",
+                    "bold": 1,
+                },
+            ],
+            PAYMENT_DETAILS_SECTION: _PAYMENT_DETAILS_ROWS,
         },
     },
     "Crystal Sales Order": {
         "doctype": "Sales Order",
         "ref_label": "Order Reference",
         "sections": [
-            {
-                "title": "Terms & Conditions",
-                "fields": [
-                    {"fieldname": "advance_payment_percent", "label": "Advance Payment Percent", "fieldtype": "Percent"},
-                    {"fieldname": "final_payment_percent", "label": "Final Payment Percent", "fieldtype": "Percent"},
-                ],
-            },
+            {"key": TERMS_SECTION, "title": "Terms & Conditions"},
         ],
         "defaults": {
-            "advance_payment_percent": 60,
-            "final_payment_percent": 40,
+            TERMS_SECTION: [
+                {"text": "Order confirmed and locked."},
+                {"text": "Production begins upon receipt of 60% advance payment."},
+                {"text": "Final 40% due upon delivery."},
+            ],
         },
     },
     "Crystal Sales Invoice": {
         "doctype": "Sales Invoice",
         "ref_label": "Invoice Number",
         "sections": [
-            {
-                "title": "Terms & Conditions",
-                "fields": [
-                    {"fieldname": "invoice_payment_terms", "label": "Payment Terms", "fieldtype": "Data"},
-                    {"fieldname": "ownership_note", "label": "Ownership Note", "fieldtype": "Data"},
-                    {"fieldname": "discrepancy_days", "label": "Discrepancy Report Days", "fieldtype": "Int"},
-                ],
-            },
-            {
-                "title": "Payment Details",
-                "fields": [
-                    {"fieldname": "bank_name", "label": "Bank", "fieldtype": "Data"},
-                    {"fieldname": "account_name", "label": "Account Name", "fieldtype": "Data"},
-                    {"fieldname": "branch", "label": "Branch", "fieldtype": "Data"},
-                    {"fieldname": "account_no", "label": "Account No", "fieldtype": "Data"},
-                    {"fieldname": "swift_code", "label": "Swift Code", "fieldtype": "Data"},
-                    {"fieldname": "paybill_no", "label": "Paybill No", "fieldtype": "Data"},
-                    {"fieldname": "paybill_account_no", "label": "Paybill Account No", "fieldtype": "Data"},
-                ],
-            },
+            {"key": TERMS_SECTION, "title": "Terms & Conditions"},
+            {"key": PAYMENT_DETAILS_SECTION, "title": "Payment Details"},
         ],
         "defaults": {
-            "invoice_payment_terms": "Payment is due within the stipulated time frame.",
-            "ownership_note": "Goods remain the property of Crystal Aluminium Works until fully paid for.",
-            "discrepancy_days": 3,
-            "bank_name": "I & M BANK",
-            "account_name": "CRYSTAL ALUMINIUM WORKS LTD",
-            "branch": "INDUSTRIAL AREA",
-            "account_no": "04001484591810",
-            "swift_code": "IMBLKENA",
-            "paybill_no": "4051271",
-            "paybill_account_no": "QUOTE NO",
+            TERMS_SECTION: [
+                {"text": "Payment is due within the stipulated time frame."},
+                {"text": "Goods remain the property of Crystal Aluminium Works until fully paid for."},
+                {"text": "Any discrepancies must be reported within 3 days of delivery."},
+            ],
+            PAYMENT_DETAILS_SECTION: _PAYMENT_DETAILS_ROWS,
         },
     },
     # Sales Invoice returns (is_return). Same layout as Crystal Sales Invoice, titled CREDIT NOTE
@@ -117,17 +85,13 @@ PRINT_FORMAT_CONFIGS = {
         "doctype": "Sales Invoice",
         "ref_label": "Credit Note Number",
         "sections": [
-            {
-                "title": "Notes",
-                "fields": [
-                    {"fieldname": "credit_note_purpose", "label": "Purpose", "fieldtype": "Data"},
-                    {"fieldname": "credit_note_settlement", "label": "Settlement", "fieldtype": "Data"},
-                ],
-            },
+            {"key": TERMS_SECTION, "title": "Notes"},
         ],
         "defaults": {
-            "credit_note_purpose": "This credit note reverses the amounts shown against the original invoice.",
-            "credit_note_settlement": "The credit will be applied to your account or refunded as agreed.",
+            TERMS_SECTION: [
+                {"text": "This credit note reverses the amounts shown against the original invoice."},
+                {"text": "The credit will be applied to your account or refunded as agreed."},
+            ],
         },
     },
     "Crystal Job Card": {
@@ -140,14 +104,23 @@ PRINT_FORMAT_CONFIGS = {
 
 
 def _default_values(print_format):
-    return (PRINT_FORMAT_CONFIGS.get(print_format) or {}).get("defaults", {}).copy()
+    return copy.deepcopy((PRINT_FORMAT_CONFIGS.get(print_format) or {}).get("defaults", {}))
 
 
-def _get_all_fieldnames(print_format):
-    fields = []
-    for section in (PRINT_FORMAT_CONFIGS.get(print_format) or {}).get("sections", []):
-        fields.extend(field["fieldname"] for field in section.get("fields", []))
-    return fields
+def _section_keys(print_format):
+    return [section["key"] for section in (PRINT_FORMAT_CONFIGS.get(print_format) or {}).get("sections", [])]
+
+
+def _clean_rows(rows):
+    """Normalise one section's rows to [{"text", "bold"}], dropping blank lines."""
+    clean = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            row = {"text": row}
+        text = str(row.get("text") or "").strip()
+        if text:
+            clean.append({"text": text, "bold": 1 if cint(row.get("bold")) else 0})
+    return clean
 
 
 def _configuration_doctype_exists():
@@ -170,69 +143,28 @@ def ensure_default_print_format_configurations():
 
 
 def get_print_format_configuration(print_format):
+    """{section key: rows} for this print format — the saved rows where a section has been
+    saved, the defaults otherwise."""
     values = _default_values(print_format)
     if _configuration_doctype_exists() and frappe.db.exists(CONFIG_DOCTYPE, print_format):
-        doc = frappe.get_doc(CONFIG_DOCTYPE, print_format)
-        values.update(json.loads(doc.configuration_json or "{}"))
+        stored = json.loads(frappe.db.get_value(CONFIG_DOCTYPE, print_format, "configuration_json") or "{}")
+        for key in _section_keys(print_format):
+            if isinstance(stored.get(key), list):
+                values[key] = stored[key]
 
-    return values
+    return {key: _clean_rows(values.get(key)) for key in _section_keys(print_format)}
 
 
 def _escape(value):
     return escape_html(str(value or ""))
 
 
-def _number(value):
-    return cint(value or 0)
-
-
 def build_terms_html(print_format, values=None):
     values = values or get_print_format_configuration(print_format)
-
-    if print_format == "Crystal Quotation":
-        validity_days = _number(values.get("validity_days")) or 14
-        advance_payment_percent = _number(values.get("advance_payment_percent")) or 100
-        whatsapp_text = _escape(values.get("whatsapp_notice"))
-        whatsapp_number = _escape(values.get("whatsapp_number"))
-        whatsapp_term = f"{whatsapp_text} on {whatsapp_number}." if whatsapp_number else f"{whatsapp_text}."
-
-        terms = [
-            f"Quotation valid for {validity_days} days from date of issue.",
-            f"{advance_payment_percent}% advance payment required to commence production.",
-            _escape(values.get("production_timeline")),
-            whatsapp_term,
-            _escape(values.get("collection_note")),
-            _escape(values.get("payment_quote_no_note")),
-            (
-                f"<strong>{_escape(values.get('confirm_details_note'))}</strong>"
-                if values.get("confirm_details_note")
-                else ""
-            ),
-        ]
-    elif print_format == "Crystal Sales Order":
-        advance_payment_percent = _number(values.get("advance_payment_percent")) or 60
-        final_payment_percent = _number(values.get("final_payment_percent")) or 40
-        terms = [
-            "Order confirmed and locked.",
-            f"Production begins upon receipt of {advance_payment_percent}% advance payment.",
-            f"Final {final_payment_percent}% due upon delivery.",
-        ]
-    elif print_format == "Crystal Sales Invoice":
-        discrepancy_days = _number(values.get("discrepancy_days")) or 3
-        terms = [
-            _escape(values.get("invoice_payment_terms")),
-            _escape(values.get("ownership_note")),
-            f"Any discrepancies must be reported within {discrepancy_days} days of delivery.",
-        ]
-    elif print_format == "Crystal Credit Note":
-        terms = [
-            _escape(values.get("credit_note_purpose")),
-            _escape(values.get("credit_note_settlement")),
-        ]
-    else:
-        terms = []
-
-    terms = [term for term in terms if term]
+    terms = [
+        f"<strong>{_escape(row['text'])}</strong>" if row["bold"] else _escape(row["text"])
+        for row in _clean_rows(values.get(TERMS_SECTION))
+    ]
     return (
         "<ol style=\"padding-left: 16px; margin: 0; word-wrap: break-word; overflow-wrap: break-word;\">"
         + "".join(f"<li>{term}</li>" for term in terms)
@@ -240,10 +172,10 @@ def build_terms_html(print_format, values=None):
     )
 
 
-#: Values for "paybill_account_no" that mean "put the document's own reference
-#: number here" rather than a literal label. Configured this way because the
-#: paybill account number for these orders is, by policy, the quotation/order/
-#: invoice number itself - not a fixed account.
+#: Payment-line values that mean "put the document's own reference number here" rather
+#: than literal text — e.g. "ACCOUNT NO: QUOTE NO". Configured this way because the paybill
+#: account number for these orders is, by policy, the quotation/order/invoice number itself,
+#: not a fixed account.
 PAYBILL_ACCOUNT_NO_DOC_NAME_PLACEHOLDERS = {
     "QUOTE NO",
     "QUOTATION NO",
@@ -252,45 +184,38 @@ PAYBILL_ACCOUNT_NO_DOC_NAME_PLACEHOLDERS = {
     "DOC NO",
 }
 
+# Raw Jinja so the built print format substitutes the actual document at render/download
+# time. A Quotation prints just its number (SAL-QTN-2026-60057 and its amendments -> 60057):
+# that is what customers type as the Paybill account and what mpesa_link._quotation_for_account
+# resolves. Other documents keep their full name so an invoice number can never be mistaken
+# for a quotation number.
+_DOC_NUMBER_JINJA = (
+    "{% if doc.doctype == 'Quotation' %}{% set account_parts = doc.name.split('-') %}"
+    "{{ (account_parts[3] if account_parts|length > 3 else account_parts[-1])|int }}"
+    "{% else %}{{ doc.name }}{% endif %}"
+)
+
+
+def _payment_line_html(text):
+    label, colon, value = text.partition(":")
+    if not colon:
+        return f"<div>{_escape(text)}</div>"
+
+    value = value.strip()
+    if value.upper() in PAYBILL_ACCOUNT_NO_DOC_NAME_PLACEHOLDERS:
+        value_html = _DOC_NUMBER_JINJA
+    else:
+        value_html = _escape(value)
+    return f"<div><strong>{_escape(label.strip())}:</strong> {value_html}</div>"
+
 
 def build_payment_details_html(print_format, values=None):
     values = values or get_print_format_configuration(print_format)
-
-    paybill_account_no = values.get("paybill_account_no")
-    if (
-        paybill_account_no
-        and str(paybill_account_no).strip().upper() in PAYBILL_ACCOUNT_NO_DOC_NAME_PLACEHOLDERS
-    ):
-        # Emit raw Jinja so the built print format substitutes the actual document at
-        # render/download time. A Quotation prints just its number (SAL-QTN-2026-60057 and
-        # its amendments -> 60057): that is what customers type as the Paybill account and
-        # what mpesa_link._quotation_for_account resolves. Other documents keep their full
-        # name so an invoice number can never be mistaken for a quotation number.
-        paybill_account_no_html = (
-            "{% if doc.doctype == 'Quotation' %}{% set account_parts = doc.name.split('-') %}"
-            "{{ (account_parts[3] if account_parts|length > 3 else account_parts[-1])|int }}"
-            "{% else %}{{ doc.name }}{% endif %}"
-        )
-    else:
-        paybill_account_no_html = _escape(paybill_account_no)
-
-    rows = [
-        ("BANK", _escape(values.get("bank_name"))),
-        ("A/C", _escape(values.get("account_name"))),
-        ("BRANCH", _escape(values.get("branch"))),
-        ("ACCOUNT NO", _escape(values.get("account_no"))),
-        ("SWIFT CODE", _escape(values.get("swift_code"))),
-        ("PAYBILL NO", _escape(values.get("paybill_no"))),
-        ("ACCOUNT NO", paybill_account_no_html),
-    ]
-    rows = [(label, value) for label, value in rows if value]
+    rows = _clean_rows(values.get(PAYMENT_DETAILS_SECTION))
     if not rows:
         return ""
 
-    row_html = "".join(
-        f"<div><strong>{_escape(label)}:</strong> {value}</div>"
-        for label, value in rows
-    )
+    row_html = "".join(_payment_line_html(row["text"]) for row in rows)
     return f"""
         <div style="font-size: 13px; color: #6c757d; margin: 12px 0 5px 0;">PAYMENT DETAILS</div>
         <div style="font-size: 14px; color: #495057; line-height: 1.5;">{row_html}</div>
@@ -338,11 +263,7 @@ def save_print_format_configuration(print_format, values):
     if isinstance(values, str):
         values = json.loads(values or "{}")
 
-    allowed_fields = set(_get_all_fieldnames(print_format))
-    clean_values = {
-        fieldname: values.get(fieldname)
-        for fieldname in allowed_fields
-    }
+    clean_values = {key: _clean_rows((values or {}).get(key)) for key in _section_keys(print_format)}
 
     if frappe.db.exists(CONFIG_DOCTYPE, print_format):
         doc = frappe.get_doc(CONFIG_DOCTYPE, print_format)

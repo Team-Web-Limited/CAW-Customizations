@@ -13,6 +13,8 @@ frappe.ui.form.on('Sales Invoice', {
 				frappe.set_route('sales-invoice-manager', frm.doc.name);
 			});
 		}
+
+		add_credit_note_download_action(frm);
 	},
 
 	update_stock: function(frm) {
@@ -31,3 +33,18 @@ frappe.ui.form.on('Sales Invoice', {
 		}
 	},
 });
+
+// Custom buttons are cleared on every refresh, so this only shows on saved returns.
+function add_credit_note_download_action(frm) {
+	if (frm.is_new() || !frm.doc.is_return) return;
+
+	// download_crystal_sales_invoice_pdf picks the Crystal Credit Note format for returns.
+	frm.add_custom_button(__('Download'), () => {
+		window.open(
+			frappe.urllib.get_full_url(
+				`/api/method/crystal_alluminium_works.api.download_crystal_sales_invoice_pdf?name=${encodeURIComponent(frm.doc.name)}`
+			),
+			'_blank'
+		);
+	});
+}

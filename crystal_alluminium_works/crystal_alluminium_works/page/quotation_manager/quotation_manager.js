@@ -42,6 +42,10 @@ function load_ceiling_board_item_codes() {
 }
 const QM_VAT_RATE = 0.16;
 
+// Mirrors api.py PAYMENT_SETTLEMENT_TOLERANCE: a customer paying to the whole shilling
+// (33,900 against 33,900.49) has settled the Job Card — cents alone are never chased.
+const QM_PAYMENT_SETTLEMENT_TOLERANCE = 1;
+
 // doc.grand_total is VAT-exclusive only for the "visual VAT" case (no real tax
 // row — e.g. cash quotations, where 16% is shown for display purposes only).
 // A quotation with a real tax template applied (total_taxes_and_charges > 0)
@@ -1257,11 +1261,29 @@ function get_quotation_customer_reference(doc) {
 	return doc.party_name || doc.customer || doc.customer_name || '';
 }
 
+function get_settled_job_card_balance(balance) {
+	balance = flt(Math.max(flt(balance), 0), 2);
+	return balance < QM_PAYMENT_SETTLEMENT_TOLERANCE ? 0 : balance;
+}
+
 function update_job_card_balance(dialog) {
 	let payment_limit = flt(dialog._payment_limit !== undefined && dialog._payment_limit !== null
 		? dialog._payment_limit
 		: dialog.get_value('quotation_amount') || 0);
 	dialog.set_value('balance_amount', payment_limit);
+
+	// A payment that falls short by cents alone settles the Job Card on save — say so, since
+	// the Balance shown above still carries them.
+	let payment_amount = flt(dialog.get_value('payment_amount') || 0);
+	let shortfall = flt(payment_limit - payment_amount, 2);
+	let settles = payment_amount > 0 && shortfall > 0 && get_settled_job_card_balance(shortfall) === 0
+		&& normalize_job_card_payment_mode(dialog.get_value('payment_mode')) !== 'invoice';
+	let description = settles
+		? __('{0} short in cents only — the Job Card will be marked fully paid.', [format_currency(shortfall, 'KES')])
+		: '';
+	if ((dialog.fields_dict.balance_amount.df.description || '') !== description) {
+		dialog.set_df_property('balance_amount', 'description', description);
+	}
 }
 
 function get_job_card_outstanding_balance(job_card, quotation_amount) {
@@ -1273,10 +1295,10 @@ function get_job_card_outstanding_balance(job_card, quotation_amount) {
 	let balance = flt(job_card.balance_amount || 0);
 	let paid = flt(job_card.payment_amount || 0);
 	if (balance <= 0 && paid < total) {
-		return total - paid;
+		return get_settled_job_card_balance(total - paid);
 	}
 
-	return balance;
+	return get_settled_job_card_balance(balance);
 }
 
 function validate_job_card_payment_amount(dialog) {

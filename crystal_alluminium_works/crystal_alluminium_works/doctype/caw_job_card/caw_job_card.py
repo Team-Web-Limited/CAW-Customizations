@@ -24,11 +24,13 @@ class CAWJobCard(Document):
 		if self.status == "Cancelled":
 			return
 
+		from crystal_alluminium_works.api import _is_job_card_settled
+
 		payment_amount = frappe.utils.flt(self.payment_amount)
 		quotation_amount = frappe.utils.flt(self.quotation_amount)
 		balance_amount = frappe.utils.flt(self.balance_amount)
 
-		if quotation_amount > 0 and (balance_amount <= 0 or payment_amount >= quotation_amount):
+		if quotation_amount > 0 and (balance_amount <= 0 or _is_job_card_settled(quotation_amount, payment_amount)):
 			self.status = "Completed"
 		elif payment_amount > 0:
 			self.status = "In Progress"

@@ -146,6 +146,7 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
 
 {{% set has_color_rows = namespace(value=false) %}}
 {{% set has_glass_rows = namespace(value=false) %}}
+{{% set has_non_aluminium_rows = namespace(value=false) %}}
 {{% set has_non_ceiling_parent = namespace(value=false) %}}
 {{% set has_ceiling_parent = namespace(value=false) %}}
 {{% set has_ceiling_bundle = namespace(value=false) %}}
@@ -158,6 +159,9 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
     {{% endif %}}
     {{% if not row.custom_auto_generated and (row.custom_product_category or '') == 'Glass' %}}
         {{% set has_glass_rows.value = true %}}
+    {{% endif %}}
+    {{% if not row.custom_auto_generated and (row.custom_product_category or '') not in ['Aluminium', 'Ceiling'] %}}
+        {{% set has_non_aluminium_rows.value = true %}}
     {{% endif %}}
     {{% if not row.custom_auto_generated %}}
         {{% set row_category = row.custom_product_category or '' %}}
@@ -191,8 +195,15 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
             <th style="text-align: center; white-space: nowrap;">Width</th>
             <th style="text-align: center; white-space: nowrap;">Height</th>
             {{% endif %}}
+            {{# Only glass has pieces distinct from qty (cut sizes, sheets). Without glass the two
+               columns always matched, so show one — named like the Job Card's sections: Pcs for
+               aluminium, Qty for everything else. #}}
+            {{% if has_glass_rows.value %}}
             <th style="text-align: center; white-space: nowrap;">Pcs</th>
             <th style="text-align: center; white-space: nowrap;">Qty</th>
+            {{% else %}}
+            <th style="text-align: center; white-space: nowrap;">{{{{ 'Qty' if has_non_aluminium_rows.value else 'Pcs' }}}}</th>
+            {{% endif %}}
             <th style="text-align: right; white-space: nowrap;">Rate</th>
             <th style="text-align: center; white-space: nowrap;">UOM</th>
             {{% if has_glass_rows.value %}}
@@ -237,7 +248,9 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
                 {{% for child in child_rows.items %}}
                         {{% set line.amount = line.amount + (child.amount or 0) %}}
                 {{% endfor %}}
-                {{% set quotation_totals.pcs = quotation_totals.pcs + frappe.utils.flt(pieces, 2) %}}
+                {{% if parent_category == 'Glass' %}}
+                    {{% set quotation_totals.pcs = quotation_totals.pcs + frappe.utils.flt(pieces, 2) %}}
+                {{% endif %}}
                 {{% set quotation_totals.qty = quotation_totals.qty + frappe.utils.flt(qty, 3) %}}
                 {{% set quotation_totals.holes = quotation_totals.holes + frappe.utils.cint(parent.custom_holes or 0) %}}
                 {{% set quotation_totals.notches = quotation_totals.notches + frappe.utils.cint(parent.custom_notches or 0) %}}
@@ -294,7 +307,9 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
                     <td style="text-align: center; white-space: nowrap;">{{{{ display_width }}}}</td>
                     <td style="text-align: center; white-space: nowrap;">{{{{ display_height }}}}</td>
                     {{% endif %}}
-                    <td style="text-align: center; white-space: nowrap;">{{{{ frappe.utils.flt(pieces, 2) }}}}</td>
+                    {{% if has_glass_rows.value %}}
+                    <td style="text-align: center; white-space: nowrap;">{{% if parent_category == 'Glass' %}}{{{{ frappe.utils.flt(pieces, 2) }}}}{{% else %}}-{{% endif %}}</td>
+                    {{% endif %}}
                     <td style="text-align: center; white-space: nowrap;">{{{{ frappe.utils.flt(qty, 3) }}}}</td>
                     <td style="text-align: right; white-space: nowrap;">{{{{ frappe.format_value(display_rate, df={{'fieldtype': 'Currency'}}, doc=doc) }}}}</td>
                     <td style="text-align: center; white-space: nowrap;">{{{{ short_uom(uom) }}}}</td>
@@ -330,7 +345,9 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
             {{% else %}}
             <td style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
             {{% endif %}}
+            {{% if has_glass_rows.value %}}
             <td style="text-align: center; white-space: nowrap; font-weight: bold;">{{{{ frappe.utils.flt(quotation_totals.pcs, 2) }}}}</td>
+            {{% endif %}}
             <td style="text-align: center; white-space: nowrap; font-weight: bold;">{{{{ frappe.utils.flt(quotation_totals.qty, 3) }}}}</td>
             <td colspan="2" style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
             {{% if has_glass_rows.value %}}
@@ -476,6 +493,16 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
         </div>
     </div>
 </div>
+
+{{% if doc.doctype == 'Sales Invoice' and not doc.get('is_return') %}}
+{{# One line, not stacked. Empty inline-blocks sit on the text baseline, so each dotted
+   line lines up with its label (table-cell borders drifted below it in wkhtmltopdf). #}}
+<div style="margin-top: 40px; white-space: nowrap; font-size: 13px; font-weight: bold; color: #2c3e50; text-transform: uppercase;">
+    Collected By <span style="display: inline-block; width: 36%; border-bottom: 1px dotted #2c3e50;"></span>
+    &nbsp;&nbsp; Vehicle No <span style="display: inline-block; width: 16%; border-bottom: 1px dotted #2c3e50;"></span>
+    &nbsp;&nbsp; Signature <span style="display: inline-block; width: 20%; border-bottom: 1px dotted #2c3e50;"></span>
+</div>
+{{% endif %}}
 """
 
     return html

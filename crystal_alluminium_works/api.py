@@ -139,6 +139,28 @@ def _round_job_card_amount(value):
     return frappe.utils.flt(value or 0, JOB_CARD_CURRENCY_PRECISION)
 
 
+# Customers pay quotations to the whole shilling — 33,900 against 33,900.49 — so a shortfall
+# of cents alone settles the Job Card rather than leaving it Partial forever. Strictly below
+# one shilling: KES 1.00 short still owes. Nothing is booked for the cents here; the Sales
+# Invoice already debits the customer its ERPNext Rounded Total (the difference posting to the
+# company's Round Off account), and its item/VAT lines — what eTIMS reports — are untouched.
+PAYMENT_SETTLEMENT_TOLERANCE = 1
+
+
+def _settled_balance(balance):
+    """A job card balance with a sub-shilling remainder treated as settled (0)."""
+    balance = _round_job_card_amount(max(flt(balance), 0))
+    return 0.0 if balance < PAYMENT_SETTLEMENT_TOLERANCE else balance
+
+
+def _job_card_balance(quotation_amount, paid):
+    return _settled_balance(_round_job_card_amount(quotation_amount) - _round_job_card_amount(paid))
+
+
+def _is_job_card_settled(quotation_amount, paid):
+    return _round_job_card_amount(quotation_amount) > 0 and _job_card_balance(quotation_amount, paid) == 0
+
+
 def _job_card_payment_status(quotation_amount, paid):
     """Where one job card stands against its own quotation total: nothing received yet
     (Pending), something but not all of it (Partial), or fully settled (Paid). Shown per
@@ -146,7 +168,7 @@ def _job_card_payment_status(quotation_amount, paid):
     which job cards have already been part-paid."""
     quotation_amount = _round_job_card_amount(quotation_amount)
     paid = _round_job_card_amount(paid)
-    if quotation_amount > 0 and paid + 0.0001 >= quotation_amount:
+    if _is_job_card_settled(quotation_amount, paid):
         return "Paid"
     if paid > 0.0001:
         return "Partial"
@@ -1444,7 +1466,7 @@ def _get_job_card_balance_status(job_card):
     Job Card to check (so callers can fall back to the invoice's own status)."""
     if not job_card:
         return None
-    if flt(job_card.balance_amount) <= 0.01:
+    if _settled_balance(job_card.balance_amount) == 0:
         return "Paid"
     if flt(job_card.payment_amount) > 0.01:
         return "Partly Paid"
@@ -1933,8 +1955,11 @@ def create_job_card_from_quotation(quotation, customer, customer_name=None, paym
     if not job_card.get("__islocal") and payment_amount > 0 and payment_mode != "Cash Customer":
         frappe.throw("Payments for invoice customers are recorded on the Payments page, not the Job Card.")
 
-    payment_limit = _get_job_card_outstanding_balance(job_card, quotation_amount)
-    paid_to_date = 0 if job_card.get("__islocal") else _round_job_card_amount(quotation_amount - payment_limit)
+    outstanding = _get_job_card_outstanding_balance(job_card, quotation_amount)
+    # Paid-to-date from the exact outstanding, so a card settled a few cents short keeps its
+    # real receipts; only what's left to collect drops the cents.
+    paid_to_date = 0 if job_card.get("__islocal") else _round_job_card_amount(quotation_amount - outstanding)
+    payment_limit = _settled_balance(outstanding)
 
     # Money may already be on file for this customer as unallocated credit — a deposit taken
     # against this quotation before the Job Card existed, or any other General Payment never
@@ -1976,7 +2001,7 @@ def create_job_card_from_quotation(quotation, customer, customer_name=None, paym
         frappe.throw(f"Payment amount cannot exceed the current balance amount of {frappe.utils.fmt_money(payment_limit)}.")
 
     total_payment_amount = _round_job_card_amount(payment_amount + credit_to_apply)
-    balance_amount = _round_job_card_amount(payment_limit - total_payment_amount)
+    balance_amount = _settled_balance(payment_limit - total_payment_amount)
     paid_amount = _round_job_card_amount(paid_to_date + total_payment_amount)
 
     job_card.quotation = quotation_doc.name
@@ -3155,9 +3180,7 @@ def make_sales_invoice_from_job_card(job_card_name):
     if not job_card.quotation or not frappe.db.exists("Quotation", job_card.quotation):
         frappe.throw("The selected Job Card is not linked to a valid Quotation.")
 
-    quotation_amount = _round_job_card_amount(job_card.quotation_amount)
-    payment_amount = _round_job_card_amount(job_card.payment_amount)
-    if quotation_amount <= 0 or payment_amount < quotation_amount:
+    if not _is_job_card_settled(job_card.quotation_amount, job_card.payment_amount):
         frappe.throw("The Job Card must be fully paid before creating a Sales Invoice.")
 
     # Earlier partial invoices may already have billed part of this quotation
@@ -3553,9 +3576,7 @@ def settle_sales_invoice_from_job_card(invoice_name):
         frappe.throw("No linked Job Card was found for this Sales Invoice.")
 
     job_card = frappe.get_doc("CAW Job Card", job_card_name)
-    quotation_amount = _round_job_card_amount(job_card.quotation_amount)
-    payment_amount = _round_job_card_amount(job_card.payment_amount)
-    if quotation_amount <= 0 or payment_amount < quotation_amount:
+    if not _is_job_card_settled(job_card.quotation_amount, job_card.payment_amount):
         frappe.throw("The linked Job Card must be fully paid before settling this Sales Invoice.")
 
     if invoice.docstatus == 0:
@@ -3622,9 +3643,7 @@ def submit_sales_invoice(name):
             # fully-paid gate (a partial never makes the Job Card fully paid).
             invoice = _submit_amended_partial_invoice(invoice, job_card)
         else:
-            quotation_amount = _round_job_card_amount(job_card.quotation_amount)
-            payment_amount = _round_job_card_amount(job_card.payment_amount)
-            if quotation_amount > 0 and payment_amount >= quotation_amount:
+            if _is_job_card_settled(job_card.quotation_amount, job_card.payment_amount):
                 invoice = _submit_and_settle_job_card_sales_invoice(
                     invoice, job_card, preserve_payment=bool(invoice.get("amended_from"))
                 )
@@ -3675,7 +3694,7 @@ def _reverse_partial_invoice_payment(job_card, invoice):
     quotation_amount = _round_job_card_amount(job_card.quotation_amount)
     new_payment = _round_job_card_amount(max(flt(job_card.payment_amount) - impact, 0))
     job_card.payment_amount = new_payment
-    job_card.balance_amount = _round_job_card_amount(max(quotation_amount - new_payment, 0))
+    job_card.balance_amount = _job_card_balance(quotation_amount, new_payment)
     job_card.flags.ignore_permissions = True
     job_card.save(ignore_permissions=True)
     _write_job_card_amendment_event(
@@ -4349,7 +4368,7 @@ def _submit_amended_partial_invoice(invoice, job_card):
     if quotation_amount > 0:
         new_payment = min(new_payment, quotation_amount)
     job_card.payment_amount = new_payment
-    job_card.balance_amount = _round_job_card_amount(max(quotation_amount - new_payment, 0))
+    job_card.balance_amount = _job_card_balance(quotation_amount, new_payment)
     job_card.flags.ignore_permissions = True
     job_card.save(ignore_permissions=True)
 
@@ -6848,7 +6867,7 @@ def _sync_job_card_balance_from_payments(job_card_name, exclude_payment=None):
     # which would make balance_amount exceed the quotation total).
     paid = max(_get_job_card_allocated_payments(job_card_name, exclude_payment=exclude_payment), 0)
     new_payment_amount = _round_job_card_amount(min(paid, quotation_amount) if quotation_amount > 0 else paid)
-    new_balance_amount = _round_job_card_amount(max(quotation_amount - new_payment_amount, 0))
+    new_balance_amount = _job_card_balance(quotation_amount, new_payment_amount)
 
     if job_card.payment_amount == new_payment_amount and job_card.balance_amount == new_balance_amount:
         return  # avoid a no-op save / spurious history row
@@ -7502,7 +7521,7 @@ def get_job_card_statement_balance(job_card):
         paid = _get_job_card_allocated_payments(job_card)
 
     return {
-        "balance": _round_job_card_amount(max(quotation_amount - paid, 0)),
+        "balance": _job_card_balance(quotation_amount, paid),
         "quotation_amount": _round_job_card_amount(quotation_amount),
         "paid": _round_job_card_amount(paid),
         "payment_status": _job_card_payment_status(quotation_amount, paid),
@@ -7516,7 +7535,8 @@ def get_job_card_statement_balance(job_card):
 @frappe.whitelist()
 def get_customer_outstanding(customer):
     """Current amount the customer owes, computed the same way as the customer statement:
-    Σ over non-cancelled job cards of max(quotation_amount - paid), plus the outstanding on
+    Σ over non-cancelled job cards of their balance (a sub-shilling shortfall counts as
+    settled — see PAYMENT_SETTLEMENT_TOLERANCE), plus the outstanding on
     any Sales Invoices not owned by one of those job cards. Used to nudge the user when a
     payment is recorded without allocating it against an outstanding job card."""
     default_currency = frappe.defaults.get_global_default("currency") or "KES"
@@ -7562,7 +7582,7 @@ def get_customer_outstanding(customer):
             paid = flt(job_card.payment_amount)
         else:
             paid = flt(paid_by_job_card.get(job_card.name, 0))
-        job_card_outstanding += max(flt(job_card.quotation_amount) - paid, 0)
+        job_card_outstanding += _job_card_balance(job_card.quotation_amount, paid)
 
     invoices = frappe.get_all(
         "Sales Invoice",
@@ -7760,8 +7780,8 @@ def get_customer_outstanding_job_cards(customer, customer_name=None):
             paid = flt(jc.payment_amount)
         else:
             paid = flt(paid_by_job_card.get(jc.name, 0))
-        balance = _round_job_card_amount(max(flt(jc.quotation_amount) - paid, 0))
-        if balance > 0.0001:
+        balance = _job_card_balance(jc.quotation_amount, paid)
+        if balance > 0:
             result.append({
                 "job_card": jc.name,
                 "amount": balance,

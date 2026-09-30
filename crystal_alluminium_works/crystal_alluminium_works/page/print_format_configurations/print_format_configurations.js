@@ -7,8 +7,7 @@ frappe.pages['print-format-configurations'].on_page_load = function(wrapper) {
 
 	page.state = {
 		schema: [],
-		current_print_format: null,
-		controls: {}
+		current_print_format: null
 	};
 
 	page.set_primary_action('Save', function() {
@@ -39,19 +38,51 @@ function render_print_format_configurations_page(page) {
 				font-weight: 700;
 				color: var(--heading-color);
 			}
-			.pfc-grid {
-				display: grid;
-				grid-template-columns: repeat(2, minmax(240px, 1fr));
-				gap: 12px 18px;
+			.pfc-hint {
+				margin: -8px 0 12px;
+				font-size: 12px;
+				color: var(--text-muted);
+			}
+			.pfc-row {
+				display: flex;
+				align-items: center;
+				gap: 8px;
+				margin-bottom: 8px;
+			}
+			.pfc-row-no {
+				flex: 0 0 22px;
+				text-align: right;
+				font-size: 12px;
+				color: var(--text-muted);
+			}
+			.pfc-row-text {
+				flex: 1 1 auto;
+				min-width: 0;
+			}
+			.pfc-row-bold {
+				flex: 0 0 auto;
+				display: flex;
+				align-items: center;
+				gap: 4px;
+				margin: 0;
+				font-size: 12px;
+				color: var(--text-muted);
+				white-space: nowrap;
+			}
+			.pfc-row-bold input {
+				margin: 0;
+			}
+			.pfc-row .btn {
+				flex: 0 0 auto;
+			}
+			.pfc-empty {
+				color: var(--text-muted);
+				font-size: 13px;
+				padding: 4px 0 12px;
 			}
 			.pfc-loading {
 				color: var(--text-muted);
 				padding: 16px 0;
-			}
-			@media (max-width: 767px) {
-				.pfc-grid {
-					grid-template-columns: 1fr;
-				}
 			}
 		</style>
 		<div class="pfc-shell">
@@ -124,10 +155,16 @@ function load_print_format_configuration_values(page, print_format) {
 	});
 }
 
+// Each section is an ordered list of one-line rows, stored as {section key: [{text, bold}]}.
+// Order on screen is print order, so rows can be moved as well as added and deleted.
+const PFC_SECTION_HINTS = {
+	terms: __('Each line prints as one numbered term. Tick Bold to emphasise a line.'),
+	payment_details: __('Write each line as LABEL: value — the label prints in bold. A value of QUOTE NO prints the document\'s own number.')
+};
+
 function render_configuration_form(page, values) {
 	const schema = get_selected_print_format_schema(page);
 	const $form = $(page.body).find('[data-area="form"]');
-	page.state.controls = {};
 
 	if (!schema) {
 		$form.html('<div class="pfc-loading">Select a print format to continue.</div>');
@@ -135,36 +172,89 @@ function render_configuration_form(page, values) {
 	}
 
 	$form.empty();
+	if (!(schema.sections || []).length) {
+		$form.html('<div class="pfc-loading">This print format has no configurable text.</div>');
+		return;
+	}
+
 	(schema.sections || []).forEach(section => {
+		const allow_bold = section.key === 'terms';
+		const hint = PFC_SECTION_HINTS[section.key];
 		const $section = $(`
-			<div class="pfc-panel">
+			<div class="pfc-panel" data-section="${frappe.utils.escape_html(section.key)}">
 				<h4>${frappe.utils.escape_html(section.title)}</h4>
-				<div class="pfc-grid"></div>
+				${hint ? `<div class="pfc-hint">${frappe.utils.escape_html(hint)}</div>` : ''}
+				<div class="pfc-rows"></div>
+				<button type="button" class="btn btn-default btn-xs" data-action="add-row">${__('Add Row')}</button>
 			</div>
 		`).appendTo($form);
-		const $grid = $section.find('.pfc-grid');
+		const $rows = $section.find('.pfc-rows');
 
-		(section.fields || []).forEach(field => {
-			const $field = $('<div></div>').appendTo($grid);
-			const control = frappe.ui.form.make_control({
-				parent: $field,
-				df: {
-					fieldtype: field.fieldtype,
-					fieldname: field.fieldname,
-					label: field.label
-				},
-				render_input: true
-			});
-			control.set_value(values[field.fieldname]);
-			page.state.controls[field.fieldname] = control;
+		(values[section.key] || []).forEach(row => add_configuration_row($rows, row, allow_bold));
+		refresh_configuration_rows($rows);
+
+		$section.find('[data-action="add-row"]').on('click', function() {
+			const $row = add_configuration_row($rows, {}, allow_bold);
+			refresh_configuration_rows($rows);
+			$row.find('.pfc-row-text').trigger('focus');
 		});
 	});
 }
 
+function add_configuration_row($rows, row, allow_bold) {
+	const $row = $(`
+		<div class="pfc-row">
+			<span class="pfc-row-no"></span>
+			<input type="text" class="form-control input-sm pfc-row-text">
+			${allow_bold ? `<label class="pfc-row-bold"><input type="checkbox"> ${__('Bold')}</label>` : ''}
+			<button type="button" class="btn btn-default btn-xs" data-action="up" title="${__('Move up')}">&uarr;</button>
+			<button type="button" class="btn btn-default btn-xs" data-action="down" title="${__('Move down')}">&darr;</button>
+			<button type="button" class="btn btn-default btn-xs" data-action="delete" title="${__('Delete')}">&times;</button>
+		</div>
+	`).appendTo($rows);
+
+	$row.find('.pfc-row-text').val(row.text || '');
+	$row.find('.pfc-row-bold input').prop('checked', !!cint(row.bold));
+
+	$row.find('[data-action="up"]').on('click', function() {
+		$row.insertBefore($row.prev('.pfc-row'));
+		refresh_configuration_rows($rows);
+	});
+	$row.find('[data-action="down"]').on('click', function() {
+		$row.insertAfter($row.next('.pfc-row'));
+		refresh_configuration_rows($rows);
+	});
+	$row.find('[data-action="delete"]').on('click', function() {
+		$row.remove();
+		refresh_configuration_rows($rows);
+	});
+	return $row;
+}
+
+// Renumber after any add/move/delete, disable the moves that would fall off either end, and
+// show a placeholder when a section has no rows left.
+function refresh_configuration_rows($rows) {
+	const $all = $rows.children('.pfc-row');
+	$all.each(function(index) {
+		$(this).find('.pfc-row-no').text(`${index + 1}.`);
+		$(this).find('[data-action="up"]').prop('disabled', index === 0);
+		$(this).find('[data-action="down"]').prop('disabled', index === $all.length - 1);
+	});
+	$rows.children('.pfc-empty').remove();
+	if (!$all.length) {
+		$rows.append(`<div class="pfc-empty">${__('No rows — this section will not print. Use Add Row to add one.')}</div>`);
+	}
+}
+
 function get_configuration_form_values(page) {
 	const values = {};
-	Object.keys(page.state.controls || {}).forEach(fieldname => {
-		values[fieldname] = page.state.controls[fieldname].get_value();
+	$(page.body).find('[data-section]').each(function() {
+		values[$(this).attr('data-section')] = $(this).find('.pfc-row').map(function() {
+			return {
+				text: ($(this).find('.pfc-row-text').val() || '').trim(),
+				bold: $(this).find('.pfc-row-bold input').prop('checked') ? 1 : 0
+			};
+		}).get().filter(row => row.text);
 	});
 	return values;
 }
@@ -186,6 +276,8 @@ function save_print_format_configuration(page) {
 		freeze_message: 'Saving print format configuration...',
 		callback: function() {
 			frappe.show_alert({ message: 'Print format configuration saved', indicator: 'green' });
+			// Reload so blank rows the save dropped disappear from the form too.
+			load_print_format_configuration_values(page, print_format);
 		}
 	});
 }

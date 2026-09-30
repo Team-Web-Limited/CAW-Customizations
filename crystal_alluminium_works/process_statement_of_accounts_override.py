@@ -37,7 +37,7 @@ def _get_job_cards(customer):
 	return frappe.get_all(
 		"CAW Job Card",
 		filters={"customer": customer, "status": ["!=", "Cancelled"]},
-		fields=["name", "quotation", "quotation_amount", "payment_amount", "payment_mode", "creation"],
+		fields=["name", "quotation", "quotation_amount", "payment_amount", "payment_mode", "creation", "modified"],
 	)
 
 
@@ -62,6 +62,8 @@ def _get_job_card_invoices(quotations):
 
 def _gather_events(customer, job_cards):
 	"""Every dated charge and receipt for a customer, oldest first."""
+	from crystal_alluminium_works.api import _is_job_card_settled
+
 	events = []
 	accounted_quotations = set()
 
@@ -70,6 +72,23 @@ def _gather_events(customer, job_cards):
 	for jc in job_cards:
 		if jc.quotation:
 			accounted_quotations.add(jc.quotation)
+
+		# Paid to the whole shilling (see api.PAYMENT_SETTLEMENT_TOLERANCE): credit the cents
+		# so the card closes at zero here too, dated to the save that settled it and ordered
+		# after that day's receipts.
+		cents = flt(jc.quotation_amount) - flt(jc.payment_amount)
+		if cents > 0.0001 and _is_job_card_settled(jc.quotation_amount, jc.payment_amount):
+			events.append(
+				frappe._dict(
+					posting_date=getdate(jc.modified),
+					voucher_type="Rounding",
+					voucher_no=jc.name,
+					debit=0.0,
+					credit=flt(cents, 2),
+					_seq=float("inf"),
+				)
+			)
+
 		invoices = invoices_by_quotation.get(jc.quotation) if jc.quotation else None
 
 		if not invoices:
@@ -226,10 +245,12 @@ def _build_ageing(job_cards, events, to_date, ageing_based_on):
 	Job cards carry no due date, so a card opened today is 'current' and everything
 	else is counted as past due from its creation date.
 	"""
+	from crystal_alluminium_works.api import _job_card_balance
+
 	totals = frappe._dict(current=0.0, range1=0.0, range2=0.0, range3=0.0, range4=0.0)
 
 	for jc in job_cards:
-		outstanding = flt(jc.quotation_amount) - flt(jc.payment_amount)
+		outstanding = _job_card_balance(jc.quotation_amount, jc.payment_amount)
 		if outstanding <= 0:
 			continue
 		age = (to_date - getdate(jc.creation)).days
