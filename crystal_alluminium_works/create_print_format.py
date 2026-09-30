@@ -35,6 +35,31 @@ def get_letterhead_data_uri():
 def embed_letterhead_image(html):
     return html.replace(LETTERHEAD_ASSET_PATH, get_letterhead_data_uri())
 
+
+# The UOM printed on Quotation / Sales Invoice / Credit Note / Sales Order rows, in place of
+# the stock UOM (aluminium is stocked in Nos but sold by the length). Print-only — the
+# documents' own uom and stock postings are untouched. An item code listed here wins over
+# its category.
+PRINT_UOM_BY_CATEGORY = {
+    "Aluminium": "Length",
+    "Silicone": "pcs",
+}
+PRINT_UOM_BY_ITEM_CODE = {
+    **dict.fromkeys(
+        ["F09", "F10", "F10.1", "F10.2", "F10.3", "F10.4", "F68.0", "F68.1", "F68.2",
+         "F68.2.0", "F68.2.1", "F68.2.2", "F68.3", "F68.3.1"],
+        "Pair(s)",
+    ),
+    **dict.fromkeys(
+        ["F48", "F48.1", "F49", "F50", "F50.1", "F50.2", "F51", "F52", "F53", "F54", "F55",
+         "F55.1", "F60", "F666"],
+        "Boxes",
+    ),
+    **dict.fromkeys(["F77", "F77.1"], "Buckets"),
+    **dict.fromkeys(["F83", "F99.1"], "Metres"),
+    **dict.fromkeys(["F91", "F92"], "Sqm"),
+}
+
 def build_crystal_print_format_html(ref_label, terms, payment_details=""):
     html = f"""
 {{% macro short_uom(value) %}}
@@ -45,6 +70,12 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
     {{% elif normalized in ['running foot', 'rft'] %}}rft
     {{% elif normalized == 'nos' %}}nos
     {{% else %}}{{{{ value or '-' }}}}{{% endif %}}
+{{% endmacro %}}
+
+{{% set print_uom_by_category = {PRINT_UOM_BY_CATEGORY!r} %}}
+{{% set print_uom_by_item_code = {PRINT_UOM_BY_ITEM_CODE!r} %}}
+{{% macro print_uom(row, uom) %}}
+    {{{{ print_uom_by_item_code.get(row.item_code) or print_uom_by_category.get(row.custom_product_category or '') or short_uom(uom) }}}}
 {{% endmacro %}}
 
 {{% macro format_dimension(mm_value, uom) %}}
@@ -317,7 +348,7 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
                     {{% endif %}}
                     <td style="text-align: center; white-space: nowrap;">{{{{ frappe.utils.flt(qty, 3) }}}}</td>
                     <td style="text-align: right; white-space: nowrap;">{{{{ frappe.format_value(display_rate, df={{'fieldtype': 'Currency'}}, doc=doc) }}}}</td>
-                    <td style="text-align: center; white-space: nowrap;">{{{{ short_uom(uom) }}}}</td>
+                    <td style="text-align: center; white-space: nowrap;">{{{{ print_uom(parent, uom) }}}}</td>
                     {{% if has_glass_rows.value %}}
                     <td style="white-space: nowrap;">
                         {{% if parent_category == 'Glass' and polish_sides > 0 %}}
