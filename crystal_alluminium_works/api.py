@@ -1611,10 +1611,11 @@ def _get_sales_invoice_list_filters(search=None, status=None, customer=None, fro
 
 @frappe.whitelist()
 def download_sales_invoices_pdf(search=None, status=None, from_date=None, to_date=None, payment_mode=None):
-    """The Invoices page's current filter results as a Crystal-styled PDF (letterhead and
-    table styling of the Crystal Quotation). Streamed, not saved as a File. Amounts and the
-    status shown mirror the on-screen list: 16% visual VAT added where the invoice carries no
-    tax row, and the Job Card's balance status in place of the invoice's own."""
+    """The Invoices (payment_mode "Cheque") or Cash Sales ("Cash") page's current filter results
+    as a Crystal-styled PDF (letterhead and table styling of the Crystal Quotation). Streamed,
+    not saved as a File. Mirrors the on-screen list: 16% visual VAT added where the invoice has
+    no tax row; Invoices show PIN, Balance and the Job Card's balance status, Cash Sales the
+    invoice's own status and no PIN/Balance columns."""
     from frappe.utils import flt, formatdate, now_datetime
     from crystal_alluminium_works.create_print_format import (
         build_crystal_invoice_list_html,
@@ -1631,13 +1632,15 @@ def download_sales_invoices_pdf(search=None, status=None, from_date=None, to_dat
         page_length=0,
     )
     _attach_job_card_balance_status(rows)
+    is_cash = payment_mode == "Cash"
+    title = "Cash Sales" if is_cash else "Invoices"
 
     total_amount = total_balance = 0
     for row in rows:
         vat_multiplier = 1.16 if not flt(row.total_taxes_and_charges) else 1
         row.display_amount = flt(row.grand_total) * vat_multiplier
         row.display_balance = flt(row.outstanding_amount) * vat_multiplier
-        row.display_status = row.get("job_card_balance_status") or row.status
+        row.display_status = row.status if is_cash else (row.get("job_card_balance_status") or row.status)
         # Cancelled invoices are listed but not counted.
         if row.docstatus != 2:
             total_amount += row.display_amount
@@ -1656,6 +1659,8 @@ def download_sales_invoices_pdf(search=None, status=None, from_date=None, to_dat
         embed_letterhead_image(build_crystal_invoice_list_html()),
         {
             "rows": rows,
+            "title": title,
+            "show_pin_and_balance": not is_cash,
             "period": period,
             "status": status if status and status != "All" else "All",
             "search": (search or "").strip(),
@@ -1665,10 +1670,10 @@ def download_sales_invoices_pdf(search=None, status=None, from_date=None, to_dat
             "generated_by": frappe.utils.get_fullname(frappe.session.user),
         },
     )
-    pdf_file = _crystal_body_to_pdf(body, "Invoices")
+    pdf_file = _crystal_body_to_pdf(body, title)
 
     date_part = "_".join(d for d in (from_date, to_date) if d) or formatdate(now_datetime(), "yyyy-MM-dd")
-    frappe.local.response.filename = f"Invoices_{date_part}.pdf"
+    frappe.local.response.filename = f"{title.replace(' ', '_')}_{date_part}.pdf"
     frappe.local.response.filecontent = pdf_file
     frappe.local.response.type = "pdf"
 

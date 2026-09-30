@@ -563,9 +563,9 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
 
 
 def build_crystal_invoice_list_html():
-    """The Invoices page's Download: the filtered invoice list on the Crystal letterhead, styled
-    like the Crystal Quotation. Plain Jinja (not a .format() string), rendered by
-    api.download_sales_invoices_pdf with rows/period/status/search/totals in context."""
+    """The Invoices / Cash Sales pages' Download: the filtered invoice list on the Crystal
+    letterhead, styled like the Crystal Quotation. Plain Jinja (not a .format() string), rendered
+    by api.download_sales_invoices_pdf; Cash Sales leaves out the PIN and Balance columns."""
     return """
 <div class="letterhead" style="margin-bottom: 20px;">
     <img src="/assets/crystal_alluminium_works/images/crystal-alluminium-works-letterhead.jpeg" style="max-width: 100%; height: auto;" alt="Crystal Aluminium Works">
@@ -573,7 +573,7 @@ def build_crystal_invoice_list_html():
 <hr style="border-top: 2px solid #ecf0f1; margin-bottom: 20px;">
 
 <div class="text-center" style="margin-bottom: 16px; font-size: 26px; font-weight: bold; color: #2c3e50; text-transform: uppercase; letter-spacing: 1px;">
-    Invoices
+    {{ title }}
 </div>
 
 <div class="row" style="margin-bottom: 14px;">
@@ -609,9 +609,9 @@ def build_crystal_invoice_list_html():
             <th style="text-align: left;">Customer</th>
             <th style="text-align: left;">Invoice Number</th>
             <th style="text-align: center;">Date</th>
-            <th style="text-align: left;">PIN</th>
+            {% if show_pin_and_balance %}<th style="text-align: left;">PIN</th>{% endif %}
             <th style="text-align: right;">Amount</th>
-            <th style="text-align: right;">Balance</th>
+            {% if show_pin_and_balance %}<th style="text-align: right;">Balance</th>{% endif %}
             <th style="text-align: center;">Status</th>
         </tr>
     </thead>
@@ -622,23 +622,23 @@ def build_crystal_invoice_list_html():
             <td style="text-align: left; font-weight: 600;">{{ row.custom_customer_name or row.customer_name or row.customer or '-' }}</td>
             <td style="text-align: left;">{{ row.name }}</td>
             <td style="text-align: center; white-space: nowrap;">{{ frappe.utils.formatdate(row.posting_date) if row.posting_date else '-' }}</td>
-            <td style="text-align: left;">{{ row.pin or '-' }}</td>
+            {% if show_pin_and_balance %}<td style="text-align: left;">{{ row.pin or '-' }}</td>{% endif %}
             <td style="text-align: right; white-space: nowrap;">{{ frappe.utils.fmt_money(row.display_amount, currency=row.currency or 'KES') }}</td>
-            <td style="text-align: right; white-space: nowrap;">{{ frappe.utils.fmt_money(row.display_balance, currency=row.currency or 'KES') }}</td>
+            {% if show_pin_and_balance %}<td style="text-align: right; white-space: nowrap;">{{ frappe.utils.fmt_money(row.display_balance, currency=row.currency or 'KES') }}</td>{% endif %}
             <td style="text-align: center;">{{ row.display_status or '-' }}</td>
         </tr>
         {% else %}
-        <tr><td colspan="8" style="text-align: center; padding: 20px; color: #7f8c8d;">No invoices match these filters.</td></tr>
+        <tr><td colspan="{{ 8 if show_pin_and_balance else 6 }}" style="text-align: center; padding: 20px; color: #7f8c8d;">No invoices match these filters.</td></tr>
         {% endfor %}
     </tbody>
     {% if rows %}
     <tfoot>
         <tr>
-            <td colspan="5" style="text-align: left; text-transform: uppercase;">
+            <td colspan="{{ 5 if show_pin_and_balance else 4 }}" style="text-align: left; text-transform: uppercase;">
                 Total ({{ rows|selectattr('docstatus', 'ne', 2)|list|length }} invoices{% if rows|selectattr('docstatus', 'eq', 2)|list|length %}, cancelled excluded{% endif %})
             </td>
             <td style="text-align: right; white-space: nowrap;">{{ frappe.utils.fmt_money(total_amount, currency='KES') }}</td>
-            <td style="text-align: right; white-space: nowrap;">{{ frappe.utils.fmt_money(total_balance, currency='KES') }}</td>
+            {% if show_pin_and_balance %}<td style="text-align: right; white-space: nowrap;">{{ frappe.utils.fmt_money(total_balance, currency='KES') }}</td>{% endif %}
             <td></td>
         </tr>
     </tfoot>

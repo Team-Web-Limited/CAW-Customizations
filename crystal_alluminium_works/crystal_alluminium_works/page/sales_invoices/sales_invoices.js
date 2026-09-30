@@ -357,7 +357,6 @@ function get_sales_invoices_html() {
 	<div class="si-list-page">
 		<div class="si-list-hero">
 			<h2>Invoices</h2>
-			<p>Review customer invoices, track outstanding balances, and work entirely without stock impact.</p>
 		</div>
 
 		<div class="si-list-filters">
