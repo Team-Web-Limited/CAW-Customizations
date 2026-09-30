@@ -185,13 +185,14 @@ PAYBILL_ACCOUNT_NO_DOC_NAME_PLACEHOLDERS = {
 }
 
 # Raw Jinja so the built print format substitutes the actual document at render/download
-# time. A Quotation prints just its number (SAL-QTN-2026-60057 and its amendments -> 60057):
+# time. A Quotation prints just its number (QTN-2026-60057, the older SAL-QTN-2026-60057 and
+# their amendments -> 60057):
 # that is what customers type as the Paybill account and what mpesa_link._quotation_for_account
 # resolves. Other documents keep their full name so an invoice number can never be mistaken
 # for a quotation number.
 _DOC_NUMBER_JINJA = (
     "{% if doc.doctype == 'Quotation' %}{% set account_parts = doc.name.split('-') %}"
-    "{{ (account_parts[3] if account_parts|length > 3 else account_parts[-1])|int }}"
+    "{{ account_parts[3 if account_parts[0] == 'SAL' else 2]|int }}"
     "{% else %}{{ doc.name }}{% endif %}"
 )
 

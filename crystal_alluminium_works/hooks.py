@@ -204,6 +204,7 @@ doc_events = {
 		"validate": "crystal_alluminium_works.customer_handler.validate"
 	},
 	"Quotation": {
+		"before_insert": "crystal_alluminium_works.quotation_handler.before_insert",
 		"validate": "crystal_alluminium_works.quotation_handler.on_validate",
 		"on_submit": "crystal_alluminium_works.quotation_handler.on_submit"
 	},

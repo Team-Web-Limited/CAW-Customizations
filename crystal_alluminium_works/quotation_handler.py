@@ -6,6 +6,15 @@ from crystal_alluminium_works.pricing_engine import (
     reapply_price_adjustment,
 )
 
+# QTN-2026-60000. Job Cards follow as JOB-CARD-QTN-2026-60000.
+QUOTATION_NAMING_SERIES = "QTN-.YYYY.-.#####"
+
+
+def before_insert(doc, method):
+    if not doc.get("amended_from"):
+        doc.naming_series = QUOTATION_NAMING_SERIES
+
+
 def on_validate(doc, method):
     # 1. Remove all old auto-generated rows to avoid duplication
     items_to_keep = []

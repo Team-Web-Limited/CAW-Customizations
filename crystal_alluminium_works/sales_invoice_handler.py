@@ -92,9 +92,26 @@ def _enforce_admin_only_amendment(doc):
 CREDIT_NOTE_NAMING_SERIES = "ACC-CNN-.YYYY.-"
 
 
+# Invoices continue the numbering of the system they replace, one run per customer type,
+# both under INV-<year>-. The digit after the year is part of each series' prefix, so the
+# two keep separate counters in tabSeries ("INV-2026-1", "INV-2026-8"): Invoice Customers
+# get INV-2026-10009838, Cash Customers INV-2026-80552.
+INVOICE_CUSTOMER_NAMING_SERIES = "INV-.YYYY.-1.#######"
+CASH_CUSTOMER_NAMING_SERIES = "INV-.YYYY.-8.####"
+
+
 def before_insert(doc, method):
-    if doc.get("is_return") and not doc.get("amended_from"):
+    if doc.get("amended_from"):
+        return
+    if doc.get("is_return"):
         doc.naming_series = CREDIT_NOTE_NAMING_SERIES
+        return
+
+    from crystal_alluminium_works.api import SHARED_CASH_CUSTOMER_NAME
+
+    billing_type = frappe.db.get_value("Customer", doc.customer, "custom_customer_billing_type")
+    is_cash = billing_type == "Cash Customer" or doc.customer == SHARED_CASH_CUSTOMER_NAME
+    doc.naming_series = CASH_CUSTOMER_NAMING_SERIES if is_cash else INVOICE_CUSTOMER_NAMING_SERIES
 
 
 def on_validate(doc, method):
