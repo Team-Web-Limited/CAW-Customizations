@@ -46,24 +46,17 @@ function get_customer_manager_list_state(page) {
 	return page.customer_manager_list_state;
 }
 
-function get_customer_manager_list_columns(customer_type) {
-	let type = (customer_type || 'invoice').trim().toLowerCase();
-	let columns = [
-		{ key: 'customer_name', label: 'Customer Name' }
+// Invoice and Cash customers share the same columns; the type filter already says which is shown.
+function get_customer_manager_list_columns() {
+	return [
+		{ key: 'customer_name', label: 'Customer Name' },
+		{ key: 'tax_id', label: 'PIN (Tax ID)' },
+		{ key: 'phone_number', label: 'Phone Number' },
 	];
-
-	if (type !== 'cash') {
-		columns.push({ key: 'tax_id', label: 'PIN (Tax ID)' });
-	}
-
-	columns.push({ key: 'phone_number', label: 'Phone Number' });
-	columns.push({ key: 'customer_type', label: 'Customer Type' });
-
-	return columns;
 }
 
-function render_customer_manager_list_loading($wrapper, customer_type, message) {
-	let columns = get_customer_manager_list_columns(customer_type);
+function render_customer_manager_list_loading($wrapper, message) {
+	let columns = get_customer_manager_list_columns();
 	let header_html = columns.map(column => `<th>${frappe.utils.escape_html(column.label)}</th>`).join('');
 	$wrapper.find('.cm-list-table thead tr').html(header_html);
 	$wrapper.find('.cm-list-body').html(`
@@ -196,7 +189,7 @@ function render_customer_list(page) {
 		total_count: 0,
 		has_more: false,
 	};
-	render_customer_manager_list_loading($(page.body), 'invoice', 'Loading customers...');
+	render_customer_manager_list_loading($(page.body), 'Loading customers...');
 	load_customers(page, 1);
 }
 
@@ -1142,8 +1135,8 @@ function load_customers(page, page_no) {
 	let tbody = $(wrapper).find('.cm-list-body');
 	let search = ($(wrapper).find('[data-filter="search"]').val() || '').trim();
 	let customer_type = ($(wrapper).find('[data-filter="customer_type"]').val() || 'invoice').trim().toLowerCase();
-	let columns = get_customer_manager_list_columns(customer_type);
-	render_customer_manager_list_loading($(wrapper), customer_type, 'Loading customers...');
+	let columns = get_customer_manager_list_columns();
+	render_customer_manager_list_loading($(wrapper), 'Loading customers...');
 
 	frappe.call({
 		method: 'crystal_alluminium_works.api.get_customer_manager_customers',
@@ -1170,15 +1163,10 @@ function load_customers(page, page_no) {
 			let html = '';
 			data.forEach(d => {
 				let row_cells = [
-					`<td style="font-weight: 600;">${frappe.utils.escape_html(d.customer_name || d.name || '')}</td>`
+					`<td style="font-weight: 600;">${frappe.utils.escape_html(d.customer_name || d.name || '')}</td>`,
+					`<td>${frappe.utils.escape_html(d.tax_id || '-')}</td>`,
+					`<td>${frappe.utils.escape_html(d.phone_number || '-')}</td>`,
 				];
-
-				if (customer_type !== 'cash') {
-					row_cells.push(`<td>${frappe.utils.escape_html(d.tax_id || '-')}</td>`);
-				}
-
-				row_cells.push(`<td>${frappe.utils.escape_html(d.phone_number || '-')}</td>`);
-				row_cells.push(`<td>${frappe.utils.escape_html(d.customer_type || '-')}</td>`);
 				html += `
 					<tr data-name="${frappe.utils.escape_html(d.name || '')}">
 						${row_cells.join('')}
