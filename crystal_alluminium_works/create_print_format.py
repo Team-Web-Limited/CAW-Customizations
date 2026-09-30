@@ -67,8 +67,10 @@ PRINT_UOM_BY_ITEM_CODE = {
 # Frappe gives a PDF with no separate header a 15mm top page margin, which left a blank band
 # above the letterhead. get_pdf reads margin overrides from a `.print-format { ... }` rule in the
 # page itself (read_options_from_html), so every Crystal template starts with this to pull the
-# letterhead up to the top of the page.
-CRYSTAL_PAGE_STYLE = "<style>.print-format { margin-top: 5mm; }</style>\n"
+# letterhead up to the top of the page. The side margins drop from Frappe's 15mm to 8mm so the
+# item tables have room for every column (a wide font such as DejaVu Sans otherwise pushed the
+# Amount column off the page).
+CRYSTAL_PAGE_STYLE = "<style>.print-format { margin-top: 5mm; margin-left: 8mm; margin-right: 8mm; }</style>\n"
 
 
 def build_crystal_print_format_html(ref_label, terms, payment_details=""):
@@ -165,15 +167,18 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
     .cq-table th {{
         background-color: #f8f9fa;
         color: #2c3e50;
-        padding: 6px 4px;
+        padding: 5px 3px;
         border-bottom: 2px solid #dee2e6;
-        font-size: 10px;
+        font-size: 9px;
+        vertical-align: bottom;
+        /* Headers wrap ("Polish Sides" over two lines) so they never set the table wider than the page. */
+        white-space: normal !important;
     }}
     .cq-table td {{
-        padding: 6px 4px;
+        padding: 5px 3px;
         border-bottom: 1px solid #dee2e6;
         vertical-align: middle;
-        font-size: 10px;
+        font-size: 9px;
     }}
     .cq-child-table {{
         width: 100%;
@@ -213,12 +218,13 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
     {{% endif %}}
 {{% endfor %}}
 
-{{# A Quotation prints its items in the same sections as the Quotation Manager / Builder
-   review (Glass, Aluminium, Fittings, Rubber, Silicone, Ceiling, then anything else), each
-   with only the columns it uses and its own subtotal. Other documents keep one combined
-   table ('All') followed by Ceiling. #}}
+{{# Quotations and Sales Invoices (credit notes included) print their items in the same
+   sections as the Quotation Manager / Builder review (Glass, Aluminium, Fittings, Rubber,
+   Silicone, Ceiling, then anything else), each with only the columns it uses and its own
+   subtotal. A Sales Order keeps one combined table ('All') followed by Ceiling. #}}
 {{% set item_section_names = ['Glass', 'Aluminium', 'Fittings', 'Rubber', 'Silicone', 'Ceiling'] %}}
-{{% set item_sections = item_section_names + ['Other'] if doc.doctype == 'Quotation' else ['All', 'Ceiling'] %}}
+{{% set sectioned_items = doc.doctype in ['Quotation', 'Sales Invoice'] %}}
+{{% set item_sections = item_section_names + ['Other'] if sectioned_items else ['All', 'Ceiling'] %}}
 {{% for section in item_sections %}}
 {{% if section == 'Ceiling' %}}
 {{% if has_ceiling_parent.value %}}
@@ -297,7 +303,7 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
                 </tr>
             {{% endif %}}
         {{% endfor %}}
-        {{% if doc.doctype == 'Quotation' %}}
+        {{% if sectioned_items %}}
         <tr>
             <td colspan="{{{{ 4 + (1 if has_ceiling_bundle.value else 0) + ceiling_columns|length }}}}" style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
             <td style="text-align: right; white-space: nowrap; font-weight: bold;">{{{{ frappe.format_value(ceiling_total.amount, df={{'fieldtype': 'Currency'}}, doc=doc) }}}}</td>
