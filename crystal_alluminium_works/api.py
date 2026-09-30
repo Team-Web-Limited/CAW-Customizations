@@ -3628,6 +3628,46 @@ def _record_job_card_item_releases(job_card, invoice, rows_by_name, released_qty
 
 
 
+def _released_invoice_value(job_card):
+    """What has already gone out against this Job Card: the grand total of its submitted
+    Sales Invoices, credit notes (negative) included."""
+    return _round_job_card_amount(frappe.db.sql(
+        """
+        SELECT COALESCE(SUM(grand_total), 0)
+        FROM `tabSales Invoice`
+        WHERE docstatus = 1
+          AND (custom_source_job_card = %(job_card)s
+               OR (IFNULL(custom_source_job_card, '') = '' AND custom_source_quotation = %(quotation)s))
+        """,
+        {"job_card": job_card.name, "quotation": job_card.quotation},
+    )[0][0])
+
+
+def _assert_cash_release_within_paid(job_card, invoice):
+    """A Cash Customer takes home only what they have paid for: goods released so far plus
+    this invoice may not exceed the Job Card's paid amount (deposits and advance included).
+    Invoice Customers are on credit and release freely. Checked on the draft, before
+    submit, so a refusal rolls the whole request back."""
+    if job_card.payment_mode != "Cash Customer":
+        return
+
+    paid = _round_job_card_amount(frappe.db.get_value("CAW Job Card", job_card.name, "payment_amount"))
+    released = _released_invoice_value(job_card)
+    this_release = _round_job_card_amount(invoice.grand_total)
+    short = _round_job_card_amount(released + this_release - paid)
+    if short < PAYMENT_SETTLEMENT_TOLERANCE:
+        return
+
+    fmt = lambda value: frappe.utils.fmt_money(value, currency=invoice.currency)
+    frappe.throw(
+        f"This release is worth {fmt(this_release)}, but the customer has paid {fmt(paid)}"
+        + (f" and already taken {fmt(released)}" if released else "")
+        + f". Collect {fmt(short)} more on the Job Card, or release less "
+        f"(up to {fmt(max(paid - released, 0))} this time).",
+        title="Payment needed before release",
+    )
+
+
 @frappe.whitelist()
 def make_partial_sales_invoice_from_job_card(job_card_name, releases=None):
     if not job_card_name or not frappe.db.exists("CAW Job Card", job_card_name):
@@ -3666,6 +3706,8 @@ def make_partial_sales_invoice_from_job_card(job_card_name, releases=None):
         invoice.custom_source_job_card = job_card.name
         invoice.save(ignore_permissions=True)
 
+    _assert_cash_release_within_paid(job_card, invoice)
+
     # Partial invoices never embed a payment / touch GL — the Job Card is the single
     # source of truth for what's been paid and what's outstanding, for every customer.
     paid_invoice = _submit_and_settle_job_card_sales_invoice(invoice, job_card, skip_payment_settlement=True)
@@ -3687,9 +3729,8 @@ def make_partial_sales_invoice_from_job_card(job_card_name, releases=None):
     # Invoices (partial or full) only ever track released items here — never payments,
     # for either customer type. Cash Customers' money is driven solely by Create/Edit Job
     # Card; Invoice Customers' money is driven solely by the Payments page (see
-    # _sync_job_card_balance_from_payments). The release guard above already read
-    # job_card.balance_amount before any of this ran, so it reflects real money, not what's
-    # being invoiced this visit.
+    # _sync_job_card_balance_from_payments). A Cash Customer's release is already capped
+    # at what they have paid (_assert_cash_release_within_paid, above).
     _record_job_card_item_releases(job_card, paid_invoice, rows_by_name, capped, is_partial=True, quotation_items=quotation.items)
 
     return paid_invoice.name
