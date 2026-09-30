@@ -1699,6 +1699,19 @@ def register_customer(
     if customer_billing_type not in {"Invoice Customer", "Cash Customer"}:
         frappe.throw("Customer Type must be Invoice Customer or Cash Customer.")
 
+    # Same rule as the Quotation Builder's cash phone number.
+    mobile_no = re.sub(r"[\s-]", "", mobile_no or "")
+    if not mobile_no:
+        frappe.throw("Mobile Number is required.")
+    if not re.fullmatch(r"\d{10}", mobile_no):
+        frappe.throw("Mobile Number must be exactly 10 digits.")
+
+    # The Quotation Builder only lists invoice customers that have a PIN, so one registered
+    # without it could never be quoted. (Duplicate PINs are refused by customer_handler.)
+    tax_id = (tax_id or "").strip()
+    if customer_billing_type == "Invoice Customer" and not tax_id:
+        frappe.throw("KRA PIN is required for Invoice Customers.")
+
     customer_type = (customer_type or "Company").strip()
     if customer_type not in {"Company", "Individual", "Partnership"}:
         frappe.throw("Entity Type must be Company, Individual, or Partnership.")
