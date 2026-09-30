@@ -1,5 +1,10 @@
 import frappe
-from crystal_alluminium_works.pricing_engine import calculate_ceiling_pricing, process_glass_item
+from crystal_alluminium_works.pricing_engine import (
+    calculate_ceiling_pricing,
+    get_price_adjustment_multiplier,
+    process_glass_item,
+    reapply_price_adjustment,
+)
 
 
 def _reset_auto_generated_ceiling_component_pricing(doc):
@@ -112,6 +117,9 @@ def on_validate(doc, method):
     doc.items = items_to_keep
 
     new_items = []
+    # The Quotation Builder's +/- %, mapped here from the Quotation — see reapply_price_adjustment.
+    adjustment_multiplier = get_price_adjustment_multiplier(doc)
+    rates_adjusted = False
 
     # ── 2. Process each remaining item through the pricing engine ─────
     for idx, item in enumerate(doc.items):
@@ -123,6 +131,9 @@ def on_validate(doc, method):
         elif item_group == "Ceiling":
             auto_rows = calculate_ceiling_pricing(item, idx + 1)
             new_items.extend(auto_rows)
+        else:
+            continue
+        rates_adjusted = reapply_price_adjustment(item, item_group, adjustment_multiplier) or rates_adjusted
 
     # ── 3. Append generated service rows ──────────────────────────────
     for new_item in new_items:
@@ -134,7 +145,7 @@ def on_validate(doc, method):
     _reset_auto_generated_ceiling_component_pricing(doc)
 
     # ── 4. Recalculate totals since we added new items ────────────────
-    if new_items:
+    if new_items or rates_adjusted:
         doc.calculate_taxes_and_totals()
 
 

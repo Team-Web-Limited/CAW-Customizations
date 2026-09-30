@@ -1,5 +1,10 @@
 import frappe
-from crystal_alluminium_works.pricing_engine import calculate_ceiling_pricing, process_glass_item
+from crystal_alluminium_works.pricing_engine import (
+    calculate_ceiling_pricing,
+    get_price_adjustment_multiplier,
+    process_glass_item,
+    reapply_price_adjustment,
+)
 
 def on_validate(doc, method):
     # 1. Remove all old auto-generated rows to avoid duplication
@@ -10,7 +15,7 @@ def on_validate(doc, method):
     doc.items = items_to_keep
 
     new_items = []
-    adjustment_multiplier = _get_price_adjustment_multiplier(doc)
+    adjustment_multiplier = get_price_adjustment_multiplier(doc)
 
     # 2. Process each remaining item
     for idx, item in enumerate(doc.items):
@@ -24,12 +29,7 @@ def on_validate(doc, method):
             new_items.extend(auto_rows)
         else:
             continue
-
-        # The pricing engine just re-priced this row from the Item's standard/price-list
-        # rate, discarding the Builder's adjusted rate — put the quotation's +/- % back on.
-        if adjustment_multiplier != 1 and _is_repriced_from_price_list(item, item_group):
-            item.rate = frappe.utils.flt(item.rate) * adjustment_multiplier
-            item.amount = frappe.utils.flt(item.qty) * item.rate
+        reapply_price_adjustment(item, item_group, adjustment_multiplier)
 
     # 3. Append generated service rows
     for new_item in new_items:
@@ -42,32 +42,6 @@ def on_validate(doc, method):
     # exactly those rows, leaving doc.grand_total/base_rate/base_amount stuck at whatever
     # they were before this hook ran instead of reflecting the rate it just set.
     doc.calculate_taxes_and_totals()
-
-
-def _get_price_adjustment_multiplier(doc):
-    """The Quotation Builder's global +/- % as a rate multiplier (1 when none is set)."""
-    percent = frappe.utils.flt(doc.get("custom_price_adjustment_percent"))
-    if not percent:
-        return 1
-    if doc.get("custom_price_adjustment_type") == "-":
-        return 1 - percent / 100
-    return 1 + percent / 100
-
-
-def _is_repriced_from_price_list(row, item_group):
-    """Whether process_glass_item / calculate_ceiling_pricing overwrote this row's rate from
-    the Item's own price. Sheet glass and single ceiling boards keep the incoming rate (which
-    already carries the adjustment), and glass without dimensions is left untouched."""
-    if item_group == "Glass":
-        sale_mode = row.get("custom_glass_sale_mode") or "Resized"
-        if sale_mode == "Sheet":
-            return False
-        if sale_mode == "Full Sheet":
-            return True
-        return bool(row.get("custom_width_mm") and row.get("custom_height_mm"))
-    if item_group == "Ceiling":
-        return bool(frappe.utils.flt(row.get("custom_ceiling_sq_m")))
-    return False
 
 
 def on_submit(doc, method):

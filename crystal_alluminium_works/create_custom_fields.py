@@ -534,6 +534,36 @@ def reorder_procurement_standard_fields():
         frappe.clear_cache(doctype=doctype)
 
 
+def _get_price_adjustment_fields():
+    """Quotation Builder's global +/- % adjustment over each row's Inc.Rate.
+
+    Stored on the Quotation so "Edit in Builder" restores it, and carried (same fieldnames,
+    copyable) to the Sales Order and Sales Invoice mapped from it: their validate hooks
+    re-price glass/ceiling rows from the Item's own rate and put this % back on.
+    """
+    return [
+        {
+            "fieldname": "custom_price_adjustment_type",
+            "label": "Builder Price Adjustment Type",
+            "fieldtype": "Select",
+            "options": "\n-\n+",
+            "insert_after": "selling_price_list",
+            "hidden": 1,
+            "no_copy": 0,
+            "module": "Crystal Alluminium Works",
+        },
+        {
+            "fieldname": "custom_price_adjustment_percent",
+            "label": "Builder Price Adjustment Percent",
+            "fieldtype": "Float",
+            "insert_after": "custom_price_adjustment_type",
+            "hidden": 1,
+            "no_copy": 0,
+            "module": "Crystal Alluminium Works",
+        },
+    ]
+
+
 def add_custom_fields():
     custom_fields = {
         "Customer": [
@@ -623,7 +653,7 @@ def add_custom_fields():
                 "read_only": 1,
             }
         ],
-        "Sales Invoice": [
+        "Sales Invoice": _get_price_adjustment_fields() + [
             {
                 # Cash quotations all share the one walk-in Customer record, so
                 # customer_name/party_name/customer are always "Cash Customer" — this
@@ -728,29 +758,8 @@ def add_custom_fields():
         # a receipt, which is why it carries the same entry fields.
         "Purchase Receipt Item": _get_procurement_item_fields(include_rejected=True),
         "Purchase Invoice Item": _get_procurement_item_fields(include_rejected=True),
-        "Quotation": [
-            {
-                # Quotation Builder's global +/- % adjustment over each row's Inc.Rate.
-                # Stored so re-opening the quotation via "Edit in Builder" restores the
-                # same mode (discount/markup) and percentage instead of losing it.
-                "fieldname": "custom_price_adjustment_type",
-                "label": "Builder Price Adjustment Type",
-                "fieldtype": "Select",
-                "options": "\n-\n+",
-                "insert_after": "selling_price_list",
-                "hidden": 1,
-                "no_copy": 1,
-                "module": "Crystal Alluminium Works",
-            },
-            {
-                "fieldname": "custom_price_adjustment_percent",
-                "label": "Builder Price Adjustment Percent",
-                "fieldtype": "Float",
-                "insert_after": "custom_price_adjustment_type",
-                "hidden": 1,
-                "no_copy": 1,
-                "module": "Crystal Alluminium Works",
-            },
+        "Sales Order": _get_price_adjustment_fields(),
+        "Quotation": _get_price_adjustment_fields() + [
             {
                 # The walk-in's own phone number, captured directly in Quotation
                 # Builder's cash-mode step. All cash quotations share the same

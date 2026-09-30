@@ -560,3 +560,41 @@ def calculate_ceiling_pricing(row, parent_idx):
         } | shared_row_values)
 
     return auto_rows
+
+
+def get_price_adjustment_multiplier(doc):
+    """The Quotation Builder's global +/- % (carried from the Quotation onto the Sales Order
+    and Sales Invoice mapped from it) as a rate multiplier; 1 when none is set."""
+    percent = frappe.utils.flt(doc.get("custom_price_adjustment_percent"))
+    if not percent:
+        return 1
+    if doc.get("custom_price_adjustment_type") == "-":
+        return 1 - percent / 100
+    return 1 + percent / 100
+
+
+def reapply_price_adjustment(row, item_group, multiplier):
+    """process_glass_item / calculate_ceiling_pricing re-price cut-size and full-sheet glass
+    and ceiling bundles from the Item's own rate, discarding the adjusted rate the row came in
+    with — put the Builder's +/- % back on those rows. Sheet glass and single ceiling boards
+    keep their incoming (already adjusted) rate, and glass without dimensions is untouched.
+    Returns True when the row's rate was changed."""
+    if multiplier == 1:
+        return False
+
+    if item_group == "Glass":
+        sale_mode = row.get("custom_glass_sale_mode") or "Resized"
+        repriced = sale_mode == "Full Sheet" or (
+            sale_mode != "Sheet" and bool(row.get("custom_width_mm") and row.get("custom_height_mm"))
+        )
+    elif item_group == "Ceiling":
+        repriced = bool(frappe.utils.flt(row.get("custom_ceiling_sq_m")))
+    else:
+        repriced = False
+
+    if not repriced:
+        return False
+
+    row.rate = frappe.utils.flt(row.rate) * multiplier
+    row.amount = frappe.utils.flt(row.qty) * row.rate
+    return True
