@@ -198,6 +198,11 @@ after_install = "crystal_alluminium_works.patches.refresh_workspace_sidebar_link
 # Hook on document methods and events
 
 doc_events = {
+	# One Customer per KRA PIN — re-registering an existing customer under another name
+	# split its quotations/invoices across two records. Same names are fine.
+	"Customer": {
+		"validate": "crystal_alluminium_works.customer_handler.validate"
+	},
 	"Quotation": {
 		"validate": "crystal_alluminium_works.quotation_handler.on_validate",
 		"on_submit": "crystal_alluminium_works.quotation_handler.on_submit"

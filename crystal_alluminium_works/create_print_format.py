@@ -278,6 +278,14 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
                         {{% set uom = parent.uom or 'Square Foot' %}}
                     {{% endif %}}
                 {{% endif %}}
+                {{# Quotation glass qty prints truncated to 2dp (12.259 -> 12.25, never rounded up).
+                   The inner flt(.., 6) absorbs float noise so 12.25 * 100 = 1224.9999... stays 1225. #}}
+                {{% set qty_display = frappe.utils.flt(qty, 3) %}}
+                {{% set qty_label = qty_display %}}
+                {{% if doc.doctype == 'Quotation' and parent_category == 'Glass' %}}
+                    {{% set qty_display = (frappe.utils.flt(qty * 100, 6)|int) / 100 %}}
+                    {{% set qty_label = '%.2f'|format(qty_display) %}}
+                {{% endif %}}
                 {{% set child_rows = namespace(items=[]) %}}
                 {{% for child in doc.items %}}
                     {{% if child.custom_auto_generated and child.custom_parent_row_idx == parent.idx %}}
@@ -291,7 +299,7 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
                 {{% if parent_category == 'Glass' %}}
                     {{% set quotation_totals.pcs = quotation_totals.pcs + frappe.utils.flt(pieces, 2) %}}
                 {{% endif %}}
-                {{% set quotation_totals.qty = quotation_totals.qty + frappe.utils.flt(qty, 3) %}}
+                {{% set quotation_totals.qty = quotation_totals.qty + qty_display %}}
                 {{% set quotation_totals.holes = quotation_totals.holes + frappe.utils.cint(parent.custom_holes or 0) %}}
                 {{% set quotation_totals.notches = quotation_totals.notches + frappe.utils.cint(parent.custom_notches or 0) %}}
                 {{% set is_sheet_glass = parent_category == 'Glass' and parent.custom_glass_sale_mode == 'Sheet' %}}
@@ -350,7 +358,7 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
                     {{% if has_glass_rows.value %}}
                     <td style="text-align: center; white-space: nowrap;">{{% if parent_category == 'Glass' %}}{{{{ frappe.utils.flt(pieces, 2) }}}}{{% else %}}-{{% endif %}}</td>
                     {{% endif %}}
-                    <td style="text-align: center; white-space: nowrap;">{{{{ frappe.utils.flt(qty, 3) }}}}</td>
+                    <td style="text-align: center; white-space: nowrap;">{{{{ qty_label }}}}</td>
                     <td style="text-align: right; white-space: nowrap;">{{{{ frappe.format_value(display_rate, df={{'fieldtype': 'Currency'}}, doc=doc) }}}}</td>
                     <td style="text-align: center; white-space: nowrap;">{{{{ print_uom(parent, uom) }}}}</td>
                     {{% if has_glass_rows.value %}}
