@@ -47,7 +47,7 @@ def _c2b_installed():
 	return bool(frappe.db.exists("DocType", C2B_DOCTYPE))
 
 
-def _resolve_mpesa_claim(reference, amount, payment_method, payment_type=None, exclude=None, lock=False, require_confirmed=False):
+def _resolve_mpesa_claim(reference, amount, payment_method, payment_type=None, exclude=None, lock=False, require_confirmed=False, require_exact=None):
 	"""Name of the confirmed M-Pesa transaction this payment should claim, or None when there is
 	nothing to link. Throws if the code is already claimed or the amount exceeds what was received,
 	and — with require_confirmed — if a code was entered that Safaricom never sent. A blank code
@@ -98,11 +98,28 @@ def _resolve_mpesa_claim(reference, amount, payment_method, payment_type=None, e
 			title="M-Pesa code already used",
 		)
 
+	received = fmt_money(transaction.transamount, currency="KES")
 	if flt(amount) - flt(transaction.transamount) > 0.0001:
 		frappe.throw(
-			f"M-Pesa code {code} only received {fmt_money(transaction.transamount, currency='KES')}, "
+			f"M-Pesa code {code} only received {received}, "
 			f"but this payment records {fmt_money(amount, currency='KES')}.",
 			title="Amount exceeds M-Pesa payment",
+		)
+
+	# A code is claimed by one payment only, so recording less than Safaricom received would
+	# leave the rest with no way to ever be recorded. Enforced when the code or the amount is
+	# being entered now (require_exact defaults to require_confirmed); payments saved before
+	# this rule re-save unchanged.
+	if require_exact is None:
+		require_exact = require_confirmed
+	if require_exact and flt(transaction.transamount) - flt(amount) > 0.0001:
+		frappe.throw(
+			f"M-Pesa code {code} received {received} from Safaricom, but this payment records "
+			f"{fmt_money(amount, currency='KES')}. Enter exactly {received} — a code can only be "
+			"recorded once, so any amount left off now could never be recorded later.<br><br>"
+			f"If {received} is more than this job card needs, record it on the Payments page "
+			"instead: whatever isn't allocated to a job card stays as the customer's advance.",
+			title="Amount doesn't match M-Pesa payment",
 		)
 
 	return transaction.name
@@ -126,7 +143,20 @@ def link_payment_to_mpesa(doc):
 		exclude=[None if doc.is_new() else doc.name, doc.corrects_payment],
 		lock=True,
 		require_confirmed=_must_confirm_code(doc),
+		require_exact=_must_confirm_code(doc) or _amount_changed(doc),
 	)
+
+
+def _amount_changed(doc):
+	"""The amount differs from what was saved before — or, for a correction, from the original."""
+	if doc.is_new():
+		if not doc.corrects_payment:
+			return True
+		previous = frappe.db.get_value("Payments", doc.corrects_payment, "amount")
+	else:
+		before = doc.get_doc_before_save()
+		previous = before.amount if before else doc.amount
+	return abs(flt(previous) - flt(doc.amount)) > 0.0001
 
 
 def _must_confirm_code(doc):
