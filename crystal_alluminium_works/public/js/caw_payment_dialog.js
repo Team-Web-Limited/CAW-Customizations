@@ -131,7 +131,10 @@
 		let mode_of_payments = await get_payment_mode_options();
 
 		function get_allocation_total() {
-			return (d.get_value('allocations') || []).reduce((sum, row) => sum + flt(row.amount || 0), 0);
+			// A fully-paid job card's row is reference only and never counts towards the payment.
+			return (d.get_value('allocations') || [])
+				.filter(row => row.payment_status !== 'Paid')
+				.reduce((sum, row) => sum + flt(row.amount || 0), 0);
 		}
 
 		// "Deposit To" / "Payment Method" / "Save Payment" all read as money coming IN, which is
@@ -225,8 +228,24 @@
 		// of all allocation row amounts, minus whatever existing advance will cover (see
 		// get_advance_applied) — so Amount always shows just the new money actually needed,
 		// live, before Save Payment applies the same math for real.
+		// Paid rows are read-only (read_only_depends_on on their Amount), but a figure typed into
+		// the grid before that took effect is cleared here too, so it can never be saved.
+		function clear_paid_row_amounts() {
+			let grid = d && d.fields_dict.allocations && d.fields_dict.allocations.grid;
+			if (!grid) return;
+			let cleared = false;
+			(grid.get_data ? grid.get_data() : grid.df.data || []).forEach(row => {
+				if (row.payment_status === 'Paid' && flt(row.amount) !== 0) {
+					row.amount = 0;
+					cleared = true;
+				}
+			});
+			if (cleared) grid.refresh();
+		}
+
 		function update_amount_from_allocations() {
 			if (!d || !d.fields_dict.amount) return;
+			clear_paid_row_amounts();
 			let total = get_allocation_total();
 			if (total > 0.0001) {
 				d.set_value('amount', Math.max(total - get_advance_applied(), 0));
@@ -683,7 +702,10 @@
 							fieldname: 'amount',
 							label: 'Amount',
 							in_list_view: 1,
-							reqd: 1,
+							// Required and editable only while the job card still owes money; a Paid
+							// job card's row is shown for reference and takes no amount.
+							mandatory_depends_on: "eval:doc.payment_status !== 'Paid'",
+							read_only_depends_on: "eval:doc.payment_status === 'Paid'",
 							columns: 2,
 							onchange: function() {
 								// A fully-paid job card's row is read-only — undo any amount typed into it.
@@ -782,9 +804,13 @@
 					return;
 				}
 
-				let allocations = (values.allocations || [])
+				let open_rows = (values.allocations || []).filter(row => row.job_card && row.payment_status !== 'Paid');
+				if (open_rows.some(row => flt(row.amount || 0) <= 0)) {
+					frappe.msgprint(__('Enter an amount for each job card that still has a balance, or remove its row.'));
+					return;
+				}
+				let allocations = open_rows
 					// Paid (settled) rows are shown for reference only and carry no allocation.
-					.filter(row => row.job_card && row.payment_status !== 'Paid')
 					.map(row => ({ job_card: row.job_card, amount: flt(row.amount || 0) }));
 
 				// A zero Amount is only legitimate when there are Job Card Allocations for the
