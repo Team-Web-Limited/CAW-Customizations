@@ -1315,19 +1315,19 @@ function render_review_step(page) {
 				</div>
 				<div style="display:flex; justify-content:space-between; align-items:center; gap:16px; padding-bottom:8px;">
 					<span style="color:var(--text-muted);">Subtotal</span>
-					<span>${format_currency(unadjusted_subtotal, 'KES')}</span>
+					<span class="qb-review-unadj-subtotal">${format_currency(unadjusted_subtotal, 'KES')}</span>
 				</div>
 				<div style="display:flex; justify-content:space-between; align-items:center; gap:16px; padding:8px 0; border-top:1px solid var(--border-color);">
 					<span style="color:var(--text-muted);">VAT (16%)</span>
-					<span>${format_currency(unadjusted_subtotal * QB_VAT_RATE, 'KES')}</span>
+					<span class="qb-review-unadj-vat">${format_currency(unadjusted_subtotal * QB_VAT_RATE, 'KES')}</span>
 				</div>
 				<div style="display:flex; justify-content:space-between; align-items:center; gap:16px; padding:8px 0; border-top:1px solid var(--border-color);">
 					<span style="color:var(--text-muted);">Grand Total</span>
-					<span style="font-weight:600;">${format_currency(unadjusted_grand_total, 'KES')}</span>
+					<span class="qb-review-unadj-grand" style="font-weight:600;">${format_currency(unadjusted_grand_total, 'KES')}</span>
 				</div>
 				<div style="display:flex; justify-content:space-between; align-items:center; gap:16px; padding-top:8px; border-top:1px solid var(--border-color);">
 					<span style="color:var(--text-muted);">Adjustment</span>
-					<span style="font-weight:600;color:${color};">${difference < 0 ? '−' : '+'}${format_currency(Math.abs(difference), 'KES')}</span>
+					<span class="qb-review-adj-difference" style="font-weight:600;color:${color};">${difference < 0 ? '−' : '+'}${format_currency(Math.abs(difference), 'KES')}</span>
 				</div>
 			</div>
 		`;
@@ -1361,21 +1361,22 @@ function render_review_step(page) {
 			<div style="background:var(--card-bg); border:1px solid var(--border-color); border-radius:6px; padding:14px 20px; margin-top:8px;">
 				<div style="display:flex; justify-content:space-between; align-items:center; gap:16px; padding-bottom:8px;">
 					<span style="color:var(--text-muted);">Subtotal</span>
-					<span style="font-weight:600;">${format_currency(subtotal, 'KES')}</span>
+					<span class="qb-review-subtotal" style="font-weight:600;">${format_currency(subtotal, 'KES')}</span>
 				</div>
 				<div style="display:flex; justify-content:space-between; align-items:center; gap:16px; padding:8px 0; border-top:1px solid var(--border-color);">
 					<span style="color:var(--text-muted);">VAT (16%)</span>
-					<span style="font-weight:600;">${format_currency(vat_total, 'KES')}</span>
+					<span class="qb-review-vat" style="font-weight:600;">${format_currency(vat_total, 'KES')}</span>
 				</div>
 				<div style="display:flex; justify-content:space-between; align-items:center; gap:16px; padding-top:10px; margin-top:8px; border-top:1px solid var(--border-color);">
 					<span style="font-size:15px;font-weight:600;">Grand Total</span>
-					<span style="font-size:18px;font-weight:700;color:var(--primary);">${format_currency(grand_total, 'KES')}</span>
+					<span class="qb-review-grand" style="font-size:18px;font-weight:700;color:var(--primary);">${format_currency(grand_total, 'KES')}</span>
 				</div>
 			</div>
 		</div>
 	`;
 
 	$summary.html(html);
+	refresh_review_totals_from_server($summary);
 
 	// Attach the event handler to the button
 	$(page.body).find('#btn-generate-quo').on('click', function () {
@@ -4015,20 +4016,9 @@ function export_review_rows(page) {
 // ────────────────────────────────────────────
 // Step 3: Review & Generate
 // ────────────────────────────────────────────
-function generate_quotation(page) {
-	let state = window.qb_state;
-
-	if (!state.customer) {
-		frappe.msgprint('Please select a customer first.');
-		render_step(page, 1);
-		return;
-	}
-	if (state.items.length === 0) {
-		frappe.msgprint('Please add at least one item.');
-		render_step(page, 2);
-		return;
-	}
-
+// What Generate Quotation sends — also sent to preview_quotation_from_builder, so the
+// Review totals are the ones the saved quotation will have.
+function get_quotation_api_args(state) {
 	let payment_mode = normalize_customer_payment_mode(state.payment_mode);
 
 	let api_args = {
@@ -4050,6 +4040,79 @@ function generate_quotation(page) {
 		api_args.quotation_name = state.editing_quotation;
 	}
 
+	return api_args;
+}
+
+// The Review tab's own sums miss what the server adds on save (glass polishing/holes/notches/
+// sandblasting rows, ceiling components, its area rounding). Price the quotation exactly as
+// Generate would, without saving, and total it the way the Quotation Manager does
+// (get_manager_quotation_subtotal/_tax/_total) so the two always agree.
+let qb_review_preview_seq = 0;
+function refresh_review_totals_from_server($summary) {
+	let state = window.qb_state;
+	if (!state.customer || !(state.items || []).length) {
+		return;
+	}
+
+	let seq = ++qb_review_preview_seq;
+	let $totals = $summary.find('.qb-review-subtotal, .qb-review-vat, .qb-review-grand, .qb-review-unadj-subtotal, .qb-review-unadj-vat, .qb-review-unadj-grand, .qb-review-adj-difference');
+	$totals.css('opacity', 0.4);
+
+	frappe.call({
+		method: 'crystal_alluminium_works.api.preview_quotation_from_builder',
+		args: get_quotation_api_args(state),
+		callback: function (r) {
+			if (seq !== qb_review_preview_seq) return;  // a newer render superseded this one
+			let preview = r.message;
+			if (!preview || preview.error) return;      // keep the Builder's own sums
+
+			let has_real_tax = flt(preview.total_taxes_and_charges) > 0;
+			let subtotal = has_real_tax
+				? flt(preview.grand_total) - flt(preview.total_taxes_and_charges)
+				: flt(preview.grand_total);
+			let vat = has_real_tax ? flt(preview.total_taxes_and_charges) : subtotal * QB_VAT_RATE;
+			let grand = has_real_tax ? flt(preview.grand_total) : subtotal + vat;
+
+			$summary.find('.qb-review-subtotal').text(format_currency(subtotal, 'KES'));
+			$summary.find('.qb-review-vat').text(format_currency(vat, 'KES'));
+			$summary.find('.qb-review-grand').text(format_currency(grand, 'KES'));
+
+			// Before-adjustment figures: Builder-priced rows reversed, service rows as-is.
+			let adjustment = state.price_adjustment;
+			if (adjustment && adjustment.percent) {
+				let multiplier = adjustment.type === '-' ? (1 - adjustment.percent / 100) : (1 + adjustment.percent / 100);
+				let manual = flt(preview.manual_amount);
+				let unadj_subtotal = multiplier ? subtotal - manual + manual / multiplier : subtotal;
+				let unadj_vat = has_real_tax && subtotal ? vat * unadj_subtotal / subtotal : unadj_subtotal * QB_VAT_RATE;
+				let unadj_grand = unadj_subtotal + unadj_vat;
+				let difference = grand - unadj_grand;
+				$summary.find('.qb-review-unadj-subtotal').text(format_currency(unadj_subtotal, 'KES'));
+				$summary.find('.qb-review-unadj-vat').text(format_currency(unadj_vat, 'KES'));
+				$summary.find('.qb-review-unadj-grand').text(format_currency(unadj_grand, 'KES'));
+				$summary.find('.qb-review-adj-difference').text(`${difference < 0 ? '−' : '+'}${format_currency(Math.abs(difference), 'KES')}`);
+			}
+		},
+		always: function () {
+			if (seq === qb_review_preview_seq) $totals.css('opacity', 1);
+		}
+	});
+}
+
+function generate_quotation(page) {
+	let state = window.qb_state;
+
+	if (!state.customer) {
+		frappe.msgprint('Please select a customer first.');
+		render_step(page, 1);
+		return;
+	}
+	if (state.items.length === 0) {
+		frappe.msgprint('Please add at least one item.');
+		render_step(page, 2);
+		return;
+	}
+
+	let api_args = get_quotation_api_args(state);
 	let is_edit = !!state.editing_quotation;
 
 	frappe.call({

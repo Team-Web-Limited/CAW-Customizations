@@ -2688,6 +2688,62 @@ def create_quotation_from_builder(
     customer_name=None,
     customer_pin=None,
 ):
+    return _save_quotation_from_builder(
+        customer, items, quotation_name, price_adjustment_type, price_adjustment_percent,
+        payment_mode, customer_phone, customer_name, customer_pin,
+    ).name
+
+
+@frappe.whitelist()
+def preview_quotation_from_builder(
+    customer,
+    items,
+    quotation_name=None,
+    price_adjustment_type=None,
+    price_adjustment_percent=None,
+    payment_mode=None,
+    customer_phone=None,
+    customer_name=None,
+    customer_pin=None,
+):
+    """What Generate Quotation would save, without keeping it — for the Builder's Review tab.
+
+    The Review tab's own sums can't see what the validate hooks add (glass polishing/holes/
+    notches/sandblasting rows, ceiling components, the server's area rounding), so its total
+    drifted from the Quotation Manager's. This runs the very same save and rolls it back, and
+    returns the saved figures for the Review tab to total the way the Quotation Manager does.
+    Returns {"error": ...} instead of throwing, so an incomplete Builder just keeps its own sums.
+    """
+    try:
+        quo = _save_quotation_from_builder(
+            customer, items, quotation_name, price_adjustment_type, price_adjustment_percent,
+            payment_mode, customer_phone, customer_name, customer_pin,
+        )
+        result = {
+            "grand_total": flt(quo.grand_total),
+            "total_taxes_and_charges": flt(quo.total_taxes_and_charges),
+            # Rows priced by the Builder (the +/- % applies to these), vs server service rows.
+            "manual_amount": sum(flt(row.amount) for row in quo.items if not row.get("custom_auto_generated")),
+        }
+    except Exception as e:
+        frappe.clear_messages()
+        result = {"error": frappe.utils.strip_html(str(e)) or "Could not price the quotation."}
+    finally:
+        frappe.db.rollback()
+    return result
+
+
+def _save_quotation_from_builder(
+    customer,
+    items,
+    quotation_name=None,
+    price_adjustment_type=None,
+    price_adjustment_percent=None,
+    payment_mode=None,
+    customer_phone=None,
+    customer_name=None,
+    customer_pin=None,
+):
     """
     Creates or updates a Draft Quotation from the Quotation Builder payload.
     Items is a JSON string of the builder's item list.
@@ -2855,9 +2911,8 @@ def create_quotation_from_builder(
         quo.save(ignore_permissions=True)
     else:
         quo.insert(ignore_permissions=True)
-    
-    # Return the name so the frontend can redirect
-    return quo.name
+
+    return quo
 
 @frappe.whitelist()
 def submit_quotation(name):
