@@ -143,7 +143,8 @@ function render_stock_ledger_page(page) {
 			fieldtype: 'Select',
 			fieldname: 'product_category',
 			label: 'Product Category',
-			options: '\nGlass\nAluminium\nFittings\nCeiling\nRubber\nSilicone\nConsumable\nRaw Material\nProducts\nSub Assemblies\nServices',
+			// The categories Manage Items has tabs for; its four glass tabs are all the Glass item group.
+			options: '\nAluminium\nGlass\nFittings\nCeiling\nRubber\nSilicone',
 			placeholder: 'All Categories'
 		},
 		parent: $body.find('#sl-filter-category'),
