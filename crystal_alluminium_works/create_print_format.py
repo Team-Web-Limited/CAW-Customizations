@@ -562,6 +562,91 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
     return html
 
 
+def build_crystal_invoice_list_html():
+    """The Invoices page's Download: the filtered invoice list on the Crystal letterhead, styled
+    like the Crystal Quotation. Plain Jinja (not a .format() string), rendered by
+    api.download_sales_invoices_pdf with rows/period/status/search/totals in context."""
+    return """
+<div class="letterhead" style="margin-bottom: 20px;">
+    <img src="/assets/crystal_alluminium_works/images/crystal-alluminium-works-letterhead.jpeg" style="max-width: 100%; height: auto;" alt="Crystal Aluminium Works">
+</div>
+<hr style="border-top: 2px solid #ecf0f1; margin-bottom: 20px;">
+
+<div class="text-center" style="margin-bottom: 16px; font-size: 26px; font-weight: bold; color: #2c3e50; text-transform: uppercase; letter-spacing: 1px;">
+    Invoices
+</div>
+
+<div class="row" style="margin-bottom: 14px;">
+    <div class="col-xs-7">
+        <div style="font-size: 13px; font-weight: bold; color: #000; text-transform: uppercase;">Period: {{ period }}</div>
+        <div style="margin-top: 4px; font-size: 13px; font-weight: bold; color: #000; text-transform: uppercase;">Status: {{ status }}</div>
+        {% if search %}
+        <div style="margin-top: 4px; font-size: 13px; font-weight: bold; color: #000; text-transform: uppercase;">Search: {{ search }}</div>
+        {% endif %}
+    </div>
+    <div class="col-xs-5 text-right">
+        <div style="color: #7f8c8d; font-size: 12px; text-transform: uppercase;">Generated</div>
+        <div style="font-size: 13px;">{{ frappe.utils.format_datetime(generated_on, "dd-MM-yyyy HH:mm") }}</div>
+        <div style="font-size: 13px;">{{ generated_by }}</div>
+    </div>
+</div>
+
+<style>
+    .ci-table { width: 100%; border-collapse: collapse; margin-bottom: 16px; }
+    .ci-table th {
+        background-color: #f8f9fa; color: #2c3e50; padding: 6px 4px;
+        border-bottom: 2px solid #dee2e6; font-size: 10px; text-transform: uppercase;
+    }
+    .ci-table td { padding: 6px 4px; border-bottom: 1px solid #dee2e6; vertical-align: middle; font-size: 10px; }
+    .ci-table tr.ci-cancelled td { color: #95a5a6; text-decoration: line-through; }
+    .ci-table tfoot td { border-top: 2px solid #2c3e50; border-bottom: none; font-weight: bold; font-size: 11px; }
+</style>
+
+<table class="ci-table">
+    <thead>
+        <tr>
+            <th style="text-align: center; width: 4%;">#</th>
+            <th style="text-align: left;">Customer</th>
+            <th style="text-align: left;">Invoice Number</th>
+            <th style="text-align: center;">Date</th>
+            <th style="text-align: left;">PIN</th>
+            <th style="text-align: right;">Amount</th>
+            <th style="text-align: right;">Balance</th>
+            <th style="text-align: center;">Status</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for row in rows %}
+        <tr class="{{ 'ci-cancelled' if row.docstatus == 2 else '' }}">
+            <td style="text-align: center;">{{ loop.index }}</td>
+            <td style="text-align: left; font-weight: 600;">{{ row.custom_customer_name or row.customer_name or row.customer or '-' }}</td>
+            <td style="text-align: left;">{{ row.name }}</td>
+            <td style="text-align: center; white-space: nowrap;">{{ frappe.utils.formatdate(row.posting_date) if row.posting_date else '-' }}</td>
+            <td style="text-align: left;">{{ row.pin or '-' }}</td>
+            <td style="text-align: right; white-space: nowrap;">{{ frappe.utils.fmt_money(row.display_amount, currency=row.currency or 'KES') }}</td>
+            <td style="text-align: right; white-space: nowrap;">{{ frappe.utils.fmt_money(row.display_balance, currency=row.currency or 'KES') }}</td>
+            <td style="text-align: center;">{{ row.display_status or '-' }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="8" style="text-align: center; padding: 20px; color: #7f8c8d;">No invoices match these filters.</td></tr>
+        {% endfor %}
+    </tbody>
+    {% if rows %}
+    <tfoot>
+        <tr>
+            <td colspan="5" style="text-align: left; text-transform: uppercase;">
+                Total ({{ rows|selectattr('docstatus', 'ne', 2)|list|length }} invoices{% if rows|selectattr('docstatus', 'eq', 2)|list|length %}, cancelled excluded{% endif %})
+            </td>
+            <td style="text-align: right; white-space: nowrap;">{{ frappe.utils.fmt_money(total_amount, currency='KES') }}</td>
+            <td style="text-align: right; white-space: nowrap;">{{ frappe.utils.fmt_money(total_balance, currency='KES') }}</td>
+            <td></td>
+        </tr>
+    </tfoot>
+    {% endif %}
+</table>
+"""
+
+
 def build_crystal_payment_receipt_print_format_html():
     return """
 {% set history = doc %}

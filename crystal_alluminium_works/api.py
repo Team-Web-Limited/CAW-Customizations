@@ -445,8 +445,57 @@ def _submit_and_settle_job_card_sales_invoice(invoice, job_card, preserve_paymen
     return invoice
 
 
-def _download_crystal_pdf(doctype, name, print_format_name, ref_label, terms, render_context=None, filename_suffix=""):
+def _crystal_body_to_pdf(body, title, doctype="", name="", print_format="", pdf_options=None):
+    """Wrap a rendered Crystal print body in the desk print view and render it with wkhtmltopdf.
+
+    The print view's /assets/ stylesheets are inlined first — wkhtmltopdf can't fetch them —
+    so Bootstrap's grid/utility classes used by the Crystal templates still apply.
+    """
     from bs4 import BeautifulSoup
+    from frappe.utils.jinja_globals import is_rtl
+    from frappe.utils.pdf import get_pdf
+    from frappe.www.printview import get_print_style
+
+    html = frappe.get_template("www/printview.html").render(
+        {
+            "body": body,
+            "print_style": get_print_style(),
+            "comment": frappe.session.user,
+            "title": title,
+            "lang": frappe.local.lang,
+            "layout_direction": "rtl" if is_rtl() else "ltr",
+            "doctype": doctype,
+            "name": name,
+            "key": "",
+            "print_format": print_format,
+            "letterhead": "",
+            "no_letterhead": 1,
+            "pdf_generator": "wkhtmltopdf",
+        }
+    )
+
+    soup = BeautifulSoup(html, "html5lib")
+    for stylesheet in soup.find_all("link", rel=lambda rel: rel and "stylesheet" in rel):
+        href = (stylesheet.get("href") or "").split("?", 1)[0]
+        if not href.startswith("/assets/"):
+            continue
+
+        css_path = os.path.join(frappe.local.sites_path, href.lstrip("/"))
+        if not os.path.exists(css_path):
+            continue
+
+        style = soup.new_tag("style")
+        style.string = frappe.read_file(css_path)
+        stylesheet.replace_with(style)
+
+    return get_pdf(str(soup), options=pdf_options or {
+        "load-error-handling": "ignore",
+        "load-media-error-handling": "ignore",
+        "zoom": "0.75",
+    })
+
+
+def _download_crystal_pdf(doctype, name, print_format_name, ref_label, terms, render_context=None, filename_suffix=""):
     from crystal_alluminium_works.create_print_format import (
         build_crystal_job_card_print_format_html,
         build_crystal_payment_receipt_print_format_html,
@@ -456,9 +505,7 @@ def _download_crystal_pdf(doctype, name, print_format_name, ref_label, terms, re
     from crystal_alluminium_works.print_format_config import get_print_format_context
     from frappe.translate import print_language
     from frappe.utils import cstr, strip_html
-    from frappe.utils.pdf import get_pdf
-    from frappe.utils.jinja_globals import is_rtl
-    from frappe.www.printview import get_print_style, validate_print_permission
+    from frappe.www.printview import validate_print_permission
 
     doc = frappe.get_doc(doctype, name)
     validate_print_permission(doc)
@@ -487,39 +534,9 @@ def _download_crystal_pdf(doctype, name, print_format_name, ref_label, terms, re
 
     with print_language(doc.get("language") or frappe.local.lang):
         body = frappe.render_template(template_html, {"doc": doc, **(render_context or {})})
-        html = frappe.get_template("www/printview.html").render(
-            {
-                "body": body,
-                "print_style": get_print_style(),
-                "comment": frappe.session.user,
-                "title": strip_html(cstr(doc.get_title() or doc.name)),
-                "lang": frappe.local.lang,
-                "layout_direction": "rtl" if is_rtl() else "ltr",
-                "doctype": doctype,
-                "name": name,
-                "key": "",
-                "print_format": print_format_name,
-                "letterhead": "",
-                "no_letterhead": 1,
-                "pdf_generator": "wkhtmltopdf",
-            }
+        pdf_file = _crystal_body_to_pdf(
+            body, strip_html(cstr(doc.get_title() or doc.name)), doctype, name, print_format_name, pdf_options
         )
-
-    soup = BeautifulSoup(html, "html5lib")
-    for stylesheet in soup.find_all("link", rel=lambda rel: rel and "stylesheet" in rel):
-        href = (stylesheet.get("href") or "").split("?", 1)[0]
-        if not href.startswith("/assets/"):
-            continue
-
-        css_path = os.path.join(frappe.local.sites_path, href.lstrip("/"))
-        if not os.path.exists(css_path):
-            continue
-
-        style = soup.new_tag("style")
-        style.string = frappe.read_file(css_path)
-        stylesheet.replace_with(style)
-
-    pdf_file = get_pdf(str(soup), options=pdf_options)
 
     frappe.local.response.filename = f"{name.replace(' ', '-').replace('/', '-')}{filename_suffix}.pdf"
     frappe.local.response.filecontent = pdf_file
@@ -1498,6 +1515,58 @@ def get_sales_invoices_page(search=None, status=None, customer=None, from_date=N
     page_length = min(max(int(page_length or 20), 1), 100)
     start = (page - 1) * page_length
 
+    filters, or_filters = _get_sales_invoice_list_filters(search, status, customer, from_date, to_date, payment_mode)
+    rows = frappe.get_list(
+        "Sales Invoice",
+        filters=filters,
+        or_filters=or_filters,
+        fields=SALES_INVOICE_LIST_FIELDS,
+        order_by="creation desc",
+        start=start,
+        page_length=page_length,
+    )
+
+    _attach_job_card_balance_status(rows)
+
+    count_result = frappe.get_all(
+        "Sales Invoice",
+        filters=filters,
+        or_filters=or_filters,
+        fields=[{"COUNT": "name", "as": "total_count"}],
+    )
+    total_count = (count_result[0].total_count if count_result else 0) or 0
+
+    return {
+        "rows": rows,
+        "page": page,
+        "page_length": page_length,
+        "total_count": total_count,
+        "has_next": start + len(rows) < total_count,
+    }
+
+
+SALES_INVOICE_LIST_FIELDS = [
+    "name",
+    "customer",
+    "customer_name",
+    "custom_customer_name",
+    "posting_date",
+    "due_date",
+    "grand_total",
+    "total_taxes_and_charges",
+    "outstanding_amount",
+    "currency",
+    "status",
+    "docstatus",
+    "custom_source_quotation",
+    "update_stock",
+    "creation",
+    "customer.tax_id as pin",
+]
+
+
+def _get_sales_invoice_list_filters(search=None, status=None, customer=None, from_date=None, to_date=None, payment_mode=None):
+    """The Invoices page's filters, shared by its list and its Download."""
     filters = {}
     if status and status != "All":
         filters["status"] = status
@@ -1537,52 +1606,71 @@ def get_sales_invoices_page(search=None, status=None, customer=None, from_date=N
                 ["Sales Invoice", "remarks", "like", like],
             ]
 
-    fields = [
-        "name",
-        "customer",
-        "customer_name",
-        "custom_customer_name",
-        "posting_date",
-        "due_date",
-        "grand_total",
-        "total_taxes_and_charges",
-        "outstanding_amount",
-        "currency",
-        "status",
-        "docstatus",
-        "custom_source_quotation",
-        "update_stock",
-        "creation",
-        "customer.tax_id as pin",
-    ]
+    return filters, or_filters
 
+
+@frappe.whitelist()
+def download_sales_invoices_pdf(search=None, status=None, from_date=None, to_date=None, payment_mode=None):
+    """The Invoices page's current filter results as a Crystal-styled PDF (letterhead and
+    table styling of the Crystal Quotation). Streamed, not saved as a File. Amounts and the
+    status shown mirror the on-screen list: 16% visual VAT added where the invoice carries no
+    tax row, and the Job Card's balance status in place of the invoice's own."""
+    from frappe.utils import flt, formatdate, now_datetime
+    from crystal_alluminium_works.create_print_format import (
+        build_crystal_invoice_list_html,
+        embed_letterhead_image,
+    )
+
+    filters, or_filters = _get_sales_invoice_list_filters(search, status, None, from_date, to_date, payment_mode)
     rows = frappe.get_list(
         "Sales Invoice",
         filters=filters,
         or_filters=or_filters,
-        fields=fields,
-        order_by="creation desc",
-        start=start,
-        page_length=page_length,
+        fields=SALES_INVOICE_LIST_FIELDS,
+        order_by="posting_date asc, name asc",
+        page_length=0,
     )
-
     _attach_job_card_balance_status(rows)
 
-    count_result = frappe.get_all(
-        "Sales Invoice",
-        filters=filters,
-        or_filters=or_filters,
-        fields=[{"COUNT": "name", "as": "total_count"}],
-    )
-    total_count = (count_result[0].total_count if count_result else 0) or 0
+    total_amount = total_balance = 0
+    for row in rows:
+        vat_multiplier = 1.16 if not flt(row.total_taxes_and_charges) else 1
+        row.display_amount = flt(row.grand_total) * vat_multiplier
+        row.display_balance = flt(row.outstanding_amount) * vat_multiplier
+        row.display_status = row.get("job_card_balance_status") or row.status
+        # Cancelled invoices are listed but not counted.
+        if row.docstatus != 2:
+            total_amount += row.display_amount
+            total_balance += row.display_balance
 
-    return {
-        "rows": rows,
-        "page": page,
-        "page_length": page_length,
-        "total_count": total_count,
-        "has_next": start + len(rows) < total_count,
-    }
+    if from_date and to_date:
+        period = f"{formatdate(from_date)} to {formatdate(to_date)}"
+    elif from_date:
+        period = f"From {formatdate(from_date)}"
+    elif to_date:
+        period = f"Up to {formatdate(to_date)}"
+    else:
+        period = "All dates"
+
+    body = frappe.render_template(
+        embed_letterhead_image(build_crystal_invoice_list_html()),
+        {
+            "rows": rows,
+            "period": period,
+            "status": status if status and status != "All" else "All",
+            "search": (search or "").strip(),
+            "total_amount": total_amount,
+            "total_balance": total_balance,
+            "generated_on": now_datetime(),
+            "generated_by": frappe.utils.get_fullname(frappe.session.user),
+        },
+    )
+    pdf_file = _crystal_body_to_pdf(body, "Invoices")
+
+    date_part = "_".join(d for d in (from_date, to_date) if d) or formatdate(now_datetime(), "yyyy-MM-dd")
+    frappe.local.response.filename = f"Invoices_{date_part}.pdf"
+    frappe.local.response.filecontent = pdf_file
+    frappe.local.response.type = "pdf"
 
 
 @frappe.whitelist()

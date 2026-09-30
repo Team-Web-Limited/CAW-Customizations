@@ -4,7 +4,7 @@
  "docstatus": 0,
  "doctype": "Page",
  "idx": 0,
- "modified": "2026-09-15 14:39:39.487904",
+ "modified": "2026-09-30 16:30:00.000000",
  "modified_by": "Administrator",
  "module": "Crystal Alluminium Works",
  "name": "sales-invoices",
@@ -22,5 +22,5 @@
  "standard": "Yes",
  "style": null,
  "system_page": 0,
- "title": "Sales Invoices"
+ "title": "Invoices"
 }

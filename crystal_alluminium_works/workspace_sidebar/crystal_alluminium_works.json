@@ -160,7 +160,7 @@
    "icon": "receipt",
    "indent": 0,
    "keep_closed": 0,
-   "label": "Sales Invoices",
+   "label": "Invoices",
    "link_to": "sales-invoices",
    "link_type": "Page",
    "show_arrow": 0,
@@ -269,7 +269,7 @@
    "type": "Link"
   }
  ],
- "modified": "2026-09-29 11:46:39.705683",
+ "modified": "2026-09-30 16:22:19.196342",
  "modified_by": "Administrator",
  "module": "Crystal Alluminium Works",
  "name": "Crystal Alluminium Works",

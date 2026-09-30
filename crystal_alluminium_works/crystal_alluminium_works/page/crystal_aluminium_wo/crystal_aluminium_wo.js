@@ -274,7 +274,7 @@ function get_dashboard_html() {
 
 			<div class="caw-action-card" data-route="sales-invoices">
 				<span class="caw-icon">🧾</span>
-				<div class="caw-card-title">Sales Invoices</div>
+				<div class="caw-card-title">Invoices</div>
 			</div>
 
 			<div class="caw-action-card" data-route="job-cards">

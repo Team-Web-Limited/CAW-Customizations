@@ -1,7 +1,7 @@
 frappe.pages['sales-invoices'].on_page_load = function(wrapper) {
 	var page = frappe.ui.make_app_page({
 		parent: wrapper,
-		title: 'Sales Invoices',
+		title: 'Invoices',
 		single_column: true,
 	});
 
@@ -50,16 +50,24 @@ function bind_sales_invoices_events(page) {
 	let $body = $(page.body);
 	let state = get_sales_invoices_state(page);
 
+	// Downloads what the filters currently select (all pages, not just the one shown) as a
+	// Crystal-styled PDF — streamed by the server, nothing is saved.
+	$body.on('click', '.si-list-download', function() {
+		let args = get_sales_invoices_filters(page);
+		window.open(frappe.urllib.get_full_url(
+			`/api/method/crystal_alluminium_works.api.download_sales_invoices_pdf?${$.param(args)}`
+		), '_blank');
+	});
+
 	$body.on('click', '.si-list-clear', function() {
 		$body.find('[data-filter="search"]').val('');
-		$body.find('[data-filter="customer"]').val('');
 		$body.find('[data-filter="status"]').val('All');
 		$body.find('[data-filter="from_date"]').val('');
 		$body.find('[data-filter="to_date"]').val('');
 		load_sales_invoices(page, 1);
 	});
 
-	$body.on('input', '[data-filter="search"], [data-filter="customer"]', function() {
+	$body.on('input', '[data-filter="search"]', function() {
 		clearTimeout(state.filter_timer);
 		state.filter_timer = setTimeout(function() {
 			load_sales_invoices(page, 1);
@@ -99,27 +107,32 @@ function bind_sales_invoices_events(page) {
 	});
 }
 
+function get_sales_invoices_filters(page) {
+	let $body = $(page.body);
+	return {
+		search: $body.find('[data-filter="search"]').val() || '',
+		status: $body.find('[data-filter="status"]').val() || 'All',
+		from_date: $body.find('[data-filter="from_date"]').val() || '',
+		to_date: $body.find('[data-filter="to_date"]').val() || '',
+		payment_mode: 'Cheque',
+	};
+}
+
 function load_sales_invoices(page, page_number) {
 	let state = get_sales_invoices_state(page);
 	let $body = $(page.body);
 
 	state.page = page_number || 1;
 
-	let filters = {
-		search: $body.find('[data-filter="search"]').val() || '',
-		customer: $body.find('[data-filter="customer"]').val() || '',
-		status: $body.find('[data-filter="status"]').val() || 'All',
-		from_date: $body.find('[data-filter="from_date"]').val() || '',
-		to_date: $body.find('[data-filter="to_date"]').val() || '',
+	let filters = Object.assign(get_sales_invoices_filters(page), {
 		page: state.page,
 		page_length: state.page_length,
-		payment_mode: 'Cheque',
-	};
+	});
 
 	$body.find('.si-list-body').html(`
 		<tr>
 			<td colspan="7" style="padding:24px; text-align:center; color:var(--text-muted);">
-				Loading sales invoices...
+				Loading invoices...
 			</td>
 		</tr>
 	`);
@@ -149,7 +162,7 @@ function render_sales_invoices_table(page, rows) {
 		$body.html(`
 		<tr>
 			<td colspan="7" style="padding:24px; text-align:center; color:var(--text-muted);">
-				No sales invoices match the current filters.
+				No invoices match the current filters.
 			</td>
 		</tr>
 		`);
@@ -203,7 +216,7 @@ function render_sales_invoices_pagination(page) {
 	$(page.body).find('.si-list-pagination').html(`
 		<div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
 			<div style="font-size:13px; color:var(--text-muted);">
-				Showing ${start}-${end} of ${state.total_count || 0} sales invoices
+				Showing ${start}-${end} of ${state.total_count || 0} invoices
 			</div>
 			<div style="display:flex; align-items:center; gap:8px;">
 				<button class="btn btn-default si-list-prev" ${state.page <= 1 ? 'disabled' : ''}>Previous</button>
@@ -343,7 +356,7 @@ function get_sales_invoices_html() {
 
 	<div class="si-list-page">
 		<div class="si-list-hero">
-			<h2>Sales Invoices</h2>
+			<h2>Invoices</h2>
 			<p>Review customer invoices, track outstanding balances, and work entirely without stock impact.</p>
 		</div>
 
@@ -352,10 +365,6 @@ function get_sales_invoices_html() {
 				<div class="si-list-filter-field">
 					<label class="form-label">Search</label>
 					<input type="text" class="form-control" data-filter="search" placeholder="Invoice, customer, quotation">
-				</div>
-				<div class="si-list-filter-field">
-					<label class="form-label">Customer</label>
-					<input type="text" class="form-control" data-filter="customer" placeholder="Customer code">
 				</div>
 				<div class="si-list-filter-field">
 					<label class="form-label">Status</label>
@@ -380,6 +389,7 @@ function get_sales_invoices_html() {
 				</div>
 				<div class="si-list-filter-actions">
 					<button class="btn btn-default si-list-clear">Clear</button>
+					<button class="btn btn-primary si-list-download">Download</button>
 				</div>
 			</div>
 		</div>

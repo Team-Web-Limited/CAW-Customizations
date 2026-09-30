@@ -27,7 +27,7 @@ def create_pages():
         },
         {
             "page_name": "sales-invoices",
-            "title": "Sales Invoices",
+            "title": "Invoices",
             "module": "Crystal Alluminium Works",
             "standard": "Yes",
             "roles": [{"role": "System Manager"}]
