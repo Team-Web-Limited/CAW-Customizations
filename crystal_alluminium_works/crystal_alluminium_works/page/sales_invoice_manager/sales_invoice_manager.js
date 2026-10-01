@@ -450,9 +450,9 @@ function get_sales_invoice_workflow_href(route, name) {
 
 // Job Card numbers (JC-2026-00001) no longer carry the quotation number, so the stepper
 // spells out the related documents under each step.
-function get_sales_invoice_workflow_ref_html(label, name) {
+function get_sales_invoice_workflow_ref_html(name) {
 	return name
-		? `<span class="sim-ref">${label}: ${frappe.utils.escape_html(name)}</span>`
+		? `<span class="sim-ref">${frappe.utils.escape_html(name)}</span>`
 		: '';
 }
 
@@ -464,7 +464,7 @@ function get_sales_invoice_workflow_job_card_state(source_job_card, quotation_na
 		icon: has_job_card ? '✓' : '2',
 		link_html: has_job_card
 			? `<a href="${get_sales_invoice_workflow_href('job-card-detail', source_job_card.name)}" class="sim-link">${frappe.utils.escape_html(source_job_card.name)}</a>`
-				+ get_sales_invoice_workflow_ref_html('Quotation', source_job_card.quotation || quotation_name)
+				+ get_sales_invoice_workflow_ref_html(source_job_card.quotation || quotation_name)
 			: '<span style="font-size: 11px; color: var(--text-muted);">Not linked</span>'
 	};
 }
@@ -753,7 +753,7 @@ async function render_sales_invoice_dashboard(page, invoice_name, wrapper, defau
 			.sim-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 			.sim-action-note { width: 100%; display: flex; align-items: center; padding: 8px 10px; border-radius: 6px; background: #fff7e6; color: #8a5a00; font-size: 13px; }
 			.sim-toggle-icon.rotated { transform: rotate(90deg); }
-			.sim-workflow { display: flex; align-items: center; justify-content: space-between; padding: 20px; background: var(--card-bg); border-radius: 8px; box-shadow: var(--shadow-sm); margin-bottom: 20px; gap: 12px; flex-wrap: wrap; }
+			.sim-workflow { display: flex; align-items: flex-start; justify-content: space-between; padding: 20px; background: var(--card-bg); border-radius: 8px; box-shadow: var(--shadow-sm); margin-bottom: 20px; gap: 12px; flex-wrap: wrap; }
 			.sim-step { flex: 1; text-align: center; position: relative; min-width: 160px; }
 			.sim-step:not(:last-child)::after { content: ''; position: absolute; top: 12px; right: -50%; width: 100%; height: 2px; background: var(--border-color); z-index: 1; }
 			.sim-step.active:not(:last-child)::after { background: var(--primary); }
@@ -782,8 +782,8 @@ async function render_sales_invoice_dashboard(page, invoice_name, wrapper, defau
 					<div class="sim-icon">✓</div>
 					<div class="sim-label">Sales Invoice</div>
 					<a href="${get_sales_invoice_workflow_href('sales-invoice', doc.name)}" class="sim-link">${frappe.utils.escape_html(doc.name)}</a>
-					${get_sales_invoice_workflow_ref_html('Job Card', source_job_card && source_job_card.name)}
-					${get_sales_invoice_workflow_ref_html('Quotation', quotation_name)}
+					${get_sales_invoice_workflow_ref_html(source_job_card && source_job_card.name)}
+					${get_sales_invoice_workflow_ref_html(quotation_name)}
 				</div>
 			</div>
 
