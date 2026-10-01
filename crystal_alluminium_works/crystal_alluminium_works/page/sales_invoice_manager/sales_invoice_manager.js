@@ -443,14 +443,28 @@ function get_sales_invoice_outstanding_for_ui(doc, source_job_card) {
 	return get_sales_invoice_display_outstanding(doc);
 }
 
-function get_sales_invoice_workflow_job_card_state(source_job_card) {
+// Real hrefs (not href="#" + onclick) so the stepper links also open in a new tab.
+function get_sales_invoice_workflow_href(route, name) {
+	return `/desk/${route}/${encodeURIComponent(name)}`;
+}
+
+// Job Card numbers (JC-2026-00001) no longer carry the quotation number, so the stepper
+// spells out the related documents under each step.
+function get_sales_invoice_workflow_ref_html(label, name) {
+	return name
+		? `<span class="sim-ref">${label}: ${frappe.utils.escape_html(name)}</span>`
+		: '';
+}
+
+function get_sales_invoice_workflow_job_card_state(source_job_card, quotation_name) {
 	let has_job_card = !!(source_job_card && source_job_card.name);
 
 	return {
 		is_complete: has_job_card,
 		icon: has_job_card ? '✓' : '2',
 		link_html: has_job_card
-			? `<a href="#" onclick="frappe.set_route('job-card-detail', '${source_job_card.name}')" class="sim-link">${source_job_card.name}</a>`
+			? `<a href="${get_sales_invoice_workflow_href('job-card-detail', source_job_card.name)}" class="sim-link">${frappe.utils.escape_html(source_job_card.name)}</a>`
+				+ get_sales_invoice_workflow_ref_html('Quotation', source_job_card.quotation || quotation_name)
 			: '<span style="font-size: 11px; color: var(--text-muted);">Not linked</span>'
 	};
 }
@@ -514,7 +528,7 @@ async function render_sales_invoice_dashboard(page, invoice_name, wrapper, defau
 		}
 
 		const quotation_name = doc.custom_source_quotation || null;
-		const workflow_job_card = get_sales_invoice_workflow_job_card_state(source_job_card);
+		const workflow_job_card = get_sales_invoice_workflow_job_card_state(source_job_card, quotation_name);
 		const manual_items = (doc.items || []).filter(item => !item.custom_auto_generated);
 		const glass_items = manual_items.filter(i => i.custom_product_category === 'Glass');
 		const aluminium_items = manual_items.filter(i => i.custom_product_category === 'Aluminium');
@@ -749,6 +763,7 @@ async function render_sales_invoice_dashboard(page, invoice_name, wrapper, defau
 			.sim-step.active .sim-label { color: var(--text-color); }
 			.sim-link { display: block; font-size: 11px; margin-top: 4px; color: var(--primary); text-decoration: none; }
 			.sim-link:hover { text-decoration: underline; }
+			.sim-ref { display: block; font-size: 11px; margin-top: 2px; color: var(--text-muted); }
 		</style>
 
 		<div class="sim-dashboard">
@@ -756,7 +771,7 @@ async function render_sales_invoice_dashboard(page, invoice_name, wrapper, defau
 				<div class="sim-step ${quotation_name ? 'active' : ''}">
 					<div class="sim-icon">${quotation_name ? '✓' : '1'}</div>
 					<div class="sim-label">Quotation</div>
-					${quotation_name ? `<a href="#" onclick="frappe.set_route('quotation-manager', '${quotation_name}')" class="sim-link">${quotation_name}</a>` : '<span style="font-size: 11px; color: var(--text-muted);">Not linked</span>'}
+					${quotation_name ? `<a href="${get_sales_invoice_workflow_href('quotation-manager', quotation_name)}" class="sim-link">${frappe.utils.escape_html(quotation_name)}</a>` : '<span style="font-size: 11px; color: var(--text-muted);">Not linked</span>'}
 				</div>
 				<div class="sim-step ${workflow_job_card.is_complete ? 'active' : ''}">
 					<div class="sim-icon">${workflow_job_card.icon}</div>
@@ -766,7 +781,9 @@ async function render_sales_invoice_dashboard(page, invoice_name, wrapper, defau
 				<div class="sim-step active">
 					<div class="sim-icon">✓</div>
 					<div class="sim-label">Sales Invoice</div>
-					<a href="#" onclick="frappe.set_route('Form', 'Sales Invoice', '${doc.name}')" class="sim-link">${doc.name}</a>
+					<a href="${get_sales_invoice_workflow_href('sales-invoice', doc.name)}" class="sim-link">${frappe.utils.escape_html(doc.name)}</a>
+					${get_sales_invoice_workflow_ref_html('Job Card', source_job_card && source_job_card.name)}
+					${get_sales_invoice_workflow_ref_html('Quotation', quotation_name)}
 				</div>
 			</div>
 
