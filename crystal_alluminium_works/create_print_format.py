@@ -991,7 +991,7 @@ def build_crystal_job_card_print_format_html():
 </table>
 {% endif %}
 {% else %}
-{% set section_data = namespace(rows=[], has_color=false) %}
+{% set section_data = namespace(rows=[], has_color=false, has_description=false) %}
 {% for row in print_items %}
     {% if not row.custom_auto_generated %}
         {% set row_category = row.custom_product_category or '' %}
@@ -1006,6 +1006,12 @@ def build_crystal_job_card_print_format_html():
             {% set section_data.rows = section_data.rows + [row] %}
             {% if (row.custom_aluminium_color or '')|trim %}
                 {% set section_data.has_color = true %}
+            {% endif %}
+            {# The Builder's free-text Description (e.g. lengths/pieces for G85 Owners Good). Blank
+               unless typed; ignore one that only repeats the item name. #}
+            {% set row_description = (row.description or '')|striptags|trim %}
+            {% if section.key == 'Aluminium' and row_description and row_description != (row.item_name or '')|trim %}
+                {% set section_data.has_description = true %}
             {% endif %}
         {% endif %}
     {% endif %}
@@ -1123,6 +1129,9 @@ def build_crystal_job_card_print_format_html():
         <tr>
             <th style="text-align: left; white-space: nowrap;">Code</th>
             <th style="text-align: left; white-space: nowrap;">Item</th>
+            {% if section_data.has_description %}
+            <th style="text-align: left; white-space: nowrap;">Description</th>
+            {% endif %}
             {% if section_data.has_color %}
             <th style="text-align: center; white-space: nowrap;">Color</th>
             {% endif %}
@@ -1137,6 +1146,10 @@ def build_crystal_job_card_print_format_html():
             <tr>
                 <td style="font-weight: bold; white-space: nowrap;">{{ parent.item_code or '' }}</td>
                 <td>{{ parent.item_name or parent.item_code or '' }}</td>
+                {% if section_data.has_description %}
+                {% set parent_description = (parent.description or '')|striptags|trim %}
+                <td style="white-space: pre-wrap;">{{ parent_description if parent_description and parent_description != (parent.item_name or '')|trim else '-' }}</td>
+                {% endif %}
                 {% if section_data.has_color %}
                 <td style="text-align: center; white-space: nowrap;">{{ parent.custom_aluminium_color or '-' }}</td>
                 {% endif %}
@@ -1146,7 +1159,7 @@ def build_crystal_job_card_print_format_html():
         {% endfor %}
         {% if is_aluminium %}
         <tr>
-            <td colspan="{{ 3 if section_data.has_color else 2 }}" style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
+            <td colspan="{{ 2 + (1 if section_data.has_color else 0) + (1 if section_data.has_description else 0) }}" style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
             <td style="text-align: center; white-space: nowrap; font-weight: bold;">{{ frappe.utils.flt(totals.qty, 2) }}</td>
             <td style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
         </tr>
