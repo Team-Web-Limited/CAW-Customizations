@@ -213,6 +213,7 @@ doc_events = {
 	},
 	"Sales Invoice": {
 		"before_insert": "crystal_alluminium_works.sales_invoice_handler.before_insert",
+		"autoname": "crystal_alluminium_works.sales_invoice_handler.autoname",
 		"validate": "crystal_alluminium_works.sales_invoice_handler.on_validate",
 		"on_submit": "crystal_alluminium_works.api.on_sales_invoice_submit"
 	},

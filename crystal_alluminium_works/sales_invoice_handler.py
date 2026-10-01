@@ -86,11 +86,13 @@ def _enforce_admin_only_amendment(doc):
     doc.set_posting_time = 1
 
 
-# Credit notes (returns) are numbered in their own series so they can't be mistaken for
-# invoices: a bare number led by 9 (90001), a digit neither invoice series uses, with its own
-# tabSeries counter ("9"). Set before naming runs; an amended credit note keeps its original
-# name with the usual -1 suffix. (They were ACC-CNN-.YYYY.- until 2026-10-01.)
-CREDIT_NOTE_NAMING_SERIES = "9.####"
+# Credit notes (returns) are a bare 4-digit number continuing the previous system (8485, 8486,
+# ...). A bare series has no prefix to key its counter on, so autoname below draws it from its
+# own tabSeries key ("CN-", seeded by patches/seed_credit_note_series) and naming_series is set
+# to the same key as a fallback. An amended credit note keeps its original name with the usual
+# -1 suffix. (They were ACC-CNN-.YYYY.- until 2026-10-01.)
+CREDIT_NOTE_SERIES_KEY = "CN-"
+CREDIT_NOTE_NAMING_SERIES = "CN-.####"
 
 
 # Invoices continue the numbering of the system they replace, one run per customer type, as
@@ -114,6 +116,13 @@ def before_insert(doc, method):
     billing_type = frappe.db.get_value("Customer", doc.customer, "custom_customer_billing_type")
     is_cash = billing_type == "Cash Customer" or doc.customer == SHARED_CASH_CUSTOMER_NAME
     doc.naming_series = CASH_CUSTOMER_NAMING_SERIES if is_cash else INVOICE_CUSTOMER_NAMING_SERIES
+
+
+def autoname(doc, method):
+    if doc.get("is_return") and not doc.get("amended_from"):
+        from frappe.model.naming import getseries
+
+        doc.name = getseries(CREDIT_NOTE_SERIES_KEY, 4)
 
 
 def on_validate(doc, method):
