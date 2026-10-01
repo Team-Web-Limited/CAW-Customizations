@@ -92,12 +92,13 @@ def _enforce_admin_only_amendment(doc):
 CREDIT_NOTE_NAMING_SERIES = "ACC-CNN-.YYYY.-"
 
 
-# Invoices continue the numbering of the system they replace, one run per customer type,
-# both under INV-<year>-. The digit after the year is part of each series' prefix, so the
-# two keep separate counters in tabSeries ("INV-2026-1", "INV-2026-8"): Invoice Customers
-# get INV-2026-10009838, Cash Customers INV-2026-80552.
-INVOICE_CUSTOMER_NAMING_SERIES = "INV-.YYYY.-1.#######"
-CASH_CUSTOMER_NAMING_SERIES = "INV-.YYYY.-8.####"
+# Invoices continue the numbering of the system they replace, one run per customer type, as
+# the bare number with no prefix or year. The leading digit is each series' prefix, so the two
+# keep separate counters in tabSeries ("1", "8"): Invoice Customers get 10009838, Cash
+# Customers 80552. Invoices before 2026-10-01 keep their old INV-<year>- names; the counters
+# carried over from "INV-2026-1" / "INV-2026-8" (see patches/carry_sales_invoice_series_counters).
+INVOICE_CUSTOMER_NAMING_SERIES = "1.#######"
+CASH_CUSTOMER_NAMING_SERIES = "8.####"
 
 
 def before_insert(doc, method):
