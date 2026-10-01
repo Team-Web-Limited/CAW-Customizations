@@ -172,9 +172,90 @@ async function open_new_customer_dialog(page) {
 	dialog.show();
 }
 
+// Edit Customer: the Register New Customer fields, pre-filled. Only the Customer record changes —
+// quotations, job cards and invoices already issued keep their own copy of the name and PIN, and
+// anything created from now on uses the new details (api.update_customer_details).
+async function open_edit_customer_dialog(page, customer_name) {
+	let customer = await frappe.db.get_doc('Customer', customer_name);
+	let dialog = new frappe.ui.Dialog({
+		title: 'Edit Customer',
+		fields: [
+			{
+				fieldtype: 'Select',
+				fieldname: 'customer_billing_type',
+				label: 'Customer Type',
+				options: 'Invoice Customer\nCash Customer',
+				default: customer.custom_customer_billing_type || 'Cash Customer',
+				reqd: 1
+			},
+			{ fieldtype: 'Data', fieldname: 'customer_name', label: 'Customer Name', reqd: 1, default: customer.customer_name || customer.name },
+			{
+				fieldtype: 'Data',
+				fieldname: 'mobile_no',
+				label: 'Mobile Number',
+				reqd: 1,
+				default: customer.mobile_no || '',
+				description: '10 digits, e.g. 0712345678'
+			},
+			{
+				fieldtype: 'Data',
+				fieldname: 'tax_id',
+				label: 'KRA PIN',
+				default: customer.tax_id || '',
+				mandatory_depends_on: "eval:doc.customer_billing_type=='Invoice Customer'"
+			},
+			{ fieldtype: 'Data', fieldname: 'email_id', label: 'Email Address (optional)', options: 'Email', default: customer.email_id || '' },
+			{
+				fieldtype: 'HTML',
+				fieldname: 'note',
+				options: '<p style="font-size:12px;color:var(--text-muted);margin:4px 0 0;">Quotations, job cards and invoices already issued keep the details they were issued with. New ones use these.</p>'
+			}
+		],
+		primary_action_label: 'Save Changes',
+		primary_action: async function (values) {
+			let mobile_no = (values.mobile_no || '').replace(/[\s-]/g, '');
+			if (!/^\d{10}$/.test(mobile_no)) {
+				frappe.msgprint('Mobile Number must be exactly 10 digits.');
+				return;
+			}
+
+			dialog.disable_primary_action();
+			try {
+				await frappe.call({
+					method: 'crystal_alluminium_works.api.update_customer_details',
+					args: {
+						customer: customer_name,
+						customer_billing_type: values.customer_billing_type,
+						customer_name: (values.customer_name || '').trim(),
+						mobile_no: mobile_no,
+						tax_id: (values.tax_id || '').trim(),
+						email_id: (values.email_id || '').trim()
+					},
+					freeze: true,
+					freeze_message: 'Saving customer...'
+				});
+				dialog.hide();
+				frappe.show_alert({ message: 'Customer details updated', indicator: 'green' });
+				page.customer_manager_route_key = null;  // force the detail view to reload
+				render_customer_manager_route(page);
+			} finally {
+				dialog.enable_primary_action();
+			}
+		}
+	});
+
+	dialog.show();
+}
+
 function set_customer_detail_actions(page, customer_name) {
 	page.set_title('Customer Details');
 	page.clear_primary_action();
+	// Walk-ins have no Customer record of their own, and the shared Cash Customer holds them all.
+	if (!is_walkin_customer_key(customer_name) && customer_name !== 'Cash Customer') {
+		page.set_primary_action('Edit Customer', function () {
+			open_edit_customer_dialog(page, customer_name);
+		});
+	}
 	page.set_secondary_action('Back to Customers', function () {
 		frappe.set_route('customer-manager');
 	});

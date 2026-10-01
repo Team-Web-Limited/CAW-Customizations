@@ -1948,6 +1948,83 @@ def get_customer_registration_defaults():
 
 
 @frappe.whitelist()
+def update_customer_details(customer, customer_name, customer_billing_type, mobile_no=None, tax_id=None, email_id=None):
+    """Customer Manager's Edit Customer: the same details Register captures, on an existing Customer.
+
+    Only the Customer record changes. Quotations, job cards and invoices keep the name and PIN
+    they were issued with (each stores its own copy), so past documents are untouched; anything
+    created from now on picks the new details up. The phone and email live on the customer's
+    primary Contact (Customer.mobile_no / email_id are read-only mirrors of it), so they are
+    written there. A PIN or mobile number already on another customer is refused."""
+    from crystal_alluminium_works.customer_handler import assert_unique_customer_phone
+
+    if not frappe.has_permission("Customer", "write"):
+        frappe.throw("You do not have permission to edit Customers.", frappe.PermissionError)
+    if not customer or not frappe.db.exists("Customer", customer):
+        frappe.throw("Please select a valid customer.")
+    if customer == SHARED_CASH_CUSTOMER_NAME:
+        frappe.throw("The shared Cash Customer record holds every walk-in and can't be edited here.")
+
+    customer_name = (customer_name or "").strip()
+    if not customer_name:
+        frappe.throw("Customer Name is required.")
+    customer_billing_type = (customer_billing_type or "").strip()
+    if customer_billing_type not in {"Invoice Customer", "Cash Customer"}:
+        frappe.throw("Customer Type must be Invoice Customer or Cash Customer.")
+    mobile_no = re.sub(r"[\s-]", "", mobile_no or "")
+    if not mobile_no:
+        frappe.throw("Mobile Number is required.")
+    if not re.fullmatch(r"\d{10}", mobile_no):
+        frappe.throw("Mobile Number must be exactly 10 digits.")
+    tax_id = (tax_id or "").strip()
+    if customer_billing_type == "Invoice Customer" and not tax_id:
+        frappe.throw("KRA PIN is required for Invoice Customers.")
+    email_id = (email_id or "").strip()
+
+    doc = frappe.get_doc("Customer", customer)
+    phone_changed = (doc.mobile_no or "") != mobile_no
+    email_changed = (doc.email_id or "") != email_id
+    if phone_changed:
+        assert_unique_customer_phone(mobile_no, exclude=doc.name)
+
+    doc.customer_name = customer_name
+    doc.custom_customer_billing_type = customer_billing_type
+    doc.tax_id = tax_id  # a PIN on another customer is refused by customer_handler.validate
+    doc.save()
+
+    if phone_changed or email_changed:
+        if doc.customer_primary_contact and frappe.db.exists("Contact", doc.customer_primary_contact):
+            contact = frappe.get_doc("Contact", doc.customer_primary_contact)
+            if phone_changed:
+                row = next((p for p in contact.phone_nos if p.is_primary_mobile_no), None)
+                if row:
+                    row.phone = mobile_no
+                else:
+                    contact.add_phone(mobile_no, is_primary_mobile_no=True)
+            if email_changed:
+                row = next((e for e in contact.email_ids if e.is_primary), None)
+                if email_id and row:
+                    row.email_id = email_id
+                elif email_id:
+                    contact.add_email(email_id, is_primary=True)
+                elif row:
+                    contact.remove(row)
+            contact.flags.ignore_permissions = True
+            contact.save()
+        else:
+            doc.mobile_no = mobile_no
+            doc.email_id = email_id
+            doc.create_primary_contact()
+        doc.db_set({"mobile_no": mobile_no, "email_id": email_id})
+
+    return {
+        "name": doc.name,
+        "customer_name": doc.customer_name,
+        "customer_billing_type": doc.custom_customer_billing_type,
+    }
+
+
+@frappe.whitelist()
 def register_customer(
     customer_name,
     customer_billing_type,
