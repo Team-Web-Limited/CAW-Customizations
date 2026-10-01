@@ -3458,6 +3458,51 @@ function open_glass_batch_details_dialog(page, items) {
 	d.show();
 	bind_batch_table_keynav(d);
 
+	// Pieces and UOM Qty (square feet) totals in the footer, like the Add Items table's Total row.
+	// Square feet come from the server (api.get_glass_batch_uom_qty) because sizes are rounded the
+	// way glass is priced; summed as each row would show them (2 decimals) and the sum rounded.
+	let $batch_total = $('<div class="qb-batch-uom-total" style="margin-right:auto;font-weight:600;"></div>');
+	d.$wrapper.find('.modal-footer').prepend($batch_total);
+	let batch_total_seq = 0;
+	let batch_total_timer = null;
+	function refresh_batch_totals() {
+		clearTimeout(batch_total_timer);
+		batch_total_timer = setTimeout(function () {
+			let rows = [];
+			let pieces = 0;
+			d.fields_dict.batch_table.$wrapper.find('tbody tr').each(function () {
+				let $row = $(this);
+				let it = items.find(function (x) { return x.id === $row.data('id'); });
+				if (!it) return;
+				let val = function (field) { return $row.find(`[data-field="${field}"]`).val(); };
+				let row = {
+					item_code: it.item_code,
+					width_mm: dimension_input_to_mm(val('width_mm'), dimension_uom),
+					height_mm: dimension_input_to_mm(val('height_mm'), dimension_uom),
+					width_allowance: flt(val('width_allowance') || 0),
+					height_allowance: flt(val('height_allowance') || 0),
+					qty: flt(val('qty') || 1) || 1
+				};
+				if (flt(row.width_mm) > 0 && flt(row.height_mm) > 0) {
+					pieces += row.qty;  // rows without a size are dropped on Save, so not counted
+				}
+				rows.push(row);
+			});
+			let seq = ++batch_total_seq;
+			frappe.xcall('crystal_alluminium_works.api.get_glass_batch_uom_qty', { rows: JSON.stringify(rows) })
+				.then(function (sqft) {
+					if (seq !== batch_total_seq) return;
+					let total = (sqft || []).reduce(function (sum, v) { return sum + format_review_number(v, 2); }, 0);
+					$batch_total.text(`Total — Pieces: ${flt(pieces, 2)} · UOM Qty: ${flt(total, 2)} Square Foot`);
+				})
+				.catch(function () {
+					if (seq === batch_total_seq) $batch_total.text('');
+				});
+		}, 400);
+	}
+	d.fields_dict.batch_table.$wrapper.on('input change', '.qb-batch-input', refresh_batch_totals);
+	refresh_batch_totals();
+
 	// Clone the whole row exactly as it currently stands (including anything
 	// the user has already typed — size, numbering, polish/holes/notches/qty)
 	// right below it, and push it into `items` so Save picks it up like any
@@ -3533,6 +3578,7 @@ function open_glass_batch_details_dialog(page, items) {
 		if ($first_clone_row) {
 			$first_clone_row.find('[data-field="width_mm"]').trigger('focus');
 		}
+		refresh_batch_totals();
 	}
 
 	$batch_wrapper.on('click', '.qb-duplicate-row', function () {
@@ -3560,6 +3606,7 @@ function open_glass_batch_details_dialog(page, items) {
 		$batch_wrapper.find('tbody tr').each(function (idx) {
 			$(this).find('.qb-batch-row-no').text(idx + 1);
 		});
+		refresh_batch_totals();
 	});
 }
 

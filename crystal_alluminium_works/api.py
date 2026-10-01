@@ -5010,6 +5010,32 @@ def delete_all_quotations():
     return {"deleted_count": len(deleted), "deleted_quotations": deleted}
 
 @frappe.whitelist()
+def get_glass_batch_uom_qty(rows):
+    """Square feet per row for the Quotation Builder's Glass "Fill Details" total, worked out the
+    way calculate_glass_total prices them (sizes rounded by mm_to_ft for the glass type, plus the
+    W+/H+ allowances) times Pcs. Read-only; a row without both a width and a height counts 0."""
+    from crystal_alluminium_works.pricing_engine import mm_to_ft
+
+    rows = json.loads(rows) if isinstance(rows, str) else (rows or [])
+    glass_types = {}
+    out = []
+    for row in rows:
+        width_mm = frappe.utils.flt(row.get("width_mm"))
+        height_mm = frappe.utils.flt(row.get("height_mm"))
+        if width_mm <= 0 or height_mm <= 0:
+            out.append(0)
+            continue
+        item_code = row.get("item_code")
+        if item_code not in glass_types:
+            glass_types[item_code] = frappe.db.get_value("Item", item_code, "custom_glass_type") or "Ordinary"
+        glass_type = glass_types[item_code]
+        width_ft = mm_to_ft(width_mm, glass_type=glass_type) + frappe.utils.flt(row.get("width_allowance"))
+        height_ft = mm_to_ft(height_mm, glass_type=glass_type) + frappe.utils.flt(row.get("height_allowance"))
+        out.append(width_ft * height_ft * (frappe.utils.flt(row.get("qty")) or 1))
+    return out
+
+
+@frappe.whitelist()
 def calculate_glass_total(item_code, price_list, qty, sale_mode, width_mm, height_mm,
                           polishing=None, holes=0, sandblast_type=None,
                           polish_width_sides=0, polish_height_sides=0, notches=0,
