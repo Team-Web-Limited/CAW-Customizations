@@ -101,10 +101,6 @@ PAYMENT_CORRECTION_WINDOW_HOURS = 24
 PAYMENT_CORRECTION_ROLES = {"Sales User", "Accounts Manager", "System Manager"}
 
 
-def _get_job_card_name_for_quotation(quotation_name):
-    return f"JOB-CARD-{quotation_name}"
-
-
 def _mark_quotation_as_converted(quotation_name):
     if quotation_name and frappe.db.exists("Quotation", quotation_name):
         frappe.db.set_value("Quotation", quotation_name, "status", "Converted", update_modified=False)
@@ -238,19 +234,11 @@ def _earliest_quotation_creation(chain):
     return min(creations) if creations else None
 
 
-def _job_card_predates_quotation(job_card_name, quotation_name):
-    """True when a Job Card already existed before the Quotation it is named after — i.e. it
-    documents an earlier quotation that was deleted before this number was reissued."""
-    job_card_created = frappe.db.get_value("CAW Job Card", job_card_name, "creation")
-    quotation_created = frappe.db.get_value("Quotation", quotation_name, "creation")
-    return bool(job_card_created and quotation_created and job_card_created < quotation_created)
-
-
 def _resolve_job_card_for_quotation(quotation_name):
     """Find the single owning, still-live Job Card across a quotation's amendment chain.
 
-    Job Cards are named after their Quotation (see _get_job_card_name_for_quotation) and keep
-    that link, so a quotation number reissued after the original was deleted would otherwise
+    Job Cards keep a link to their Quotation (and were once named after it, JOB-CARD-<quotation>),
+    so a quotation number reissued after the original was deleted would otherwise
     inherit the deleted quotation's Job Card — along with its amounts and payment history. A
     Job Card created before the quotation cannot document it, so it is ignored here rather
     than silently adopted.
@@ -1489,9 +1477,8 @@ def _get_job_card_balance_status(job_card):
 
 
 def _attach_job_card_balance_status(rows):
-    """Job Card names are deterministic from their quotation (autoname
-    "format:JOB-CARD-{quotation}"), so this looks them up in one batch query
-    rather than one Job Card fetch per invoice row."""
+    """Looks Job Cards up by their quotation link in one batch query rather than one
+    Job Card fetch per invoice row."""
     quotations = {r.custom_source_quotation for r in rows if r.get("custom_source_quotation")}
     job_cards_by_quotation = {}
     if quotations:
@@ -2313,19 +2300,13 @@ def create_job_card_from_quotation(quotation, customer, customer_name=None, paym
         payment_option = valid_payment_options[0]
     quotation_amount = _round_job_card_amount(quotation_amount or _get_quotation_display_total(quotation_doc) or 0)
     payment_amount = _round_job_card_amount(payment_amount)
-    target_job_card_name = _get_job_card_name_for_quotation(quotation_doc.name)
-
     # Resolve across the amendment chain so an amended quotation still finds and reuses
     # the original Job Card (its name stays stable; only its `quotation` link re-points).
     existing_job_card = _resolve_job_card_for_quotation(quotation_doc.name)
 
+    # Job Cards are numbered by their own series (JC-2026-00001), independent of the quotation.
     if existing_job_card:
         job_card = frappe.get_doc("CAW Job Card", existing_job_card)
-        target_job_card_name = job_card.name  # keep the original, stable Job Card number
-    elif frappe.db.exists("CAW Job Card", target_job_card_name) and not _job_card_predates_quotation(
-        target_job_card_name, quotation_doc.name
-    ):
-        job_card = frappe.get_doc("CAW Job Card", target_job_card_name)
     else:
         job_card = frappe.new_doc("CAW Job Card")
         job_card.quotation = quotation_doc.name
@@ -2422,18 +2403,9 @@ def create_job_card_from_quotation(quotation, customer, customer_name=None, paym
     is_new_job_card = bool(job_card.get("__islocal"))
 
     if is_new_job_card:
-        job_card.insert(ignore_permissions=True, set_name=target_job_card_name)
+        job_card.insert(ignore_permissions=True)
     else:
         job_card.save(ignore_permissions=True)
-        if job_card.name != target_job_card_name and not frappe.db.exists("CAW Job Card", target_job_card_name):
-            job_card.name = rename_doc(
-                "CAW Job Card",
-                job_card.name,
-                target_job_card_name,
-                force=True,
-                ignore_permissions=True,
-                show_alert=False,
-            )
 
     if credit_to_apply > 0.0001:
         _draw_advance_pool(credit_pool, job_card.name, credit_to_apply)
@@ -8540,7 +8512,7 @@ def _attach_sales_invoices_to_entries(entries):
     se_field_invoice = {r.name: r.custom_sales_invoice or "" for r in se_rows}
 
     # Parse Job Card name and (for early-deducted glass) the quotation row from remarks.
-    jc_name_pattern = re.compile(r"CAW Job Card:\s*(JOB-CARD-[\w-]+)")
+    jc_name_pattern = re.compile(r"CAW Job Card:\s*((?:JC|JOB-CARD)-[\w-]+)")
     row_pattern = re.compile(r"Row:\s*([\w-]+)")
     voucher_to_jc = {}
     voucher_to_row = {}

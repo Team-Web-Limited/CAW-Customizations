@@ -1,7 +1,7 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "format:JOB-CARD-{quotation}",
+ "autoname": "JC-.YYYY.-.#####",
  "creation": "2026-06-03 00:00:00.000000",
  "doctype": "DocType",
  "editable_grid": 1,
@@ -112,11 +112,11 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-10-01 00:30:00.000000",
+ "modified": "2026-10-01 14:00:00.000000",
  "modified_by": "Administrator",
  "module": "Crystal Alluminium Works",
  "name": "CAW Job Card",
- "naming_rule": "Expression",
+ "naming_rule": "Expression (old style)",
  "owner": "Administrator",
  "permissions": [
   {

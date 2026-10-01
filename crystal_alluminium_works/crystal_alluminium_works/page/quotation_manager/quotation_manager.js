@@ -1473,7 +1473,7 @@ async function get_existing_job_card_for_quotation(quotation) {
 		return null;
 	}
 
-	// Job Cards are named JOB-CARD-<quotation> and keep that link, so a quotation number
+	// Job Cards keep a link to their quotation, so a quotation number
 	// reissued after the original was deleted would otherwise pick up the old quotation's
 	// Job Card — showing "View Job Card" (and hiding Record Deposit) on a brand-new draft
 	// that nobody has paid against. A card that existed before the quotation can't be its own.

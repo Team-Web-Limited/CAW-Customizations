@@ -5,7 +5,7 @@ from frappe.utils import get_datetime
 
 from crystal_alluminium_works.create_custom_fields import add_custom_fields
 
-JC_NAME_PATTERN = re.compile(r"CAW Job Card:\s*(JOB-CARD-[\w-]+)")
+JC_NAME_PATTERN = re.compile(r"CAW Job Card:\s*((?:JC|JOB-CARD)-[\w-]+)")
 ROW_PATTERN = re.compile(r"Row:\s*([\w-]+)")
 INVOICE_EDIT_PATTERN = re.compile(r"Invoice Edit:\s*([\w-]+)")
 

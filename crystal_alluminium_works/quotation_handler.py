@@ -6,7 +6,7 @@ from crystal_alluminium_works.pricing_engine import (
     reapply_price_adjustment,
 )
 
-# QTN-2026-60000. Job Cards follow as JOB-CARD-QTN-2026-60000.
+# QTN-2026-60000. Job Cards have their own counter (JC-2026-00001, see CAW Job Card autoname).
 QUOTATION_NAMING_SERIES = "QTN-.YYYY.-.#####"
 
 
