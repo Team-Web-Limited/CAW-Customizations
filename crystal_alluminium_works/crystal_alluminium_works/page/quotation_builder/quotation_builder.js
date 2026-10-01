@@ -2216,6 +2216,7 @@ function render_items_table(page) {
 
 	// Totals row: Pieces add up directly; UOM Qty only adds up within one unit (square feet,
 	// lengths and pieces don't sum), so it's totalled per UOM, one line each, in row order.
+	// The unit is only spelled out when there is more than one — otherwise the column says it.
 	let total_pieces = 0;
 	let uom_totals = [];
 	window.qb_state.items.forEach(function (item) {
@@ -2233,7 +2234,7 @@ function render_items_table(page) {
 			<td colspan="4" style="padding:12px 16px;text-align:right;">Total</td>
 			<td style="padding:12px 16px;text-align:center;">${flt(total_pieces, 2)}</td>
 			<td style="padding:12px 16px;text-align:center;">${uom_totals.map(t => flt(t.qty, 2)).join('<br>')}</td>
-			<td style="padding:12px 16px;text-align:center;">${uom_totals.map(t => frappe.utils.escape_html(t.uom)).join('<br>')}</td>
+			<td style="padding:12px 16px;text-align:center;">${uom_totals.length > 1 ? uom_totals.map(t => frappe.utils.escape_html(t.uom)).join('<br>') : ''}</td>
 			<td colspan="3"></td>
 		</tr>
 	`);
