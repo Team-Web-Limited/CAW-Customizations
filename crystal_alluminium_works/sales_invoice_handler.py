@@ -87,9 +87,10 @@ def _enforce_admin_only_amendment(doc):
 
 
 # Credit notes (returns) are numbered in their own series so they can't be mistaken for
-# invoices: ACC-CNN-2026-00001 alongside ACC-SINV-2026-00045. Set before naming runs;
-# an amended credit note keeps its original name with the usual -1 suffix.
-CREDIT_NOTE_NAMING_SERIES = "ACC-CNN-.YYYY.-"
+# invoices: a bare number led by 9 (90001), a digit neither invoice series uses, with its own
+# tabSeries counter ("9"). Set before naming runs; an amended credit note keeps its original
+# name with the usual -1 suffix. (They were ACC-CNN-.YYYY.- until 2026-10-01.)
+CREDIT_NOTE_NAMING_SERIES = "9.####"
 
 
 # Invoices continue the numbering of the system they replace, one run per customer type, as
