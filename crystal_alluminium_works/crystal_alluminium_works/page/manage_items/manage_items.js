@@ -50,9 +50,10 @@ const MI_TABS = [
 ];
 
 // Sales User gets the page only to maintain aluminium colours: Aluminium tab, read-only
-// list, Configure Color. The write endpoints enforce the same split server-side.
+// list, Configure Color. System Manager and Sales Admin (api.ITEM_ADMIN_ROLES) get the full
+// catalogue. The write endpoints enforce the same split server-side.
 function mi_is_color_only_user() {
-	return !frappe.user.has_role('System Manager');
+	return !(frappe.user.has_role('System Manager') || frappe.user.has_role('Sales Admin'));
 }
 
 function get_visible_tabs() {
