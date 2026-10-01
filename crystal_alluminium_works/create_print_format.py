@@ -172,20 +172,28 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
     .cq-table th {{
         background-color: #f8f9fa;
         color: #2c3e50;
-        padding: 5px 3px;
         border-bottom: 2px solid #dee2e6;
-        /* 11px is the largest size at which a glass table with every column filled (polish, holes
-           and notches with charges) still fits the page in DejaVu Sans, the font staging renders in. */
-        font-size: 11px;
+        /* 12px still fits a glass table with every column filled (polish, holes and notches with
+           charges) in DejaVu Sans, the font staging renders in — see the padding rule below. */
+        font-size: 12px;
         vertical-align: bottom;
         /* Headers wrap ("Polish Sides" over two lines) so they never set the table wider than the page. */
         white-space: normal !important;
     }}
     .cq-table td {{
-        padding: 5px 3px;
         border-bottom: 1px solid #dee2e6;
         vertical-align: middle;
-        font-size: 11px;
+        font-size: 12px;
+    }}
+    /* Frappe's print stylesheet forces "padding: 6px !important" on every print-format cell; half
+       that on the sides keeps the columns tight enough for 12px text. */
+    .print-format .cq-table th,
+    .print-format .cq-table td {{
+        padding: 5px 3px !important;
+    }}
+    .print-format .cq-table .cq-uom {{
+        /* UOM is centred right after the right-aligned Rate; keep the two apart. */
+        padding-left: 8px !important;
     }}
     .cq-item-glass {{
         /* Keeps the glass table's fixed-width columns from squeezing Item to a word per line. */
@@ -365,7 +373,7 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
             <th style="text-align: center; white-space: nowrap;">{{{{ 'Qty' if section_rows.non_aluminium else 'Pcs' }}}}</th>
             {{% endif %}}
             <th style="text-align: right; white-space: nowrap;">Rate</th>
-            <th style="text-align: center; white-space: nowrap;">UOM</th>
+            <th class="cq-uom" style="text-align: center; white-space: nowrap;">UOM</th>
             {{% if section_rows.glass %}}
             <th style="text-align: left; white-space: nowrap;">Polish Sides</th>
             <th style="text-align: center; white-space: nowrap;">Holes</th>
@@ -485,7 +493,7 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
                     {{% endif %}}
                     <td style="text-align: center; white-space: nowrap;">{{{{ qty_label }}}}</td>
                     <td style="text-align: right; white-space: nowrap;">{{{{ frappe.format_value(display_rate, df={{'fieldtype': 'Currency'}}, doc=doc) }}}}</td>
-                    <td style="text-align: center; white-space: nowrap;">{{{{ print_uom(parent, uom) }}}}</td>
+                    <td class="cq-uom" style="text-align: center; white-space: nowrap;">{{{{ print_uom(parent, uom) }}}}</td>
                     {{% if section_rows.glass %}}
                     {{# Polish / Holes / Notches: the count and its "(Sh …)" charge each stay whole, but the
                        charge may drop to a second line, so these columns never squeeze the Item column. #}}
