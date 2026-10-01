@@ -582,6 +582,25 @@ def add_custom_fields():
         # Quotation Item — editable fields
         "Quotation Item": _get_crystal_item_fields(read_only=False) + [
             {
+                # Rate/Kg and Weight/Length the row was priced with. Normally the Item's own
+                # values; for a manually priced item (Owners Good, G85) whatever the user keyed
+                # in, so the Builder can reopen the row with them.
+                "fieldname": "custom_aluminium_rate_per_kg",
+                "label": "Aluminium Rate Per Kg",
+                "fieldtype": "Currency",
+                "insert_after": "custom_aluminium_color",
+                "read_only": 1,
+                "hidden": 1,
+            },
+            {
+                "fieldname": "custom_aluminium_weight_per_length",
+                "label": "Aluminium Weight Per Length",
+                "fieldtype": "Float",
+                "insert_after": "custom_aluminium_rate_per_kg",
+                "read_only": 1,
+                "hidden": 1,
+            },
+            {
                 # Cumulative quantity already released across partial invoices,
                 # expressed in the row's native driving unit (pieces for glass,
                 # metres for aluminium, sq m for ceiling). Remaining to release =

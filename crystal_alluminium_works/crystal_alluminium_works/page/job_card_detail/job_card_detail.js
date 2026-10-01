@@ -116,7 +116,7 @@ function get_job_card_payment_mode_label(value) {
 function get_job_card_payment_option_choices(payment_mode) {
 	// Actual Mode of Payment names — the option IS the method, deposit derived from it.
 	return normalize_job_card_payment_mode(payment_mode) === 'cash'
-		? ['Cash', 'Paybill', 'Bank Transfer i.e RTGS, TT', 'PESALINK']
+		? ['Cash', 'Paybill', 'Cheque', 'PESALINK']
 		: ['Cheque'];
 }
 
@@ -181,6 +181,15 @@ async function refresh_job_card_deposit_to_options(dialog) {
 	refresh_job_card_payment_capture_fields(dialog);
 }
 
+// Billing Type decides cash vs invoice, with the KRA PIN only as a fallback when it's unset —
+// same rule as quotation_manager.js get_customer_billing_payment_mode.
+function get_customer_billing_payment_mode(customer) {
+	let billing_type = customer && customer.custom_customer_billing_type;
+	if (billing_type === 'Cash Customer') return 'cash';
+	if (billing_type === 'Invoice Customer') return 'invoice';
+	return customer && customer.tax_id ? 'invoice' : 'cash';
+}
+
 async function get_job_card_customer_defaults(customer_name) {
 	if (!customer_name) {
 		return {};
@@ -193,13 +202,13 @@ async function get_job_card_customer_defaults(customer_name) {
 			customer_name: customer.customer_name || customer.name,
 			customer_pin: customer.tax_id || '',
 			phone_number: customer.mobile_no || customer.phone || '',
-			payment_mode: customer.tax_id ? 'invoice' : 'cash'
+			payment_mode: get_customer_billing_payment_mode(customer)
 		};
 	} catch (e) {
 		try {
 			let customers = await frappe.db.get_list('Customer', {
 				filters: { customer_name: customer_name },
-				fields: ['name', 'customer_name', 'tax_id', 'mobile_no', 'phone'],
+				fields: ['name', 'customer_name', 'tax_id', 'mobile_no', 'phone', 'custom_customer_billing_type'],
 				limit: 1
 			});
 			let customer = customers && customers[0];
@@ -208,7 +217,7 @@ async function get_job_card_customer_defaults(customer_name) {
 				customer_name: customer.customer_name || customer.name,
 				customer_pin: customer.tax_id || '',
 				phone_number: customer.mobile_no || customer.phone || '',
-				payment_mode: customer.tax_id ? 'invoice' : 'cash'
+				payment_mode: get_customer_billing_payment_mode(customer)
 			} : {};
 		} catch (search_error) {
 			return {};

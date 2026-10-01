@@ -80,7 +80,9 @@ JOB_CARD_CURRENCY_PRECISION = 2
 # of methods is constrained by customer type per the business rules:
 #   - Cash customers pay by Cash, Mpesa/Paybill, or bank transfer (RTGS/TT, PESALINK).
 #   - Invoice customers pay by Cheque only.
-CASH_CUSTOMER_PAYMENT_OPTIONS = ["Cash", "Paybill", "Bank Transfer i.e RTGS, TT", "PESALINK"]
+# Cash customers may pay by cheque too: Billing Type (not the payment method) decides cash vs
+# invoice, and create_job_card_from_quotation rejects a mode that contradicts it.
+CASH_CUSTOMER_PAYMENT_OPTIONS = ["Cash", "Paybill", "Cheque", "PESALINK"]
 INVOICE_CUSTOMER_PAYMENT_OPTIONS = ["Cheque"]
 
 # record_customer_payment only demands a Reference for these — Mpesa (Paybill), PESALINK,
@@ -852,6 +854,23 @@ def _ensure_glass_type_options():
 
 def _item_has_field(fieldname):
     return frappe.get_meta("Item").has_field(fieldname)
+
+
+# "Owners Good": the customer's own aluminium brought in for a service such as painting. One
+# universal Aluminium item with no stored price — the Quotation Builder lets any sales user key
+# its Rate/Kg and Weight/Length per row. Non-stock, since we never hold it.
+# Mirrored as QB_MANUAL_PRICE_ALUMINIUM_ITEMS in quotation_builder.js.
+OWNERS_GOOD_ITEM_CODE = "G85"
+
+
+def _stock_rows_only(rows):
+    """Drop rows whose item isn't a stock item (e.g. Owners Good) — ERPNext rejects them on a
+    Stock Entry, and there is no stock of them to move anyway."""
+    item_codes = list({r["item_code"] for r in rows})
+    stock_items = set(frappe.get_all(
+        "Item", filters={"name": ["in", item_codes], "is_stock_item": 1}, pluck="name"
+    )) if item_codes else set()
+    return [r for r in rows if r["item_code"] in stock_items]
 
 
 def _ensure_glass_type_storage():
@@ -2290,6 +2309,17 @@ def create_job_card_from_quotation(quotation, customer, customer_name=None, paym
     quotation_doc = frappe.get_doc("Quotation", quotation)
     customer_doc = frappe.get_doc("Customer", customer)
     payment_mode = "Cash Customer" if (payment_mode or "").strip().lower() in ("cash", "cash customer") else "Invoice Customer"
+    # The customer's Billing Type decides cash vs invoice. The Job Card's mode decides which page
+    # its invoice lists on (Invoices / Cash Sales) while the Billing Type picks the invoice series
+    # (sales_invoice_handler), so a mismatch puts a cash-numbered invoice on the Invoices page.
+    billing_type = customer_doc.get("custom_customer_billing_type")
+    if billing_type in ("Cash Customer", "Invoice Customer") and billing_type != payment_mode:
+        frappe.throw(
+            f"{frappe.bold(customer_doc.customer_name or customer_doc.name)} is registered as a "
+            f"{billing_type}, so this Job Card must use Payment Mode {frappe.bold(billing_type)}. "
+            "Change the customer's Billing Type first if they should be billed differently.",
+            title="Payment Mode doesn't match Billing Type",
+        )
     payment_option = (payment_option or "").strip()
     if payment_option.lower() == "bank":  # legacy coarse value → real Mode of Payment
         payment_option = "Bank Transfer i.e RTGS, TT"
@@ -3385,6 +3415,10 @@ def _save_quotation_from_builder(
             # external consumer (no longer used for pricing/display math).
             row_data["custom_aluminium_metres"] = frappe.utils.flt(row_data.get("qty") or 0)
             row_data["custom_aluminium_color"] = item.get("aluminium_color") or None
+            # Kept on the row so a manually priced item (Owners Good) reopens in the Builder with
+            # the Rate/Kg and Weight/Length that were keyed in, not the Item's (empty) values.
+            row_data["custom_aluminium_rate_per_kg"] = frappe.utils.flt(item.get("aluminium_rate_per_kg") or 0)
+            row_data["custom_aluminium_weight_per_length"] = frappe.utils.flt(item.get("aluminium_weight_per_length") or 0)
         elif category == "Ceiling":
             if item.get("ceiling_mode") == "bundle":
                 square_metres = frappe.utils.flt(item.get("quantity", item.get("square_metres", 100)) or 100)
@@ -3535,6 +3569,9 @@ def _create_glass_deduction_stock_entry_for_row(glass_item, sft_qty, warehouse, 
 
 def _create_multi_item_deduction_stock_entry(items_to_deduct, company, job_card_name, sales_invoice=None):
     """Deduct multiple stock items (via a single Material Issue Stock Entry) for a Job Card release event."""
+    items_to_deduct = _stock_rows_only(items_to_deduct)
+    if not items_to_deduct:
+        return None
     entry = frappe.new_doc("Stock Entry")
     entry.stock_entry_type = "Material Issue"
     entry.company = company
@@ -4581,6 +4618,9 @@ def _create_invoice_edit_stock_entry(entry_type, rows, company, job_card_name, i
     """One corrective Stock Entry for an invoice edit. Material Issue keeps the
     'Deducted for CAW Job Card:' remark convention so deduction reports still match;
     Material Receipt deliberately uses 'Returned for...' so they don't double-count."""
+    rows = _stock_rows_only(rows)
+    if not rows:
+        return None
     entry = frappe.new_doc("Stock Entry")
     entry.stock_entry_type = entry_type
     entry.company = company
@@ -4665,7 +4705,7 @@ def _apply_invoice_edit_stock_deltas(old_rows, invoice, job_card_name, warnings)
         entries.append(_create_invoice_edit_stock_entry("Material Issue", issues, company, job_card_name, invoice.name))
     if receipts:
         entries.append(_create_invoice_edit_stock_entry("Material Receipt", receipts, company, job_card_name, invoice.name))
-    return entries
+    return [name for name in entries if name]
 
 
 def _sync_invoice_edit_release_records(invoice, job_card_name, warnings):
@@ -5576,7 +5616,8 @@ def save_custom_item(data):
         item.item_code = item_code
         item.item_name = item_name
         item.item_group = storage_category
-        item.is_stock_item = 1
+        # Owners Good is the customer's own aluminium — never stocked (see OWNERS_GOOD_ITEM_CODE).
+        item.is_stock_item = 0 if item_code == OWNERS_GOOD_ITEM_CODE else 1
         item.standard_rate = retail_rate
         if _item_has_field("custom_glass_type"):
             item.custom_glass_type = glass_type if storage_category == "Glass" else None

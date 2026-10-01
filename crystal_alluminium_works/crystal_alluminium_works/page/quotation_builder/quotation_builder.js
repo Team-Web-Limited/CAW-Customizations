@@ -180,6 +180,24 @@ function get_aluminium_normal_price(rate_per_kg, weight_per_length) {
 	return flt(rate_per_kg || 0) * flt(weight_per_length || 0);
 }
 
+// "Owners Good" — the customer's own aluminium brought in for a service such as painting. It has
+// no stored price: any sales user keys its Rate/Kg and Weight/Length per row, and the rate is
+// exactly Rate/Kg × Weight/Length (+ powder coating), with no price-list factor and no Item Price
+// fallback. Mirrors OWNERS_GOOD_ITEM_CODE in api.py.
+const QB_MANUAL_PRICE_ALUMINIUM_ITEMS = ['G85'];
+
+function is_manual_price_aluminium_item(item_code) {
+	return QB_MANUAL_PRICE_ALUMINIUM_ITEMS.includes((item_code || '').trim());
+}
+
+function get_aluminium_row_rate(item_code, rate_per_kg, weight_per_length, selling_price, powder_coating_charge) {
+	let normal_price = get_aluminium_normal_price(rate_per_kg, weight_per_length);
+	let base = is_manual_price_aluminium_item(item_code)
+		? normal_price
+		: get_aluminium_rate_for_selling_price(normal_price, selling_price);
+	return base + flt(powder_coating_charge || 0);
+}
+
 function get_aluminium_rate_for_selling_price(normal_price, selling_price) {
 	let price_label = get_aluminium_price_label(selling_price);
 	if (price_label === 'Mill Finished Price') {
@@ -2417,7 +2435,7 @@ function open_item_editor(page, item, is_new = false) {
 				fieldtype: 'Currency',
 				fieldname: 'aluminium_rate_per_kg',
 				label: 'Rate / Kg',
-				read_only: 1,
+				read_only: is_manual_price_aluminium_item(item.item_code) ? 0 : 1,
 				default: item.aluminium_rate_per_kg || 0
 			},
 			{ fieldtype: 'Column Break' },
@@ -2425,7 +2443,7 @@ function open_item_editor(page, item, is_new = false) {
 				fieldtype: 'Float',
 				fieldname: 'aluminium_weight_per_length',
 				label: 'Weight / Length',
-				read_only: 1,
+				read_only: is_manual_price_aluminium_item(item.item_code) ? 0 : 1,
 				default: item.aluminium_weight_per_length || 0
 			},
 			{ fieldtype: 'Section Break' },
@@ -2605,6 +2623,12 @@ function open_item_editor(page, item, is_new = false) {
 						});
 					}
 				});
+				return;
+			}
+
+			if (item.category === 'Aluminium' && is_manual_price_aluminium_item(values.item_code)
+				&& !(flt(values.aluminium_rate_per_kg) > 0 && flt(values.aluminium_weight_per_length) > 0)) {
+				frappe.msgprint(__('Enter the Rate / Kg and Weight / Length for {0} — it has no stored price.', [values.item_code]));
 				return;
 			}
 
@@ -2993,14 +3017,27 @@ function open_item_editor(page, item, is_new = false) {
 		return flt(d.get_value('aluminium_powder_coating_charge') || 0);
 	}
 
-	function update_aluminium_rate_from_inputs() {
-		let normal_price = get_aluminium_normal_price(
-			d.get_value('aluminium_rate_per_kg') || 0,
-			d.get_value('aluminium_weight_per_length') || 0
-		);
+	function current_item_code() {
+		return d.get_value('item_code') || item.item_code;
+	}
 
-		if (normal_price > 0) {
-			d.set_value('rate', get_aluminium_rate_for_selling_price(normal_price, d.get_value('price_list')) + get_aluminium_powder_coating_charge());
+	// Owners Good: Rate/Kg and Weight/Length are typed in, never loaded from the Item.
+	function set_aluminium_pricing_editable(editable) {
+		['aluminium_rate_per_kg', 'aluminium_weight_per_length'].forEach(function (fieldname) {
+			d.set_df_property(fieldname, 'read_only', editable ? 0 : 1);
+		});
+	}
+
+	function update_aluminium_rate_from_inputs() {
+		let ic = current_item_code();
+		let rate_per_kg = d.get_value('aluminium_rate_per_kg') || 0;
+		let weight_per_length = d.get_value('aluminium_weight_per_length') || 0;
+		let normal_price = get_aluminium_normal_price(rate_per_kg, weight_per_length);
+
+		// A manually priced item has no Item Price to fall back on — its rate is whatever the
+		// inputs give, even 0 while they're still being filled in.
+		if (normal_price > 0 || is_manual_price_aluminium_item(ic)) {
+			d.set_value('rate', get_aluminium_row_rate(ic, rate_per_kg, weight_per_length, d.get_value('price_list'), get_aluminium_powder_coating_charge()));
 			return true;
 		}
 
@@ -3084,7 +3121,20 @@ function open_item_editor(page, item, is_new = false) {
 				let lookup_price_list = item.category === 'Aluminium' ? get_aluminium_backend_price_list(pl) : pl;
 
 				if (item.category === 'Aluminium') {
-					if (fetch_item_details) {
+					let is_manual = is_manual_price_aluminium_item(ic);
+					set_aluminium_pricing_editable(is_manual);
+					if (fetch_item_details && is_manual) {
+						frappe.db.get_value('Item', ic, ['item_name', 'stock_uom'], function (item_result) {
+							item.item_name = (item_result && item_result.item_name) || item.item_name || ic;
+							item.uom = (item_result && item_result.stock_uom) || item.uom;
+						});
+						// Picked fresh (not reopening a row) — start from blank inputs.
+						if (ic !== item.item_code) {
+							d.set_value('aluminium_rate_per_kg', 0);
+							d.set_value('aluminium_weight_per_length', 0);
+						}
+						update_aluminium_rate_from_inputs();
+					} else if (fetch_item_details) {
 						frappe.call({
 							method: 'frappe.client.get_value',
 							args: {
@@ -3635,6 +3685,23 @@ function open_aluminium_batch_details_dialog(page, items) {
 		// Shared by the initial render and by "duplicate row" below, so a clone
 		// picks up the exact same markup/behaviour as an item that came in
 		// through the multi-select.
+		// Rate/Kg and Weight/Length come from the Item and stay read-only, except for a manually
+		// priced item (Owners Good), where they are the price and must be typed in.
+		function build_pricing_cells(it) {
+			let rate_per_kg = flt(it.aluminium_rate_per_kg || 0);
+			let weight_per_length = flt(it.aluminium_weight_per_length || 0);
+			if (is_manual_price_aluminium_item(it.item_code)) {
+				return `
+					<td><input type="number" min="0" step="any" class="form-control input-sm qb-batch-input" data-field="aluminium_rate_per_kg" value="${rate_per_kg || ''}" placeholder="Rate / Kg" style="width:90px;"></td>
+					<td><input type="number" min="0" step="any" class="form-control input-sm qb-batch-input" data-field="aluminium_weight_per_length" value="${weight_per_length || ''}" placeholder="Weight" style="width:90px;"></td>
+				`;
+			}
+			return `
+				<td style="white-space:nowrap;color:var(--text-muted);">${rate_per_kg ? format_number(rate_per_kg) : '-'}<input type="hidden" data-field="aluminium_rate_per_kg" value="${rate_per_kg}"></td>
+				<td style="white-space:nowrap;color:var(--text-muted);">${weight_per_length ? format_number(weight_per_length) : '-'}<input type="hidden" data-field="aluminium_weight_per_length" value="${weight_per_length}"></td>
+			`;
+		}
+
 		function build_row_html(it, row_number) {
 			return `
 				<tr data-id="${it.id}">
@@ -3642,8 +3709,7 @@ function open_aluminium_batch_details_dialog(page, items) {
 					<td style="white-space:nowrap;">${frappe.utils.escape_html(it.item_name || it.item_code)}</td>
 					<td><input type="text" class="form-control input-sm qb-batch-input qb-aluminium-color-input" data-field="aluminium_color" list="${color_list_id}" placeholder="Search color..." value="${frappe.utils.escape_html(it.aluminium_color || 'None')}" style="width:130px;"></td>
 					<td><input type="number" min="1" step="1" class="form-control input-sm qb-batch-input" data-field="qty" value="${flt(it.qty || 1) || 1}" style="width:60px;"></td>
-					<input type="hidden" data-field="aluminium_rate_per_kg" value="${flt(it.aluminium_rate_per_kg || 0)}">
-					<input type="hidden" data-field="aluminium_weight_per_length" value="${flt(it.aluminium_weight_per_length || 0)}">
+					${build_pricing_cells(it)}
 					<td><input type="number" min="0" step="any" class="form-control input-sm qb-batch-input" data-field="aluminium_powder_coating_charge" value="${flt(it.aluminium_powder_coating_charge || 0)}" style="width:90px;"></td>
 					<td><input type="text" class="form-control input-sm qb-batch-input" data-field="description" value="${frappe.utils.escape_html(it.description || '')}" style="width:150px;"></td>
 					<td style="text-align:center;white-space:nowrap;">
@@ -3669,6 +3735,8 @@ function open_aluminium_batch_details_dialog(page, items) {
 							<th style="white-space:nowrap;">Item</th>
 							<th style="white-space:nowrap;">Color</th>
 							<th style="white-space:nowrap;">Pcs</th>
+							<th style="white-space:nowrap;">Rate / Kg</th>
+							<th style="white-space:nowrap;">Weight / Length</th>
 							<th style="white-space:nowrap;">Powder Coating</th>
 							<th style="white-space:nowrap;">Description</th>
 							<th style="white-space:nowrap;"></th>
@@ -3689,6 +3757,19 @@ function open_aluminium_batch_details_dialog(page, items) {
 			primary_action: function () {
 				let $wrapper = d.fields_dict.batch_table.$wrapper;
 
+				// A manually priced item (Owners Good) has nothing to fall back on.
+				let missing_manual_price = items.some(function (it) {
+					let $row = $wrapper.find(`tr[data-id="${it.id}"]`);
+					return is_manual_price_aluminium_item(it.item_code) && !(
+						flt($row.find('[data-field="aluminium_rate_per_kg"]').val()) > 0
+						&& flt($row.find('[data-field="aluminium_weight_per_length"]').val()) > 0
+					);
+				});
+				if (missing_manual_price) {
+					frappe.msgprint(__('Enter the Rate / Kg and Weight / Length for every Owners Good row — it has no stored price.'));
+					return;
+				}
+
 				let calls = items.map(function (it) {
 					let $row = $wrapper.find(`tr[data-id="${it.id}"]`);
 					function val(field) {
@@ -3706,8 +3787,8 @@ function open_aluminium_batch_details_dialog(page, items) {
 					});
 
 					let normal_price = get_aluminium_normal_price(final_item.aluminium_rate_per_kg, final_item.aluminium_weight_per_length);
-					if (normal_price > 0) {
-						final_item.rate = get_aluminium_rate_for_selling_price(normal_price, final_item.price_list) + final_item.aluminium_powder_coating_charge;
+					if (normal_price > 0 || is_manual_price_aluminium_item(final_item.item_code)) {
+						final_item.rate = get_aluminium_row_rate(final_item.item_code, final_item.aluminium_rate_per_kg, final_item.aluminium_weight_per_length, final_item.price_list, final_item.aluminium_powder_coating_charge);
 						final_item.amount = calculate_item_amount(final_item);
 						return Promise.resolve(final_item);
 					}

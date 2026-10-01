@@ -1118,9 +1118,9 @@ function get_job_card_payment_mode_label(value) {
 function get_job_card_payment_option_choices(payment_mode) {
 	// These are actual Mode of Payment names — the chosen option IS the payment method, and
 	// its deposit account is derived from Mode of Payment Account. Cash customers pay by
-	// cash / mpesa / bank transfer; invoice customers by cheque only.
+	// cash / mpesa / cheque / pesalink; invoice customers by cheque only.
 	return normalize_job_card_payment_mode(payment_mode) === 'cash'
-		? ['Cash', 'Paybill', 'Bank Transfer i.e RTGS, TT', 'PESALINK']
+		? ['Cash', 'Paybill', 'Cheque', 'PESALINK']
 		: ['Cheque'];
 }
 
@@ -1230,6 +1230,19 @@ async function refresh_job_card_deposit_to_options(dialog) {
 	refresh_job_card_payment_capture_fields(dialog);
 }
 
+// The customer's Billing Type decides cash vs invoice — not whether they have a KRA PIN: a
+// Cash Customer can have a PIN too. Keying this off the PIN pre-selected "Invoice Customer"
+// for cash customers with a PIN, and the Job Card then disagreed with the invoice series
+// (sales_invoice_handler, also Billing Type) and landed on the wrong Invoices/Cash Sales page.
+// The PIN is only a fallback for a customer with no Billing Type set.
+// create_job_card_from_quotation rejects a mode that contradicts the Billing Type.
+function get_customer_billing_payment_mode(customer) {
+	let billing_type = customer && customer.custom_customer_billing_type;
+	if (billing_type === 'Cash Customer') return 'cash';
+	if (billing_type === 'Invoice Customer') return 'invoice';
+	return customer && customer.tax_id ? 'invoice' : 'cash';
+}
+
 async function get_job_card_customer_defaults(customer_name) {
 	if (!customer_name) {
 		return {};
@@ -1242,13 +1255,13 @@ async function get_job_card_customer_defaults(customer_name) {
 			customer_name: customer.customer_name || customer.name,
 			customer_pin: customer.tax_id || '',
 			phone_number: customer.mobile_no || customer.phone || '',
-			payment_mode: customer.tax_id ? 'invoice' : 'cash'
+			payment_mode: get_customer_billing_payment_mode(customer)
 		};
 	} catch (e) {
 		try {
 			let customers = await frappe.db.get_list('Customer', {
 				filters: { customer_name: customer_name },
-				fields: ['name', 'customer_name', 'tax_id', 'mobile_no', 'phone'],
+				fields: ['name', 'customer_name', 'tax_id', 'mobile_no', 'phone', 'custom_customer_billing_type'],
 				limit: 1
 			});
 			let customer = customers && customers[0];
@@ -1257,7 +1270,7 @@ async function get_job_card_customer_defaults(customer_name) {
 				customer_name: customer.customer_name || customer.name,
 				customer_pin: customer.tax_id || '',
 				phone_number: customer.mobile_no || customer.phone || '',
-				payment_mode: customer.tax_id ? 'invoice' : 'cash'
+				payment_mode: get_customer_billing_payment_mode(customer)
 			} : {};
 		} catch (search_error) {
 			return {};
@@ -1961,9 +1974,9 @@ function run_amend_quotation_flow(doc, options) {
 
 async function open_quotation_in_builder(doc) {
 		let customer_meta = doc.party_name
-			? await frappe.db.get_value('Customer', doc.party_name, 'tax_id')
+			? await frappe.db.get_value('Customer', doc.party_name, ['tax_id', 'custom_customer_billing_type'])
 			: null;
-		let payment_mode = customer_meta && customer_meta.message && customer_meta.message.tax_id ? 'invoice' : 'cash';
+		let payment_mode = get_customer_billing_payment_mode(customer_meta && customer_meta.message);
 
 		// Pre-populate the builder state from the existing quotation, then navigate
 		let price_adjustment = (doc.custom_price_adjustment_type && doc.custom_price_adjustment_percent)
@@ -2036,6 +2049,10 @@ async function open_quotation_in_builder(doc) {
 				pcs: item.custom_glass_sale_mode === 'Sheet' ? sheet_details.pcs : item.qty,
 				metres: item.qty || 1,
 				aluminium_color: item.custom_aluminium_color || '',
+				// Reopen with the Rate/Kg and Weight/Length the row was priced at — the only
+				// record of them for a manually priced item (Owners Good).
+				aluminium_rate_per_kg: flt(item.custom_aluminium_rate_per_kg || 0),
+				aluminium_weight_per_length: flt(item.custom_aluminium_weight_per_length || 0),
 				quantity: ceiling_sq_m || 0,
 				square_metres: ceiling_sq_m || 0,
 				ceiling_mode: ceiling_sq_m ? 'bundle' : 'single',
