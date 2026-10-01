@@ -936,7 +936,7 @@ def get_aluminium_price_factor():
 
 @frappe.whitelist()
 def save_aluminium_price_factor(price_factor):
-    frappe.only_for("System Manager")
+    frappe.only_for(ITEM_ADMIN_ROLES)
     factor = flt(price_factor)
     if factor <= 0:
         frappe.throw("Aluminium price ratio must be greater than zero.")
@@ -2124,6 +2124,10 @@ def register_customer(
         "customer_billing_type": doc.custom_customer_billing_type,
     }
 
+
+# Manage Items' create / edit / delete / import / export actions: System Manager, and the Sales
+# Admin role (sales staff trusted with the item catalogue — see patches/add_sales_admin_role).
+ITEM_ADMIN_ROLES = ["System Manager", "Sales Admin"]
 
 SHARED_CASH_CUSTOMER_NAME = "Cash Customer"
 
@@ -5571,7 +5575,7 @@ def save_custom_item(data):
     Creates or updates an Item and its associated Item Prices (Retail/Wholesale).
     Payload expects: is_new, category, item_code, item_name, retail_rate, wholesale_rate
     """
-    frappe.only_for("System Manager")
+    frappe.only_for(ITEM_ADMIN_ROLES)
     data = json.loads(data) if isinstance(data, str) else data
     
     item_code = (data.get("item_code") or "").strip()
@@ -5825,7 +5829,7 @@ def download_items_template(category=None):
     file is named after the stored item group, so all four glass tabs hand back the
     same glass_items_template.
     """
-    frappe.only_for("System Manager")
+    frappe.only_for(ITEM_ADMIN_ROLES)
     storage_category = _get_storage_category(category) if category else "Aluminium"
 
     if storage_category == "Aluminium":
@@ -5862,7 +5866,7 @@ def download_items_template(category=None):
 
 @frappe.whitelist(methods=["GET"])
 def export_aluminium_items():
-    frappe.only_for("System Manager")
+    frappe.only_for(ITEM_ADMIN_ROLES)
     _ensure_aluminium_pricing_storage()
 
     fields = ["item_name", "item_code"]
@@ -5897,7 +5901,7 @@ def export_aluminium_items():
 
 @frappe.whitelist(methods=["GET"])
 def export_glass_items(category):
-    frappe.only_for("System Manager")
+    frappe.only_for(ITEM_ADMIN_ROLES)
     storage_category = _get_storage_category(category)
     if storage_category != "Glass":
         frappe.throw("Glass export is only available for glass categories.")
@@ -5959,7 +5963,7 @@ def export_glass_items(category):
 
 @frappe.whitelist(methods=["GET"])
 def export_standard_items(category):
-    frappe.only_for("System Manager")
+    frappe.only_for(ITEM_ADMIN_ROLES)
     storage_category = _get_storage_category(category)
     if storage_category in ("Aluminium", "Glass"):
         frappe.throw("This export is only available for non-glass, non-aluminium categories.")
@@ -6209,7 +6213,7 @@ def get_dimension_intervals(interval_set=None):
 
 @frappe.whitelist()
 def save_dimension_intervals(intervals, interval_set=None):
-    frappe.only_for("System Manager")
+    frappe.only_for(ITEM_ADMIN_ROLES)
     intervals = json.loads(intervals) if isinstance(intervals, str) else intervals
     interval_set = interval_set or STANDARD_GLASS_INTERVAL_SET
     has_inches_min = _dimension_range_has_field("equivalent_inches_min")
@@ -6266,7 +6270,7 @@ def get_glass_sheet_configs(glass_type=None):
 
 @frappe.whitelist()
 def save_glass_sheet_configs(rows, glass_type=None):
-    frappe.only_for("System Manager")
+    frappe.only_for(ITEM_ADMIN_ROLES)
     _ensure_glass_sheet_config_storage()
     shared_glass_type = _get_shared_glass_sheet_type()
     rows = json.loads(rows) if isinstance(rows, str) else (rows or [])
@@ -6301,7 +6305,7 @@ def import_category_items(file_url, category):
     Expected headers for other categories: description, code, wholesale_rate, retail_rate, special_rate
     Legacy optional column for Aluminium: aluminium_type (ignored)
     """
-    frappe.only_for("System Manager")
+    frappe.only_for(ITEM_ADMIN_ROLES)
     if not file_url:
         frappe.throw("Please attach an Excel file.")
 
@@ -6415,7 +6419,7 @@ def import_category_items(file_url, category):
 
 @frappe.whitelist()
 def delete_items(item_codes):
-	frappe.only_for("System Manager")
+	frappe.only_for(ITEM_ADMIN_ROLES)
 	import json
 	if isinstance(item_codes, str):
 		item_codes = json.loads(item_codes)
