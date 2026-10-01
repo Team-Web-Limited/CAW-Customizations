@@ -174,7 +174,9 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
         color: #2c3e50;
         padding: 5px 3px;
         border-bottom: 2px solid #dee2e6;
-        font-size: 9px;
+        /* 11px is the largest size at which a glass table with every column filled (polish, holes
+           and notches with charges) still fits the page in DejaVu Sans, the font staging renders in. */
+        font-size: 11px;
         vertical-align: bottom;
         /* Headers wrap ("Polish Sides" over two lines) so they never set the table wider than the page. */
         white-space: normal !important;
@@ -183,7 +185,11 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
         padding: 5px 3px;
         border-bottom: 1px solid #dee2e6;
         vertical-align: middle;
-        font-size: 9px;
+        font-size: 11px;
+    }}
+    .cq-item-glass {{
+        /* Keeps the glass table's fixed-width columns from squeezing Item to a word per line. */
+        min-width: 60px;
     }}
     .cq-child-table {{
         width: 100%;
@@ -457,7 +463,9 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
                 {{% endfor %}}
                 <tr>
                     <td style="font-weight: bold; white-space: nowrap;">{{{{ parent.item_code or '' }}}}</td>
-                    <td>{{{{ parent.item_name or parent.item_code or '' }}}}</td>
+                    {{# A block with a minimum width is what wkhtmltopdf's table layout honours — it keeps the
+                       glass table's many fixed-width columns from squeezing Item to a word per line. #}}
+                    <td><div{{{{ ' class="cq-item-glass"' if section_rows.glass else '' }}}}>{{{{ parent.item_name or parent.item_code or '' }}}}</div></td>
                     {{% if section_rows.color %}}
                     <td style="text-align: center; white-space: nowrap;">
                         {{{{ parent.custom_aluminium_color or '-' }}}}
@@ -479,22 +487,24 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
                     <td style="text-align: right; white-space: nowrap;">{{{{ frappe.format_value(display_rate, df={{'fieldtype': 'Currency'}}, doc=doc) }}}}</td>
                     <td style="text-align: center; white-space: nowrap;">{{{{ print_uom(parent, uom) }}}}</td>
                     {{% if section_rows.glass %}}
-                    <td style="white-space: nowrap;">
+                    {{# Polish / Holes / Notches: the count and its "(Sh …)" charge each stay whole, but the
+                       charge may drop to a second line, so these columns never squeeze the Item column. #}}
+                    <td>
                         {{% if parent_category == 'Glass' and polish_sides > 0 %}}
                             {{{{ polish_sides }}}}
-                            {{% if glass_service.polish_amount %}} ({{{{ frappe.format_value(glass_service.polish_amount, df={{'fieldtype': 'Currency'}}, doc=doc) }}}}){{% endif %}}
+                            {{% if glass_service.polish_amount %}} <span style="white-space: nowrap;">({{{{ frappe.format_value(glass_service.polish_amount, df={{'fieldtype': 'Currency'}}, doc=doc) }}}})</span>{{% endif %}}
                         {{% else %}}-{{% endif %}}
                     </td>
-                    <td style="text-align: center; white-space: nowrap;">
+                    <td style="text-align: center;">
                         {{% if parent_category == 'Glass' and not is_sheet_glass and frappe.utils.cint(parent.custom_holes or 0) > 0 %}}
                             {{{{ frappe.utils.cint(parent.custom_holes or 0) }}}}
-                            {{% if glass_service.holes_amount %}} ({{{{ frappe.format_value(glass_service.holes_amount, df={{'fieldtype': 'Currency'}}, doc=doc) }}}}){{% endif %}}
+                            {{% if glass_service.holes_amount %}} <span style="white-space: nowrap;">({{{{ frappe.format_value(glass_service.holes_amount, df={{'fieldtype': 'Currency'}}, doc=doc) }}}})</span>{{% endif %}}
                         {{% else %}}-{{% endif %}}
                     </td>
-                    <td style="text-align: center; white-space: nowrap;">
+                    <td style="text-align: center;">
                         {{% if parent_category == 'Glass' and not is_sheet_glass and frappe.utils.cint(parent.custom_notches or 0) > 0 %}}
                             {{{{ frappe.utils.cint(parent.custom_notches or 0) }}}}
-                            {{% if glass_service.notches_amount %}} ({{{{ frappe.format_value(glass_service.notches_amount, df={{'fieldtype': 'Currency'}}, doc=doc) }}}}){{% endif %}}
+                            {{% if glass_service.notches_amount %}} <span style="white-space: nowrap;">({{{{ frappe.format_value(glass_service.notches_amount, df={{'fieldtype': 'Currency'}}, doc=doc) }}}})</span>{{% endif %}}
                         {{% else %}}-{{% endif %}}
                     </td>
                     {{% endif %}}
