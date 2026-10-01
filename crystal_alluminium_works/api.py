@@ -4284,6 +4284,9 @@ def submit_sales_invoice(name):
 
 @frappe.whitelist()
 def cancel_sales_invoice(name):
+    # Bypasses doctype permissions below (sales staff may lack native cancel rights),
+    # so restrict it to the roles the Sales Invoice / Quotation Manager pages allow.
+    frappe.only_for(["System Manager", "Sales User"])
     invoice = frappe.get_doc("Sales Invoice", name)
     job_card = _get_invoice_job_card(invoice)
     invoice.flags.ignore_permissions = True
@@ -4361,6 +4364,9 @@ def get_quotation_amendment_eligibility(quotation):
 
 @frappe.whitelist()
 def cancel_quotation(quotation):
+    # Bypasses doctype permissions below (sales staff may lack native cancel rights),
+    # so restrict it to the roles the Sales Invoice / Quotation Manager pages allow.
+    frappe.only_for(["System Manager", "Sales User"])
     eligibility = get_quotation_amendment_eligibility(quotation)
     if not eligibility["can_amend"]:
         frappe.throw("Cannot amend this Quotation: " + " ".join(eligibility["reasons"]))
@@ -5044,84 +5050,6 @@ def on_sales_invoice_submit(doc, method):
             "Quotation Item", qrow.name, "custom_collected_qty", max(current - returned_native, 0)
         )
 
-
-@frappe.whitelist()
-def delete_all_sales_orders():
-    def clear_missing_quotation_links(sales_order):
-        for row in sales_order.items:
-            quotation_name = row.get("prevdoc_docname")
-            if quotation_name and not frappe.db.exists("Quotation", quotation_name):
-                frappe.db.set_value(
-                    "Sales Order Item",
-                    row.name,
-                    {
-                        "prevdoc_docname": None,
-                        "quotation_item": None,
-                    },
-                    update_modified=False,
-                )
-                row.prevdoc_docname = None
-                row.quotation_item = None
-
-    sales_order_names = frappe.get_all(
-        "Sales Order",
-        filters={"docstatus": ["<", 2]},
-        pluck="name",
-        order_by="creation desc",
-    )
-
-    deleted = []
-    for sales_order_name in sales_order_names:
-        sales_order = frappe.get_doc("Sales Order", sales_order_name)
-        if sales_order.docstatus == 1:
-            clear_missing_quotation_links(sales_order)
-            sales_order.cancel()
-
-        frappe.delete_doc("Sales Order", sales_order_name, ignore_permissions=True, force=1)
-        deleted.append(sales_order_name)
-
-    cancelled_only = frappe.get_all(
-        "Sales Order",
-        filters={"docstatus": 2},
-        pluck="name",
-        order_by="creation desc",
-    )
-    for sales_order_name in cancelled_only:
-        frappe.delete_doc("Sales Order", sales_order_name, ignore_permissions=True, force=1)
-        deleted.append(sales_order_name)
-
-    return {"deleted_count": len(deleted), "deleted_sales_orders": deleted}
-
-
-@frappe.whitelist()
-def delete_all_quotations():
-    quotation_names = frappe.get_all(
-        "Quotation",
-        filters={"docstatus": ["<", 2]},
-        pluck="name",
-        order_by="creation desc",
-    )
-
-    deleted = []
-    for quotation_name in quotation_names:
-        quotation = frappe.get_doc("Quotation", quotation_name)
-        if quotation.docstatus == 1:
-            quotation.cancel()
-
-        frappe.delete_doc("Quotation", quotation_name, ignore_permissions=True, force=1)
-        deleted.append(quotation_name)
-
-    cancelled_only = frappe.get_all(
-        "Quotation",
-        filters={"docstatus": 2},
-        pluck="name",
-        order_by="creation desc",
-    )
-    for quotation_name in cancelled_only:
-        frappe.delete_doc("Quotation", quotation_name, ignore_permissions=True, force=1)
-        deleted.append(quotation_name)
-
-    return {"deleted_count": len(deleted), "deleted_quotations": deleted}
 
 @frappe.whitelist()
 def get_glass_batch_uom_qty(rows):
@@ -6432,88 +6360,6 @@ def delete_items(item_codes):
 			frappe.delete_doc("Item", item_code)
 			deleted += 1
 	return deleted
-
-@frappe.whitelist()
-def delete_aluminium_items_and_related_docs(item_codes=None):
-	import json
-
-	default_codes = ["A08.1", "A08", "A07.3", "A07.1"]
-	if not item_codes:
-		item_codes = default_codes
-	elif isinstance(item_codes, str):
-		item_codes = json.loads(item_codes) if item_codes.strip().startswith("[") else [code.strip() for code in item_codes.split(",") if code.strip()]
-
-	item_codes = list(dict.fromkeys(item_codes))
-	summary = {
-		"item_codes": item_codes,
-		"deleted": {
-			"Delivery Note": [],
-			"Sales Invoice": [],
-			"Sales Order": [],
-			"Quotation": [],
-			"Item Price": [],
-			"Item": [],
-		},
-		"errors": [],
-	}
-
-	def delete_docnames(doctype, docnames):
-		for name in docnames:
-			try:
-				doc = frappe.get_doc(doctype, name)
-				if doc.docstatus == 1:
-					doc.cancel()
-				frappe.delete_doc(doctype, name, ignore_permissions=True, force=1)
-				summary["deleted"][doctype].append(name)
-			except Exception:
-				summary["errors"].append({
-					"doctype": doctype,
-					"name": name,
-					"error": frappe.get_traceback(),
-				})
-
-	for doctype in ["Delivery Note", "Sales Invoice", "Sales Order", "Quotation"]:
-		child_doctype = f"{doctype} Item"
-		docnames = frappe.get_all(
-			child_doctype,
-			filters={"item_code": ["in", item_codes]},
-			distinct=True,
-			pluck="parent",
-		)
-		delete_docnames(doctype, docnames)
-
-	item_price_names = frappe.get_all(
-		"Item Price",
-		filters={"item_code": ["in", item_codes]},
-		pluck="name",
-	)
-	for name in item_price_names:
-		try:
-			frappe.delete_doc("Item Price", name, ignore_permissions=True, force=1)
-			summary["deleted"]["Item Price"].append(name)
-		except Exception:
-			summary["errors"].append({
-				"doctype": "Item Price",
-				"name": name,
-				"error": frappe.get_traceback(),
-			})
-
-	frappe.db.delete("Bin", {"item_code": ["in", item_codes]})
-
-	for item_code in item_codes:
-		if not frappe.db.exists("Item", item_code):
-			continue
-		try:
-			frappe.delete_doc("Item", item_code, ignore_permissions=True, force=1)
-			summary["deleted"]["Item"].append(item_code)
-		except Exception:
-			summary["errors"].append({
-				"doctype": "Item",
-				"name": item_code,
-				"error": frappe.get_traceback(),
-			})
-
-	return summary
 
 @frappe.whitelist()
 def get_all_glass_items():
