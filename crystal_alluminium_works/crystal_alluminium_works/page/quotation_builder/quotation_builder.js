@@ -2214,6 +2214,30 @@ function render_items_table(page) {
 		`);
 	});
 
+	// Totals row: Pieces add up directly; UOM Qty only adds up within one unit (square feet,
+	// lengths and pieces don't sum), so it's totalled per UOM, one line each, in row order.
+	let total_pieces = 0;
+	let uom_totals = [];
+	window.qb_state.items.forEach(function (item) {
+		total_pieces += flt(get_item_display_qty(item) || 0);
+		let uom = get_item_uom_label(item) || '-';
+		let entry = uom_totals.find(function (t) { return t.uom === uom; });
+		if (!entry) {
+			entry = { uom: uom, qty: 0 };
+			uom_totals.push(entry);
+		}
+		entry.qty += format_review_number(get_item_uom_qty(item), 2);  // as each row shows it
+	});
+	$tbody.append(`
+		<tr class="qb-items-total-row" style="font-weight:700;border-top:2px solid var(--border-color);">
+			<td colspan="4" style="padding:12px 16px;text-align:right;">Total</td>
+			<td style="padding:12px 16px;text-align:center;">${flt(total_pieces, 2)}</td>
+			<td style="padding:12px 16px;text-align:center;">${uom_totals.map(t => flt(t.qty, 2)).join('<br>')}</td>
+			<td style="padding:12px 16px;text-align:center;">${uom_totals.map(t => frappe.utils.escape_html(t.uom)).join('<br>')}</td>
+			<td colspan="3"></td>
+		</tr>
+	`);
+
 	// Calculate grand total
 	let grand = window.qb_state.items.reduce((s, i) => s + (i.amount || 0), 0);
 	$(page.body).find('.qb-grand-total').text(format_currency(grand, 'KES'));
