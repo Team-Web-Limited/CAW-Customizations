@@ -1958,6 +1958,129 @@ function setup_price_adjustment_controls(page) {
 	}
 	set_selected_sign(selected_sign);
 
+	let $target = $(page.body).find('.qb-price-adjust-target');
+	let $target_note = $(page.body).find('.qb-price-adjust-target-note');
+	let $current = $(page.body).find('.qb-price-adjust-current');
+	// The quotation priced with no adjustment, from the same server preview the Review tab
+	// totals with: grand (inc. VAT), the part the % acts on (manual), the rest (other —
+	// glass polishing/holes/notches etc., never adjusted) and grand / subtotal (tax_factor).
+	let base = null;
+	let base_seq = 0;
+	let target_seq = 0;
+	let target_timer = null;
+
+	function preview_with(adjustment) {
+		// Items carry the currently applied % in their rate, so re-derive each row's rate for the
+		// adjustment being tried (on copies — the Builder's own rows stay untouched).
+		let items = (window.qb_state.items || []).map(function (item) {
+			let copy = Object.assign({}, item);
+			apply_price_adjustment_to_item(copy, adjustment);
+			return copy;
+		});
+		let state = Object.assign({}, window.qb_state, { items: items, price_adjustment: adjustment });
+		return frappe.xcall('crystal_alluminium_works.api.preview_quotation_from_builder', get_quotation_api_args(state))
+			.then(function (preview) {
+				if (!preview || preview.error) throw new Error((preview && preview.error) || 'No preview');
+				let has_real_tax = flt(preview.total_taxes_and_charges) > 0;
+				let subtotal = has_real_tax ? flt(preview.grand_total) - flt(preview.total_taxes_and_charges) : flt(preview.grand_total);
+				let grand = has_real_tax ? flt(preview.grand_total) : subtotal * (1 + QB_VAT_RATE);
+				return { grand: grand, subtotal: subtotal, manual: flt(preview.manual_amount) };
+			});
+	}
+
+	function multiplier_of(sign, percent) {
+		return sign === '-' ? 1 - flt(percent) / 100 : 1 + flt(percent) / 100;
+	}
+
+	function predicted_total(multiplier) {
+		return (base.manual * multiplier + base.other) * base.tax_factor;
+	}
+
+	function show_note(text, is_error) {
+		$target_note.css('color', is_error ? 'var(--red-600, #c0392b)' : 'var(--text-muted)').text(text || '');
+	}
+
+	function load_base() {
+		let seq = ++base_seq;
+		base = null;
+		$current.text('…');
+		show_note('');
+		if (!window.qb_state.customer || !(window.qb_state.items || []).length) {
+			$current.text('—');
+			show_note('Select a customer and add items first.', true);
+			return;
+		}
+		preview_with(null).then(function (r) {
+			if (seq !== base_seq) return;
+			base = {
+				grand: r.grand,
+				manual: r.manual,
+				other: r.subtotal - r.manual,
+				tax_factor: r.subtotal ? r.grand / r.subtotal : 1 + QB_VAT_RATE,
+			};
+			$current.text(format_currency(base.grand, 'KES'));
+			refresh_target_from_percent();
+		}).catch(function () {
+			if (seq !== base_seq) return;
+			$current.text('—');
+			show_note('Could not price the quotation; the % still works.', true);
+		});
+	}
+
+	// % typed (or Discount/Markup switched): show the total it gives.
+	function refresh_target_from_percent() {
+		if (!base) return;
+		let percent = flt($input.val());
+		if (!percent) {
+			$target.val('');
+			show_note('');
+			return;
+		}
+		$target.val(flt(predicted_total(multiplier_of(selected_sign, percent)), 2));
+		show_note(`${selected_sign === '-' ? 'Discount' : 'Markup'} of ${percent}% gives about this total.`);
+	}
+
+	// Target typed: derive the % from it, check it against the server and refine once, so
+	// rounding on the repriced rows doesn't leave the total a few shillings off.
+	function derive_percent_from_target() {
+		if (!base) return;
+		let target = flt($target.val());
+		if (!target) {
+			show_note('');
+			return;
+		}
+		if (base.manual <= 0) {
+			show_note('Nothing on this quotation can be adjusted.', true);
+			return;
+		}
+		let multiplier = (target / base.tax_factor - base.other) / base.manual;
+		if (multiplier <= 0 || Math.abs(multiplier - 1) * 100 > 100) {
+			show_note('That total needs more than a 100% change — check the figure.', true);
+			return;
+		}
+		let seq = ++target_seq;
+		let as_adjustment = function (m) {
+			return { type: m < 1 ? '-' : '+', percent: flt(Math.abs(1 - m) * 100, 4) };
+		};
+		show_note('Working out the %…');
+		preview_with(as_adjustment(multiplier)).then(function (first) {
+			if (seq !== target_seq) return;
+			multiplier += (target - first.grand) / (base.manual * base.tax_factor);
+			let adjustment = as_adjustment(multiplier);
+			return preview_with(adjustment).then(function (second) {
+				if (seq !== target_seq) return;
+				set_selected_sign(adjustment.type);
+				$input.val(adjustment.percent);
+				let off = flt(second.grand - target, 2);
+				show_note(`${adjustment.type === '-' ? 'Discount' : 'Markup'} of ${adjustment.percent}% → total ${format_currency(second.grand, 'KES')}`
+					+ (Math.abs(off) >= 0.01 ? ` (${off > 0 ? '+' : '−'}${format_currency(Math.abs(off), 'KES')} from rounding)` : ''));
+			});
+		}).catch(function () {
+			if (seq !== target_seq) return;
+			show_note('Could not work out the % — try again.', true);
+		});
+	}
+
 	$(page.body).on('click.qbbuilder', '.qb-adjust-pricing-btn', function (e) {
 		e.stopPropagation();
 		let adjustment = window.qb_state.price_adjustment;
@@ -1965,11 +2088,26 @@ function setup_price_adjustment_controls(page) {
 			set_selected_sign(adjustment.type);
 			$input.val(adjustment.percent);
 		}
+		$target.val('');
 		$popover.toggle();
+		if ($popover.is(':visible')) {
+			load_base();
+		}
 	});
 
 	$(page.body).on('click.qbbuilder', '.qb-price-adjust-sign', function () {
 		set_selected_sign($(this).data('sign'));
+		refresh_target_from_percent();
+	});
+
+	$(page.body).on('input.qbbuilder', '.qb-price-adjust-input', function () {
+		target_seq++;  // a typed % wins over a target still being worked out
+		refresh_target_from_percent();
+	});
+
+	$(page.body).on('input.qbbuilder', '.qb-price-adjust-target', function () {
+		clearTimeout(target_timer);
+		target_timer = setTimeout(derive_percent_from_target, 500);
 	});
 
 	$(page.body).on('click.qbbuilder', '.qb-price-adjust-apply', function () {
@@ -1988,6 +2126,8 @@ function setup_price_adjustment_controls(page) {
 	$(page.body).on('click.qbbuilder', '.qb-price-adjust-clear', function () {
 		window.qb_state.price_adjustment = null;
 		$input.val('');
+		$target.val('');
+		show_note('');
 		render_items_table(page);
 		$popover.hide();
 	});
@@ -4378,15 +4518,26 @@ function get_builder_html() {
 					<div style="display:flex;align-items:center;gap:10px;position:relative;">
 						<span class="qb-price-adjust-badge" style="display:none;font-size:12px;font-weight:600;padding:4px 10px;border-radius:12px;background:var(--subtle-fg);"></span>
 						<button class="qb-nav-btn secondary qb-adjust-pricing-btn" type="button">% Adjust Pricing</button>
-						<div class="qb-price-adjust-popover" style="display:none;position:absolute;bottom:calc(100% + 10px);right:0;width:240px;background:var(--card-bg);border:1px solid var(--border-color);border-radius:10px;box-shadow:var(--shadow-lg, 0 4px 16px rgba(0,0,0,0.15));padding:16px;z-index:50;">
+						<div class="qb-price-adjust-popover" style="display:none;position:absolute;bottom:calc(100% + 10px);right:0;width:290px;background:var(--card-bg);border:1px solid var(--border-color);border-radius:10px;box-shadow:var(--shadow-lg, 0 4px 16px rgba(0,0,0,0.15));padding:16px;z-index:50;">
 							<div style="font-weight:600;font-size:13px;margin-bottom:10px;">Adjust Inc.Rate for all items</div>
 							<div class="qb-price-adjust-toggle" style="display:flex;gap:6px;margin-bottom:10px;">
 								<button type="button" class="qb-price-adjust-sign" data-sign="-" style="flex:1;padding:8px;border-radius:6px;border:1px solid var(--border-color);background:var(--subtle-fg);font-weight:700;cursor:pointer;">− Discount</button>
 								<button type="button" class="qb-price-adjust-sign" data-sign="+" style="flex:1;padding:8px;border-radius:6px;border:1px solid var(--border-color);background:var(--subtle-fg);font-weight:700;cursor:pointer;">+ Markup</button>
 							</div>
 							<div style="display:flex;align-items:center;gap:6px;margin-bottom:12px;">
-								<input type="number" class="qb-price-adjust-input form-control" min="0" max="100" step="0.5" placeholder="0" style="flex:1;">
+								<input type="number" class="qb-price-adjust-input form-control" min="0" max="100" step="any" placeholder="0" style="flex:1;">
 								<span style="font-weight:600;">%</span>
+							</div>
+							<!-- Or work back from the total the customer is to pay: the % above is derived from it
+								 (and typing a % shows the total it gives). Only the type and % are saved. -->
+							<div style="border-top:1px solid var(--border-color);padding-top:10px;margin-bottom:12px;">
+								<div style="font-size:12px;font-weight:600;margin-bottom:6px;">Or sell at a total (inc. VAT)</div>
+								<div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-muted);margin-bottom:6px;">
+									<span>Total before adjustment</span>
+									<span class="qb-price-adjust-current">—</span>
+								</div>
+								<input type="number" class="qb-price-adjust-target form-control" min="0" step="any" placeholder="Target total, e.g. 34559">
+								<div class="qb-price-adjust-target-note" style="font-size:11px;color:var(--text-muted);margin-top:6px;min-height:15px;"></div>
 							</div>
 							<div style="display:flex;justify-content:space-between;gap:8px;">
 								<button type="button" class="qb-price-adjust-clear" style="background:none;border:none;color:var(--text-muted);font-size:12px;cursor:pointer;padding:0;">Clear</button>
