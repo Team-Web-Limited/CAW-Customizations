@@ -1444,11 +1444,14 @@ def get_quotations_page(search=None, status=None, customer=None, from_date=None,
     # the walk-in's own name for Cash (party_name is always the shared Cash
     # Customer record so it carries no per-walk-in identity), the linked
     # Customer's name for Invoice.
+    # Cash vs Invoice by the customer's billing type: walk-ins on the shared record and the Cash
+    # Customers registered for them both count as Cash.
+    cash_parties = _cash_customer_names({row.get("party_name") for row in rows})
     for row in rows:
-        is_cash = row.get("party_name") == SHARED_CASH_CUSTOMER_NAME
+        is_cash = row.get("party_name") in cash_parties
         row["customer_type"] = "Cash" if is_cash else "Invoice"
         row["display_name"] = (
-            row.get("custom_customer_name") or SHARED_CASH_CUSTOMER_NAME
+            row.get("custom_customer_name") or row.get("customer_name") or row.get("party_name")
             if is_cash
             else (row.get("customer_name") or row.get("party_name"))
         )
@@ -2179,7 +2182,22 @@ def search_cash_customer_history(txt=None, limit=8):
     if not txt or len(txt) < 2:
         return []
 
+    # Registered Cash Customers first (every walk-in now gets one on their first quotation),
+    # then walk-ins still only on the shared record's quotations.
     rows = frappe.db.sql(
+        """
+        SELECT customer_name, mobile_no AS phone_number, tax_id AS customer_pin, modified
+        FROM `tabCustomer`
+        WHERE custom_customer_billing_type = 'Cash Customer'
+            AND name != %(shared_customer)s
+            AND disabled = 0
+            AND (customer_name LIKE %(txt)s OR IFNULL(mobile_no, '') LIKE %(txt)s)
+        ORDER BY modified DESC
+        LIMIT 50
+        """,
+        {"shared_customer": SHARED_CASH_CUSTOMER_NAME, "txt": f"%{txt}%"},
+        as_dict=True,
+    ) + frappe.db.sql(
         """
         SELECT
             custom_customer_name AS customer_name,
@@ -3041,6 +3059,98 @@ def cancel_job_card(job_card_name):
     return job_card.name
 
 
+def _cash_customer_names(customers):
+    """Which of these Customers are cash customers: the shared walk-in record, plus every
+    Customer of billing type Cash Customer (walk-ins are registered as those now)."""
+    customers = [c for c in (customers or []) if c]
+    if not customers:
+        return set()
+    names = set(frappe.get_all(
+        "Customer",
+        filters={"name": ["in", customers], "custom_customer_billing_type": "Cash Customer"},
+        pluck="name",
+    ))
+    if SHARED_CASH_CUSTOMER_NAME in customers:
+        names.add(SHARED_CASH_CUSTOMER_NAME)
+    return names
+
+
+def _resolve_cash_customer(phone, name, pin):
+    """The Cash Customer a cash-mode quotation is billed to — every walk-in is a registered
+    customer of type Cash Customer, registered here in the background on their first quotation.
+
+    Found by phone (one customer per mobile number), then by KRA PIN; otherwise a new Cash
+    Customer is registered with the typed name (the phone number when none was typed), phone and
+    PIN. A typed name or PIN that differs from the matched record is refused, the same way
+    _assert_cash_customer_phone_identity guards the quotation history, so one person can't fork in
+    two; a PIN typed for a record that has none is added to it. A phone or PIN belonging to an
+    Invoice Customer is refused — they are quoted as invoice customers."""
+    from crystal_alluminium_works.customer_handler import normalize_kra_pin, normalize_phone
+
+    name = (name or "").strip()
+    pin = normalize_kra_pin(pin)
+
+    match = frappe.db.sql(
+        """
+        SELECT name FROM `tabCustomer`
+        WHERE REPLACE(REPLACE(REPLACE(IFNULL(mobile_no, ''), ' ', ''), '-', ''), '+', '') = %(phone)s
+          AND name != %(shared)s
+        ORDER BY creation LIMIT 1
+        """,
+        {"phone": normalize_phone(phone), "shared": SHARED_CASH_CUSTOMER_NAME},
+    )
+    matched_by = "phone"
+    if not match and pin:
+        match = frappe.db.sql(
+            """
+            SELECT name FROM `tabCustomer`
+            WHERE UPPER(REPLACE(TRIM(IFNULL(tax_id, '')), ' ', '')) = %(pin)s AND name != %(shared)s
+            ORDER BY creation LIMIT 1
+            """,
+            {"pin": pin, "shared": SHARED_CASH_CUSTOMER_NAME},
+        )
+        matched_by = "KRA PIN"
+
+    if match:
+        customer = frappe.get_doc("Customer", match[0][0])
+        label = phone if matched_by == "phone" else pin
+        if customer.custom_customer_billing_type != "Cash Customer":
+            frappe.throw(
+                f"{matched_by} {frappe.bold(label)} belongs to invoice customer "
+                f"{frappe.bold(customer.customer_name)} — quote them as an Invoice Customer instead."
+            )
+        if matched_by == "phone":
+            if name and name.lower() != (customer.customer_name or "").strip().lower():
+                frappe.throw(
+                    f"Phone Number {phone} is already registered to {frappe.bold(customer.customer_name)}. "
+                    "Use that name, or correct the customer in Customer Manager."
+                )
+            on_file_pin = normalize_kra_pin(customer.tax_id)
+            if pin and on_file_pin and pin != on_file_pin:
+                frappe.throw(
+                    f"Phone Number {phone} is registered under KRA PIN {frappe.bold(on_file_pin)}. "
+                    "Use that PIN, or correct the customer in Customer Manager."
+                )
+            if pin and not on_file_pin:
+                customer.tax_id = pin  # a PIN on another customer is refused by customer_handler
+                customer.save(ignore_permissions=True)
+        return customer.name
+
+    defaults = get_customer_registration_defaults()
+    customer = frappe.get_doc({
+        "doctype": "Customer",
+        "customer_name": name or phone,
+        "customer_type": "Individual",
+        "custom_customer_billing_type": "Cash Customer",
+        "customer_group": defaults.get("customer_group"),
+        "territory": defaults.get("territory"),
+        "tax_id": pin,
+        "mobile_no": phone,
+    })
+    customer.insert(ignore_permissions=True)
+    return customer.name
+
+
 def _assert_cash_customer_phone_identity(phone, name, pin, exclude_quotation=None):
     """A walk-in's phone number is the identity key for cash-mode quotations —
     the same number should always resolve back to the same person. This
@@ -3193,9 +3303,9 @@ def _save_quotation_from_builder(
         _assert_cash_customer_phone_identity(
             customer_phone, customer_name, customer_pin, exclude_quotation=quotation_name
         )
-        # Resolve server-side rather than trusting the client's customer value —
-        # every cash quotation belongs to the one shared walk-in Customer record.
-        customer = get_or_create_shared_cash_customer().name
+        # Resolve server-side rather than trusting the client's customer value: the walk-in's
+        # own Cash Customer record, found by phone then PIN, or registered from what was typed.
+        customer = _resolve_cash_customer(customer_phone, customer_name, customer_pin)
 
     if any(item.get("category") == "Aluminium" for item in items):
         _ensure_aluminium_color_storage()
@@ -6630,13 +6740,15 @@ def get_payments_page(search=None, payment_method=None, from_date=None, to_date=
             job_card_walkin_names[jc.name] = jc.customer_name
         job_card_walkin_phones[jc.name] = jc.phone_number or quotation_walkin_phones.get(jc.quotation)
 
+    cash_customers = _cash_customer_names({row.get("customer") for row in rows})
     for row in rows:
-        is_cash = row.get("customer") == SHARED_CASH_CUSTOMER_NAME
+        is_cash = row.get("customer") in cash_customers
         row["customer_type"] = "Cash" if is_cash else "Invoice"
         if is_cash:
             row["display_name"] = (
                 quotation_walkin_names.get(row.get("quotation"))
                 or job_card_walkin_names.get(row.get("job_card"))
+                or (customer_names.get(row.get("customer")) if row.get("customer") != SHARED_CASH_CUSTOMER_NAME else None)
                 or SHARED_CASH_CUSTOMER_NAME
             )
             # The Payments row's own customer_phone (captured directly for the Create
@@ -6647,6 +6759,7 @@ def get_payments_page(search=None, payment_method=None, from_date=None, to_date=
                 row.get("customer_phone")
                 or job_card_walkin_phones.get(row.get("job_card"))
                 or quotation_walkin_phones.get(row.get("quotation"))
+                or customer_phones.get(row.get("customer"))
                 or ""
             )
         else:
@@ -6752,13 +6865,15 @@ def _get_payments_report_data(search, payment_method, from_date, to_date):
 
     totals_by_method = {}
     grand_total = 0
+    cash_customers = _cash_customer_names({row.get("customer") for row in rows})
     for row in rows:
-        is_cash = row.get("customer") == SHARED_CASH_CUSTOMER_NAME
+        is_cash = row.get("customer") in cash_customers
         row["customer_type"] = "Cash" if is_cash else "Invoice"
         row["display_name"] = (
             (
                 quotation_walkin_names.get(row.get("quotation"))
                 or job_card_walkin_names.get(row.get("job_card"))
+                or (customer_names.get(row.get("customer")) if row.get("customer") != SHARED_CASH_CUSTOMER_NAME else None)
                 or SHARED_CASH_CUSTOMER_NAME
             ) if is_cash
             else (customer_names.get(row.get("customer")) or row.get("customer"))
