@@ -199,8 +199,8 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
         /* Keeps the glass table's fixed-width columns from squeezing Item to a word per line. */
         min-width: 60px;
     }}
-    /* Quotation / Sales Invoice Glass section: no Polish Sides / Holes / Notches columns, so the
-       table has room for larger text. */
+    /* Quotation / Sales Invoice item tables print at 14px: one table per section, and the Glass
+       one without Polish Sides / Holes / Notches, so they have room for it. */
     .cq-table.cq-table-lg th,
     .cq-table.cq-table-lg td {{
         font-size: 14px;
@@ -255,7 +255,7 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
 {{% if has_ceiling_parent.value %}}
 {{% set ceiling_columns = ceiling_component_labels if has_ceiling_bundle.value else ceiling_single_labels.items %}}
 <div style="margin: 10px 0 8px 0; font-size: 13px; font-weight: bold; color: #2c3e50; text-transform: uppercase;">Ceiling Items</div>
-<table class="cq-table">
+<table class="cq-table{{{{ ' cq-table-lg' if sectioned_items else '' }}}}">
     <thead>
         <tr>
             <th style="text-align: center; white-space: nowrap;">No</th>
@@ -357,7 +357,7 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
 {{% if section != 'All' %}}
 <div style="margin: 10px 0 8px 0; font-size: 13px; font-weight: bold; color: #2c3e50; text-transform: uppercase;">{{{{ section }}}} Items</div>
 {{% endif %}}
-<table class="cq-table{{{{ ' cq-table-lg' if large_glass_table else '' }}}}">
+<table class="cq-table{{{{ ' cq-table-lg' if sectioned_items else '' }}}}">
     <thead>
         <tr>
             <th style="text-align: left; white-space: nowrap;">Code</th>
