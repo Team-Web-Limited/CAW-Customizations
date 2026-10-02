@@ -3,7 +3,7 @@ import json
 import frappe
 from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 
-PRODUCT_CATEGORY_OPTIONS = "\nAluminium\nGlass\nFittings\nCeiling\nRubber\nSilicone"
+PRODUCT_CATEGORY_OPTIONS = "\nAluminium\nGlass\nFittings\nCeiling\nRubber\nSilicone\nMiscellaneous"
 GLASS_SALE_MODE_OPTIONS = "Resized\nFull Sheet\nSheet"
 ITEM_GLASS_TYPE_OPTIONS = "Ordinary\nLaminated\nReady Laminated\nToughened"
 GLASS_POLISH_TYPE_OPTIONS = "\n4-6\n8-10\n14-35"

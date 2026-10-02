@@ -147,7 +147,7 @@ function render_quotations_table(page, rows) {
 				</td>
 				<td style="padding:12px 16px; font-weight:500;">${quotation.display_name || '—'}</td>
 				<td style="padding:12px 16px;">${quotation.transaction_date ? frappe.datetime.str_to_user(quotation.transaction_date) : '—'}</td>
-				<td style="padding:12px 16px; text-align:right; font-weight:600;">${format_currency(quotation.grand_total || 0, quotation.currency || 'KES')}</td>
+				<td style="padding:12px 16px; text-align:right; font-weight:600;">${format_currency(quotation.display_total || 0, quotation.currency || 'KES')}</td>
 				<td style="padding:12px 16px; text-align:center;">
 					<span style="background:${status_color}20; color:${status_color}; padding:4px 12px; border-radius:12px; font-size:12px; font-weight:600;">
 						${quotation.status || '—'}

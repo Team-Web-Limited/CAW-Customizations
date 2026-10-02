@@ -83,6 +83,10 @@ function get_shared_cash_customer() {
 	return qb_shared_cash_customer_promise;
 }
 const QB_VAT_RATE = 0.16;
+// The non-stock wildcard item: sold with a free description and a VAT-inclusive price.
+// Mirrors MISCELLANEOUS_ITEM_CODE / MISCELLANEOUS_ITEM_GROUP in api.py.
+const QB_MISCELLANEOUS_ITEM_CODE = 'A58';
+const QB_MISCELLANEOUS_CATEGORY = 'Miscellaneous';
 
 function qb_user_can_edit_rate() {
 	return frappe.user.has_role('System Manager') || frappe.session.user === 'Administrator';
@@ -416,6 +420,10 @@ function bind_events(page) {
 		}
 		if (category === 'Ceiling') {
 			open_ceiling_add_choice(page);
+			return;
+		}
+		if (category === QB_MISCELLANEOUS_CATEGORY) {
+			open_miscellaneous_item_dialog(page, null);
 			return;
 		}
 		add_item_row(page, category);
@@ -2274,7 +2282,66 @@ function render_items_table(page) {
 	});
 }
 
+// Add or edit a Miscellaneous row: Description, Qty and a VAT-inclusive Price per unit, all
+// typed in. No item picker, price list or stock — the item is always A58, and the description
+// becomes the printed item name (api.py sets it on save).
+function open_miscellaneous_item_dialog(page, item) {
+	let is_new = !item;
+	let d = new frappe.ui.Dialog({
+		title: is_new ? 'Add A58 Item' : 'Edit A58 Item',
+		fields: [
+			{ fieldtype: 'Small Text', fieldname: 'description', label: 'Description', reqd: 1, default: item ? item.description : '' },
+			{ fieldtype: 'Section Break' },
+			{ fieldtype: 'Float', fieldname: 'qty', label: 'Qty', reqd: 1, default: item ? item.qty : 1 },
+			{ fieldtype: 'Column Break' },
+			{ fieldtype: 'Currency', fieldname: 'rate', label: 'Price per unit (VAT inclusive)', reqd: 1, default: item ? item.rate : 0 },
+			{ fieldtype: 'Section Break' },
+			{ fieldtype: 'HTML', fieldname: 'amount_html' }
+		],
+		primary_action_label: is_new ? 'Add Item' : 'Save',
+		primary_action: function (values) {
+			let description = (values.description || '').trim();
+			if (!description || flt(values.qty) <= 0 || flt(values.rate) <= 0) {
+				frappe.msgprint(__('Enter a description, a quantity and a price.'));
+				return;
+			}
+			let target = item || {
+				id: frappe.utils.get_random(8),
+				category: QB_MISCELLANEOUS_CATEGORY,
+				price_list: 'Retail',
+				uom: 'Nos'
+			};
+			Object.assign(target, {
+				item_code: QB_MISCELLANEOUS_ITEM_CODE,
+				item_name: description,
+				description: description,
+				qty: flt(values.qty),
+				pcs: flt(values.qty),
+				rate: flt(values.rate)
+			});
+			target.amount = calculate_item_amount(target);
+			if (is_new) window.qb_state.items.push(target);
+			d.hide();
+			render_items_table(page);
+		}
+	});
+	let refresh_amount = function () {
+		let total = flt(d.get_value('qty')) * flt(d.get_value('rate'));
+		d.fields_dict.amount_html.$wrapper.html(
+			`<div style="text-align:right;font-weight:600;">Amount (VAT inclusive): ${format_currency(total, 'KES')}</div>`
+		);
+	};
+	d.fields_dict.qty.$input.on('input change', refresh_amount);
+	d.fields_dict.rate.$input.on('input change', refresh_amount);
+	d.show();
+	refresh_amount();
+}
+
 function open_item_editor(page, item, is_new = false) {
+	if (item.category === QB_MISCELLANEOUS_CATEGORY) {
+		open_miscellaneous_item_dialog(page, item);
+		return;
+	}
 	let is_glass = item.category === 'Glass';
 	let is_ceiling = item.category === 'Ceiling';
 	if (is_ceiling && !item.ceiling_mode) {
@@ -4677,6 +4744,7 @@ function get_builder_html() {
 					<button class="qb-add-btn" data-category="Rubber">+ Rubber</button>
 					<button class="qb-nav-btn primary qb-edit-simple-details-btn" data-category="Rubber" style="display:none;" title="Reopen the Fill Details grid for the Rubber items already added">✎ Edit Rubber Details</button>
 					<button class="qb-add-btn" data-category="Silicone">+ Silicone</button>
+					<button class="qb-add-btn" data-category="Miscellaneous">+ A58</button>
 					<button class="qb-nav-btn primary qb-edit-simple-details-btn" data-category="Silicone" style="display:none;" title="Reopen the Fill Details grid for the Silicone items already added">✎ Edit Silicone Details</button>
 				</div>
 

@@ -862,6 +862,13 @@ def _item_has_field(fieldname):
 # Mirrored as QB_MANUAL_PRICE_ALUMINIUM_ITEMS in quotation_builder.js.
 OWNERS_GOOD_ITEM_CODE = "G85"
 
+# "Miscellaneous": one non-stock wildcard item for selling anything that isn't in the item
+# master. The Quotation Builder's + Miscellaneous button takes a free description and a
+# VAT-inclusive price per unit; the description becomes the row's item name so it prints.
+# Mirrored as QB_MISCELLANEOUS_ITEM_CODE in quotation_builder.js.
+MISCELLANEOUS_ITEM_CODE = "A58"
+MISCELLANEOUS_ITEM_GROUP = "Miscellaneous"
+
 
 def _stock_rows_only(rows):
     """Drop rows whose item isn't a stock item (e.g. Owners Good) — ERPNext rejects them on a
@@ -1431,6 +1438,7 @@ def get_quotations_page(search=None, status=None, customer=None, from_date=None,
         "transaction_date",
         "valid_till",
         "grand_total",
+        "total_taxes_and_charges",
         "currency",
         "status",
         "docstatus",
@@ -1457,6 +1465,13 @@ def get_quotations_page(search=None, status=None, customer=None, from_date=None,
     for row in rows:
         is_cash = row.get("party_name") in cash_parties
         row["customer_type"] = "Cash" if is_cash else "Invoice"
+        # Quotations carry no tax row — VAT (16%) is added on top for display, as on the
+        # printed quotation. A quotation that does have a tax row already includes it.
+        row["display_total"] = flt(
+            row.get("grand_total") if flt(row.get("total_taxes_and_charges"))
+            else flt(row.get("grand_total")) * (1 + VAT_RATE),
+            2,
+        )
         row["display_name"] = (
             row.get("custom_customer_name") or row.get("customer_name") or row.get("party_name")
             if is_cash
@@ -3377,6 +3392,15 @@ def _save_quotation_from_builder(
 
         if item.get("description"):
             row_data["description"] = item.get("description")
+
+        if category == MISCELLANEOUS_ITEM_GROUP:
+            description = (item.get("description") or "").strip()
+            if not description:
+                frappe.throw("Enter a description for the Miscellaneous item.")
+            if frappe.utils.flt(item.get("rate")) <= 0:
+                frappe.throw(f"Enter a price for the Miscellaneous item '{description}'.")
+            row_data["item_code"] = MISCELLANEOUS_ITEM_CODE
+            row_data["item_name"] = description[:140]
         
         # Glass-specific custom fields
         if item.get("category") == "Glass":
