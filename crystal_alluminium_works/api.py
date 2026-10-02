@@ -769,6 +769,21 @@ def _is_cutoff_sheet(sheet):
     return bool((sheet or {}).get("is_cutoff"))
 
 
+CUTOFF_SHEET_SIZE = "1 x 1"
+
+
+def _normalize_cutoff_sheets(consumption):
+    """The 1 x 1 size exists only as the Cutoffs placeholder. A sheet row recorded against it
+    as a real item (e.g. "RGL7, 1 x 1, 1 pc") would deduct a token 1 sft instead of the sheet
+    actually cut, so any 1 x 1 row is stored as Cutoffs: no pcs, nothing deducted. The JC
+    Operations modal already links the two fields; this covers older pages and direct calls."""
+    for sheets in (consumption or {}).values():
+        for sheet in sheets or []:
+            if str(sheet.get("size") or "").replace(" ", "").lower() == CUTOFF_SHEET_SIZE.replace(" ", ""):
+                sheet.update({"item_consumed": "Cutoffs", "size": CUTOFF_SHEET_SIZE, "pcs": None, "is_cutoff": 1})
+    return consumption
+
+
 def _collapse_cutoff_deductions(rows):
     """Fold JC Operations' Cutoffs placeholders into one count per item for Stock Deducted.
 
@@ -8975,13 +8990,14 @@ def save_jc_operations_consumption(job_card_name, consumption_json):
     job_card = frappe.get_doc("CAW Job Card", job_card_name)
     _assert_job_card_not_frozen(job_card)
 
+    consumption = _normalize_cutoff_sheets(json.loads(consumption_json or "{}"))
+    consumption_json = json.dumps(consumption)
     frappe.db.set_value("CAW Job Card", job_card_name, "custom_sheet_consumption_json", consumption_json)
 
     if not job_card.quotation:
         return
-        
+
     quotation_doc = frappe.get_doc("Quotation", job_card.quotation)
-    consumption = json.loads(consumption_json or "{}")
     
     company = _get_default_stock_company()
     warehouse = _get_default_receiving_warehouse(company)

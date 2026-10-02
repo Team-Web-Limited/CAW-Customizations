@@ -793,9 +793,10 @@ function open_jc_operations_modal(page, job_card, quotation) {
 			let $pcs = $row.find('.jc-edit-pcs');
 			let $produces = $row.find('.jc-edit-produces');
 			if (is_cutoff) {
-				$size.val('').prop('disabled', true);
+				$size.val(JC_CUTOFF_SIZE_VALUE).prop('disabled', true);
 				$pcs.val('').prop('disabled', true).attr('placeholder', 'N/A');
 			} else {
+				if ($size.val() === JC_CUTOFF_SIZE_VALUE) $size.val('');
 				$size.prop('disabled', false);
 				$pcs.prop('disabled', false).attr('placeholder', '');
 			}
@@ -899,6 +900,8 @@ function open_jc_operations_modal(page, job_card, quotation) {
 				$size.val(JC_CUTOFF_SIZE_VALUE).prop('disabled', true);
 				$pcs.val('').prop('disabled', true).attr('placeholder', 'N/A');
 			} else {
+				// 1 x 1 only ever means Cutoffs, so a real item can't keep it.
+				if ($size.val() === JC_CUTOFF_SIZE_VALUE) $size.val('');
 				$size.prop('disabled', false);
 				$pcs.prop('disabled', false).attr('placeholder', '');
 			}
@@ -935,7 +938,16 @@ function open_jc_operations_modal(page, job_card, quotation) {
 			update_produces_visibility();
 			update_ledger_balance();
 		});
-		d.$wrapper.on('change', '.jc-ledger-size', update_ledger_balance);
+		// Size 1 x 1 and Consumed "Cutoffs" are the same thing: picking one sets the other, so a
+		// real glass item is never recorded against the 1 x 1 placeholder (which would deduct a
+		// token 1 sft instead of the sheet actually cut).
+		d.$wrapper.on('change', '.jc-ledger-size', function() {
+			if ($(this).val() === JC_CUTOFF_SIZE_VALUE) {
+				d.$wrapper.find('.jc-ledger-consumed').val(JC_CUTOFF_ITEM_CONSUMED);
+				update_produces_visibility();
+			}
+			update_ledger_balance();
+		});
 
 		d.$wrapper.on('click', '.jc-ledger-add-btn', function() {
 			let consumed = (d.$wrapper.find('.jc-ledger-consumed').val() || '').trim();
@@ -1000,6 +1012,12 @@ function open_jc_operations_modal(page, job_card, quotation) {
 		});
 
 		d.$wrapper.on('change awesomplete-selectcomplete input', '.jc-edit-consumed', sync_edit_row_fields);
+		d.$wrapper.on('change', '.jc-edit-size', function() {
+			if ($(this).val() === JC_CUTOFF_SIZE_VALUE) {
+				d.$wrapper.find('.jc-ledger-edit-row .jc-edit-consumed').val(JC_CUTOFF_ITEM_CONSUMED);
+				sync_edit_row_fields();
+			}
+		});
 
 		d.$wrapper.on('keydown', '.jc-ledger-edit-row input, .jc-ledger-edit-row select', function(e) {
 			if (e.key === 'Enter') {

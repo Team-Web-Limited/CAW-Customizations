@@ -2046,10 +2046,15 @@ function setup_price_adjustment_controls(page) {
 			};
 			$current.text(format_currency(base.grand, 'KES'));
 			refresh_target_from_percent();
-		}).catch(function () {
+		}).catch(function (e) {
 			if (seq !== base_seq) return;
 			$current.text('—');
-			show_note('Could not price the quotation; the % still works.', true);
+			// The server's reason (whatever would stop Generate Quotation), e.g. a missing phone
+			// number or a glass row without a size — preview_with throws it as the Error message.
+			let reason = (e && e.message && e.message !== 'No preview') ? e.message.trim() : '';
+			show_note(reason
+				? `Could not price the quotation: ${reason} The % still works.`
+				: 'Could not price the quotation; the % still works.', true);
 		});
 	}
 
@@ -2101,9 +2106,10 @@ function setup_price_adjustment_controls(page) {
 				show_note(`${adjustment.type === '-' ? 'Discount' : 'Markup'} of ${adjustment.percent}% → total ${format_currency(second.grand, 'KES')}`
 					+ (Math.abs(off) >= 0.01 ? ` (${off > 0 ? '+' : '−'}${format_currency(Math.abs(off), 'KES')} from rounding)` : ''));
 			});
-		}).catch(function () {
+		}).catch(function (e) {
 			if (seq !== target_seq) return;
-			show_note('Could not work out the % — try again.', true);
+			let reason = (e && e.message && e.message !== 'No preview') ? e.message.trim() : '';
+			show_note(reason ? `Could not work out the %: ${reason}` : 'Could not work out the % — try again.', true);
 		});
 	}
 
