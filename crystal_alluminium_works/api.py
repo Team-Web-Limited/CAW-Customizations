@@ -5432,6 +5432,13 @@ def get_ceiling_board_item_codes():
 
 
 @frappe.whitelist()
+def is_cash_customer(customer=None):
+    """For print templates (which can't read the Customer directly): is this a cash customer by
+    billing type — the same rule that picks the cash invoice series (sales_invoice_handler)."""
+    return bool(customer) and customer in _cash_customer_names([customer])
+
+
+@frappe.whitelist()
 def get_aluminium_colors():
     _ensure_aluminium_color_doctype()
     return frappe.get_all(

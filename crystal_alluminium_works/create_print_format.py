@@ -129,6 +129,9 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
             Due Date: {{{{ frappe.utils.formatdate(doc.due_date) }}}}
         </div>
         {{% endif %}}
+        {{# A cash customer's invoice prints as a Cash Sale, with a Sale No (billing type, as in
+           api.is_cash_customer). Credit notes and invoice customers are unchanged. #}}
+        {{% set is_cash_sale = doc.doctype == 'Sales Invoice' and not doc.get('is_return') and frappe.call('crystal_alluminium_works.api.is_cash_customer', customer=doc.customer) %}}
         {{% if doc.doctype == 'Quotation' %}}
         {{% set quote_name_parts = doc.name.split('-') %}}
         <div style="margin-top: 10px; font-size: 14px; font-weight: bold; color: #000; text-transform: uppercase; white-space: nowrap;">
@@ -137,7 +140,7 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
         {{% elif doc.doctype == 'Sales Invoice' and not doc.get('is_return') %}}
         <!-- Same bold one-line style as the Quotation's Quote No. -->
         <div style="margin-top: 10px; font-size: 14px; font-weight: bold; color: #000; text-transform: uppercase; white-space: nowrap;">
-            Invoice No: {{{{ doc.name }}}}
+            {{{{ 'Sale No' if is_cash_sale else 'Invoice No' }}}}: {{{{ doc.name }}}}
         </div>
         {{% else %}}
         <div style="color: #7f8c8d; font-size: 12px; text-transform: uppercase; margin-top: 10px;">{ref_label}:</div>
@@ -157,7 +160,7 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
 </div>
 {{% if doc.doctype in ('Sales Invoice', 'Quotation') %}}
 <div class="text-center" style="margin-bottom: 20px; font-size: 26px; font-weight: bold; color: #2c3e50; text-transform: uppercase; letter-spacing: 1px;">
-    {{{{ ('Credit Note' if doc.get('is_return') else 'Invoice') if doc.doctype == 'Sales Invoice' else 'Quotation' }}}}
+    {{{{ ('Credit Note' if doc.get('is_return') else ('Cash Sale' if is_cash_sale else 'Invoice')) if doc.doctype == 'Sales Invoice' else 'Quotation' }}}}
 </div>
 {{% else %}}
 <div style="margin-bottom: 20px;"></div>
@@ -1046,7 +1049,7 @@ def build_crystal_job_card_print_format_html():
             <th style="text-align: center; white-space: nowrap;">No</th>
             <th style="text-align: center; white-space: nowrap;">Width</th>
             <th style="text-align: center; white-space: nowrap;">Height</th>
-            <th style="text-align: center; white-space: nowrap;">Polish Sides</th>
+            <th style="text-align: center; white-space: nowrap;" title="W = sides along the width, H = sides along the height">Polish Sides (W/H)</th>
             <th style="text-align: center; white-space: nowrap;">Holes</th>
             <th style="text-align: center; white-space: nowrap;">Notches</th>
         </tr>
@@ -1084,7 +1087,12 @@ def build_crystal_job_card_print_format_html():
                 <td style="text-align: center; white-space: nowrap;">{{ parent.custom_numbering or '-' }}</td>
                 <td style="text-align: center; white-space: nowrap;">{{ format_dimension(parent.custom_width_mm, parent.custom_dimension_uom) }}</td>
                 <td style="text-align: center; white-space: nowrap;">{{ format_dimension(parent.custom_height_mm, parent.custom_dimension_uom) }}</td>
-                <td style="text-align: center; white-space: nowrap;">{% if polish_sides > 0 %}{{ polish_sides }}{% else %}-{% endif %}</td>
+                {# Which edges to polish: W = sides along the width (top/bottom), H = sides along the
+                   height (left/right), e.g. "2W + 2H" for all four, "1W" for one long edge. #}
+                {% set polish_parts = [] %}
+                {% if width_sides > 0 %}{% set polish_parts = polish_parts + [width_sides ~ 'W'] %}{% endif %}
+                {% if height_sides > 0 %}{% set polish_parts = polish_parts + [height_sides ~ 'H'] %}{% endif %}
+                <td style="text-align: center; white-space: nowrap;">{{ polish_parts|join(' + ') if polish_parts else '-' }}</td>
                 <td style="text-align: center; white-space: nowrap;">{% if holes > 0 %}{{ holes }}{% else %}-{% endif %}</td>
                 <td style="text-align: center; white-space: nowrap;">{% if notches > 0 %}{{ notches }}{% else %}-{% endif %}</td>
             </tr>
