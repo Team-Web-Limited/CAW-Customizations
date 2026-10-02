@@ -349,10 +349,11 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
     {{% endif %}}
 {{% endfor %}}
 {{% if section_rows.items %}}
-{{# Quotations and Sales Invoices print glass in its own section without the Polish Sides / Holes /
-   Notches columns (their charges are still in the row's Amount) and at 14px. The combined table
-   other documents print (Sales Order) keeps those columns. #}}
-{{% set show_glass_services = section_rows.glass and not sectioned_items %}}
+{{# Sales Invoices print glass in its own section without the Polish Sides / Holes / Notches
+   columns (their charges are still in the row's Amount). Quotations keep them, headed PS / HL /
+   NT to fit the 14px table, as does the combined table Sales Orders print. #}}
+{{% set show_glass_services = section_rows.glass and (not sectioned_items or doc.doctype == 'Quotation') %}}
+{{% set short_glass_service_headers = doc.doctype == 'Quotation' %}}
 {{% set large_glass_table = section_rows.glass and sectioned_items %}}
 {{% if section != 'All' %}}
 <div style="margin: 10px 0 8px 0; font-size: 13px; font-weight: bold; color: #2c3e50; text-transform: uppercase;">{{{{ section }}}} Items</div>
@@ -386,9 +387,9 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
             <th style="text-align: right; white-space: nowrap;">Rate</th>
             <th class="cq-uom" style="text-align: center; white-space: nowrap;">UOM</th>
             {{% if show_glass_services %}}
-            <th style="text-align: left; white-space: nowrap;">Polish Sides</th>
-            <th style="text-align: center; white-space: nowrap;">Holes</th>
-            <th style="text-align: center; white-space: nowrap;">Notches</th>
+            <th style="text-align: left; white-space: nowrap;" title="Polish Sides">{{{{ 'PS' if short_glass_service_headers else 'Polish Sides' }}}}</th>
+            <th style="text-align: center; white-space: nowrap;" title="Holes">{{{{ 'HL' if short_glass_service_headers else 'Holes' }}}}</th>
+            <th style="text-align: center; white-space: nowrap;" title="Notches">{{{{ 'NT' if short_glass_service_headers else 'Notches' }}}}</th>
             {{% endif %}}
             <th style="text-align: right; white-space: nowrap;">Amount</th>
         </tr>
