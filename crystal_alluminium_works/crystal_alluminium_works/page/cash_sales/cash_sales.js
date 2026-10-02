@@ -423,7 +423,7 @@ function get_sales_invoices_html() {
 					<thead>
 						<tr>
 							<th>Customer</th>
-							<th>Invoice Number</th>
+							<th>Sales Number</th>
 							<th>Date</th>
 							<th style="text-align:right;">Amount</th>
 							<th style="text-align:center;">Status</th>

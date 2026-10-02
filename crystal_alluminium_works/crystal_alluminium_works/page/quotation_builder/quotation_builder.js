@@ -3508,22 +3508,46 @@ function open_glass_batch_details_dialog(page, items) {
 	d.show();
 	bind_batch_table_keynav(d);
 
-	// Pieces and UOM Qty (square feet) totals in the footer, like the Add Items table's Total row.
-	// Square feet come from the server (api.get_glass_batch_uom_qty) because sizes are rounded the
-	// way glass is priced; summed as each row would show them (2 decimals) and the sum rounded.
-	let $batch_total = $('<div class="qb-batch-uom-total" style="margin-right:auto;font-weight:600;"></div>');
-	d.$wrapper.find('.modal-footer').prepend($batch_total);
+	// Pieces and UOM Qty (square feet) per item code, then the overall total, in a small table under
+	// the grid. Square feet come from the server (api.get_glass_batch_uom_qty) because sizes are
+	// rounded the way glass is priced; summed as each row would show them (2 decimals).
+	let $batch_total = $('<div class="qb-batch-uom-total" style="margin-top:12px;"></div>');
+	d.fields_dict.batch_table.$wrapper.after($batch_total);
+	function render_batch_totals_table(groups, pieces, total) {
+		if (!groups.length) return '';
+		let body = groups.map(function (g) {
+			return `<tr>
+				<td style="font-weight:600;white-space:nowrap;">${frappe.utils.escape_html(g.item_code || '')}</td>
+				<td>${frappe.utils.escape_html(g.item_name || '')}</td>
+				<td style="text-align:right;">${flt(g.pieces, 2)}</td>
+				<td style="text-align:right;">${flt(g.sqft, 2)}</td>
+			</tr>`;
+		}).join('');
+		return `<table class="table table-bordered" style="width:auto;min-width:420px;margin:0;background:var(--card-bg);">
+			<thead style="background:var(--control-bg);">
+				<tr><th>Code</th><th>Item</th><th style="text-align:right;">Pieces</th><th style="text-align:right;">Qty (sft)</th></tr>
+			</thead>
+			<tbody>${body}</tbody>
+			<tfoot><tr style="font-weight:700;">
+				<td colspan="2">Total</td>
+				<td style="text-align:right;">${flt(pieces, 2)}</td>
+				<td style="text-align:right;">${flt(total, 2)}</td>
+			</tr></tfoot>
+		</table>`;
+	}
 	let batch_total_seq = 0;
 	let batch_total_timer = null;
 	function refresh_batch_totals() {
 		clearTimeout(batch_total_timer);
 		batch_total_timer = setTimeout(function () {
 			let rows = [];
+			let row_items = [];
 			let pieces = 0;
 			d.fields_dict.batch_table.$wrapper.find('tbody tr').each(function () {
 				let $row = $(this);
 				let it = items.find(function (x) { return x.id === $row.data('id'); });
 				if (!it) return;
+				row_items.push(it);
 				let val = function (field) { return $row.find(`[data-field="${field}"]`).val(); };
 				let row = {
 					item_code: it.item_code,
@@ -3542,11 +3566,25 @@ function open_glass_batch_details_dialog(page, items) {
 			frappe.xcall('crystal_alluminium_works.api.get_glass_batch_uom_qty', { rows: JSON.stringify(rows) })
 				.then(function (sqft) {
 					if (seq !== batch_total_seq) return;
-					let total = (sqft || []).reduce(function (sum, v) { return sum + format_review_number(v, 2); }, 0);
-					$batch_total.text(`Total — Pieces: ${flt(pieces, 2)} · UOM Qty: ${flt(total, 2)} Square Foot`);
+					let total = 0;
+					let groups = [];
+					let by_code = {};
+					rows.forEach(function (row, i) {
+						let row_sqft = format_review_number((sqft || [])[i] || 0, 2);
+						let sized = flt(row.width_mm) > 0 && flt(row.height_mm) > 0;
+						let g = by_code[row.item_code];
+						if (!g) {
+							g = by_code[row.item_code] = { item_code: row.item_code, item_name: row_items[i].item_name || row.item_code, pieces: 0, sqft: 0 };
+							groups.push(g);
+						}
+						if (sized) g.pieces += row.qty;
+						g.sqft += row_sqft;
+						total += row_sqft;
+					});
+					$batch_total.html(render_batch_totals_table(groups, pieces, total));
 				})
 				.catch(function () {
-					if (seq === batch_total_seq) $batch_total.text('');
+					if (seq === batch_total_seq) $batch_total.html('');
 				});
 		}, 400);
 	}
