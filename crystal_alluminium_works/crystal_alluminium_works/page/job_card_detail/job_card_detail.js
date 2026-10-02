@@ -1624,6 +1624,22 @@ function render_partial_release_cell(context, row) {
 	let remaining = flt(native_full - collected, 3);
 	if (remaining < 0) remaining = 0;
 	let line_amount = partial_line_amount(context, row);
+	// Cut-size / laminated glass whose JC Operations isn't recorded yet: held at 0 so the
+	// rest of the job can be released first.
+	if (context.jc_pending_rows && context.jc_pending_rows.has(row.name) && remaining > 0) {
+		return `
+			<td class="jc-preview-center">
+				<input type="number" class="form-control input-xs jc-release-input"
+					style="width:108px;display:inline-block;text-align:right;"
+					min="0" max="0" step="any" value="0" disabled
+					data-row-name="${jc_escape(row.name || '')}"
+					data-native-full="${native_full}"
+					data-line-amount="${line_amount}"
+					data-remaining="0">
+				<div style="font-size:11px;color:#856404;">Needs JC Operations</div>
+			</td>
+		`;
+	}
 	let disabled = remaining <= 0 ? 'disabled' : '';
     
 	return `
@@ -1829,8 +1845,9 @@ function render_job_card_partial_invoice_ceiling_table(context) {
 	`;
 }
 
-function render_job_card_partial_invoice_preview(quotation) {
+function render_job_card_partial_invoice_preview(quotation, jc_pending_rows) {
 	let context = get_job_card_print_table_context(quotation);
+	context.jc_pending_rows = new Set(jc_pending_rows || []);
 	let main_table = render_job_card_partial_invoice_main_table(context);
 	let ceiling_table = render_job_card_partial_invoice_ceiling_table(context);
 
@@ -1985,7 +2002,7 @@ async function open_partial_invoice_modal(job_card) {
 	};
 
 	let $wrapper = dialog.fields_dict.preview.$wrapper;
-	$wrapper.html(render_job_card_partial_invoice_preview(quotation));
+	$wrapper.html(render_job_card_partial_invoice_preview(quotation, job_card.jc_operations_pending_rows));
 	$wrapper.on('input change', '.jc-release-input', function() {
 		refresh_ceiling_component_preview($(this));
 		update_partial_invoice_summary(dialog, $wrapper);
@@ -2766,7 +2783,11 @@ function render_single_job_card_detail(job_card, quotation, history, sales_invoi
 	if (amendment_pending || glass_ops_pending) {
 		can_edit_job_card = amendment_pending ? false : can_edit_job_card;
 		can_create_invoice = false;
-		can_create_partial_invoice = false;
+		// Pending JC Operations only holds back the glass that needs it (cut-size and
+		// laminated); everything else can still go out on a Partial Invoice. The server
+		// re-checks the rows actually released (api._validate_glass_consumption).
+		can_create_partial_invoice = !amendment_pending && can_create_partial_invoice
+			&& !!(quotation && quotation.has_releasable_items_ready);
 	}
 
 	// A cancelled Job Card is a dead end — no further transactions of any kind against it.
@@ -2895,7 +2916,7 @@ function render_single_job_card_detail(job_card, quotation, history, sales_invoi
 		${glass_ops_pending ? `
 			<div style="margin-bottom:18px; padding:12px 16px; border-radius:8px; background:#fff3cd; border:1px solid #ffeeba; color:#856404; font-size:13px;">
 				<strong>Glass Sheet Consumption Pending</strong><br>
-				Please configure the raw materials/sheets consumed by Cut/Resized and Laminated Glass items via <b>JC Operations</b> to enable releases and billing.
+				Cut-size and laminated glass can't be released until the sheets they consumed are recorded via <b>JC Operations</b>. Other items, including glass sold in sheets, can still be released through <b>Partial Invoice</b>.
 			</div>
 		` : ''}
 

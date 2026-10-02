@@ -2639,6 +2639,7 @@ def get_job_card_detail(name):
     quotation = None
     if job_card.quotation and frappe.db.exists("Quotation", job_card.quotation):
         quotation = frappe.get_doc("Quotation", job_card.quotation)
+    pending_jc_rows = _rows_pending_jc_operations(job_card, quotation) if quotation else []
 
     # Show payment events (amount_paid > 0) plus amendment lifecycle events, which may
     # carry a zero or negative amount. Every change_type written by
@@ -2881,6 +2882,8 @@ def get_job_card_detail(name):
             "creation": job_card.creation,
             "modified": job_card.modified,
             "custom_sheet_consumption_json": job_card.custom_sheet_consumption_json,
+            # Rows the Partial Invoice dialog must hold at 0 until JC Operations is done.
+            "jc_operations_pending_rows": [row.name for row in pending_jc_rows],
         },
         "quotation": {
             "name": quotation.name,
@@ -2891,6 +2894,11 @@ def get_job_card_detail(name):
             "grand_total": quotation.grand_total,
             "rounded_total": quotation.rounded_total,
             "has_releasable_items": _quotation_has_releasable_items(quotation),
+            # Something can go out on a Partial Invoice right now, i.e. a releasable row that
+            # isn't waiting on JC Operations.
+            "has_releasable_items_ready": _quotation_has_releasable_items(
+                quotation, exclude_rows={row.name for row in pending_jc_rows}
+            ),
             "items": [
                 {
                     "name": item.name,
@@ -3606,11 +3614,14 @@ def _create_non_glass_deduction_stock_entry(item_code, qty, warehouse, company, 
     )
 
 
-def _quotation_has_releasable_items(quotation):
+def _quotation_has_releasable_items(quotation, exclude_rows=None):
     """True if any parent row still has something to release on a partial invoice
-    (native-unit remaining qty, including ceiling bundle rows via their sq m)."""
+    (native-unit remaining qty, including ceiling bundle rows via their sq m).
+    exclude_rows: row names to ignore (e.g. glass still waiting on JC Operations)."""
     for row in quotation.items:
         if getattr(row, "custom_auto_generated", 0):
+            continue
+        if exclude_rows and row.name in exclude_rows:
             continue
         remaining = _get_partial_row_native_full(row) - flt(getattr(row, "custom_collected_qty", 0))
         if remaining > 0.0001:
@@ -3731,31 +3742,51 @@ def make_sales_invoice_from_quotation(source_name, releases=None):
     invoice.insert()
     return invoice.name
 
-def _validate_glass_consumption(job_card):
+def _row_needs_jc_operations(row):
+    """Cut-size (Resized/Custom) and laminated glass take their stock out at JC Operations
+    time (sheet consumption / repack), so they can't be released before it's recorded.
+    Everything else — aluminium, fittings, ceiling, and ordinary glass sold in sheets —
+    is deducted at release and needs no JC Operations."""
+    if getattr(row, "custom_product_category", "") != "Glass":
+        return False
+    if getattr(row, "custom_glass_sale_mode", "") in ("Resized", "Custom"):
+        return True
+    return frappe.db.get_value("Item", row.item_code, "custom_glass_type") == "Laminated"
+
+
+def _rows_pending_jc_operations(job_card, quotation=None):
+    """Quotation rows that need JC Operations and don't have their sheet consumption yet."""
     if not job_card.quotation:
-        return
+        return []
     import json
-    quotation = frappe.get_doc("Quotation", job_card.quotation)
+    quotation = quotation or frappe.get_doc("Quotation", job_card.quotation)
     consumption = json.loads(job_card.custom_sheet_consumption_json or "{}")
-    
-    missing = []
+    pending = []
     for row in quotation.items:
-        if getattr(row, "custom_product_category", "") == "Glass":
-            glass_type = frappe.db.get_value("Item", row.item_code, "custom_glass_type")
-            sale_mode = getattr(row, "custom_glass_sale_mode", "")
-            
-            if glass_type == "Laminated" or sale_mode in ("Resized", "Custom"):
-                row_consumption = consumption.get(row.name, [])
-                valid = False
-                for sheet in row_consumption:
-                    if sheet.get("item_consumed") and sheet.get("size") and (_is_cutoff_sheet(sheet) or frappe.utils.flt(sheet.get("pcs")) > 0):
-                        valid = True
-                        break
-                if not valid:
-                    missing.append(row.item_code)
-                    
-    if missing:
-        frappe.throw(f"Cannot release materials. Please configure Glass Sheet Consumption via JC Operations for: {', '.join(missing)}.")
+        if not _row_needs_jc_operations(row):
+            continue
+        configured = any(
+            sheet.get("item_consumed") and sheet.get("size")
+            and (_is_cutoff_sheet(sheet) or frappe.utils.flt(sheet.get("pcs")) > 0)
+            for sheet in consumption.get(row.name, [])
+        )
+        if not configured:
+            pending.append(row)
+    return pending
+
+
+def _validate_glass_consumption(job_card, row_names=None):
+    """Block a release until JC Operations is recorded for the glass that needs it. A full
+    invoice releases every row, so it checks them all; a partial invoice passes the rows it
+    is releasing (row_names), so items that don't need JC Operations can go out first."""
+    pending = _rows_pending_jc_operations(job_card)
+    if row_names is not None:
+        pending = [row for row in pending if row.name in row_names]
+    if pending:
+        frappe.throw(
+            "Cannot release materials. Please configure Glass Sheet Consumption via JC Operations for: "
+            + ", ".join(row.item_code for row in pending) + "."
+        )
 
 @frappe.whitelist()
 def make_sales_invoice_from_job_card(job_card_name):
@@ -4088,7 +4119,6 @@ def make_partial_sales_invoice_from_job_card(job_card_name, releases=None):
         frappe.throw("Please select a valid Job Card.")
 
     job_card = frappe.get_doc("CAW Job Card", job_card_name)
-    _validate_glass_consumption(job_card)
 
     if not job_card.quotation or not frappe.db.exists("Quotation", job_card.quotation):
         frappe.throw("The selected Job Card is not linked to a valid Quotation.")
@@ -4113,6 +4143,9 @@ def make_partial_sales_invoice_from_job_card(job_card_name, releases=None):
 
     if not capped:
         frappe.throw("Enter a quantity to release.")
+
+    # Only the rows being released need their JC Operations done.
+    _validate_glass_consumption(job_card, row_names=set(capped))
 
     invoice_name = make_sales_invoice_from_quotation(job_card.quotation, releases=capped)
     invoice = frappe.get_doc("Sales Invoice", invoice_name)
