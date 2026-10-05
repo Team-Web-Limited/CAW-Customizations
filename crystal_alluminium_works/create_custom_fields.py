@@ -763,6 +763,46 @@ def add_custom_fields():
                 "module": "Crystal Alluminium Works",
             },
         ],
+        # Material Issue rows entered in the desk Stock Entry form: the same category-first entry
+        # as the procurement tables (public/js/stock_entry.js). Glass is issued as sheet size +
+        # sheets, so stock_entry_handler can derive the SFT qty and tag the row "Sheets Consumed"
+        # for the sheet-count ledger; ceiling as board pieces. Shown on Material Issue only.
+        "Stock Entry Detail": [
+            {
+                "fieldname": "custom_product_category",
+                "label": "Product Category",
+                "fieldtype": "Select",
+                "options": PRODUCT_CATEGORY_OPTIONS,
+                "insert_after": "sec_break1",
+                "depends_on": "eval:parent.stock_entry_type=='Material Issue'",
+                "module": "Crystal Alluminium Works",
+            },
+            {
+                "fieldname": "custom_sheet_size",
+                "label": "Sheet Size",
+                "fieldtype": "Select",
+                "options": "",  # filled at runtime from Glass Sheet Config
+                "insert_after": "item_name",
+                "depends_on": "eval:doc.custom_product_category=='Glass' && parent.stock_entry_type=='Material Issue'",
+                "module": "Crystal Alluminium Works",
+            },
+            {
+                "fieldname": "custom_sheet_pcs",
+                "label": "Sheets",
+                "fieldtype": "Float",
+                "insert_after": "custom_sheet_size",
+                "depends_on": "eval:doc.custom_product_category=='Glass' && parent.stock_entry_type=='Material Issue'",
+                "module": "Crystal Alluminium Works",
+            },
+            {
+                "fieldname": "custom_ceiling_pcs",
+                "label": "Pieces",
+                "fieldtype": "Float",
+                "insert_after": "custom_sheet_pcs",
+                "depends_on": "eval:doc.custom_product_category=='Ceiling' && parent.stock_entry_type=='Material Issue'",
+                "module": "Crystal Alluminium Works",
+            },
+        ],
         # Procurement item tables — stock-in fields mirroring the sales-side glass
         # sheet model. For sheet-mode glass the buyer/receiver enters sheet size +
         # pcs and qty (the SFT stock quantity) is computed as sheet_sft * sheet_pcs

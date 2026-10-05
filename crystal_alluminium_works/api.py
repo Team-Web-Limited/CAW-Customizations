@@ -8865,10 +8865,19 @@ def get_glass_stock_ledger(item_code, warehouse, from_date=None, to_date=None):
             "warehouse": warehouse,
             "is_cancelled": 0
         },
-        fields=["name", "posting_date", "posting_time", "voucher_type", "voucher_no", "actual_qty", "qty_after_transaction"],
+        fields=["name", "posting_date", "posting_time", "voucher_type", "voucher_no", "voucher_detail_no", "actual_qty", "qty_after_transaction"],
         order_by="posting_date asc, posting_time asc, creation asc"
     )
-    
+
+    def _rows_for(entry, rows_by_voucher):
+        # Each ledger line comes from one row of its voucher, so read only that row's sheets.
+        # Reading every row of the item counted a document with two rows of the same glass item
+        # (two sheet sizes on one receipt or issue) twice. Older lines without a row link fall
+        # back to all the item's rows.
+        rows = rows_by_voucher.get(entry.voucher_no, [])
+        own = [r for r in rows if r.name == entry.voucher_detail_no]
+        return own or rows
+
     pr_names = list(set([e.voucher_no for e in ledger if e.voucher_type == "Purchase Receipt"]))
     se_names = list(set([e.voucher_no for e in ledger if e.voucher_type == "Stock Entry"]))
     
@@ -8877,7 +8886,7 @@ def get_glass_stock_ledger(item_code, warehouse, from_date=None, to_date=None):
         pr_rows = frappe.get_all(
             "Purchase Receipt Item",
             filters={"parent": ["in", pr_names], "item_code": item_code},
-            fields=["parent", "custom_sheet_size", "custom_sheet_pcs"]
+            fields=["name", "parent", "custom_sheet_size", "custom_sheet_pcs"]
         )
         for r in pr_rows:
             pr_items.setdefault(r.parent, []).append(r)
@@ -8887,7 +8896,7 @@ def get_glass_stock_ledger(item_code, warehouse, from_date=None, to_date=None):
         se_rows = frappe.get_all(
             "Stock Entry Detail",
             filters={"parent": ["in", se_names], "item_code": item_code},
-            fields=["parent", "description"]
+            fields=["name", "parent", "description"]
         )
         for r in se_rows:
             se_items.setdefault(r.parent, []).append(r)
@@ -8903,7 +8912,7 @@ def get_glass_stock_ledger(item_code, warehouse, from_date=None, to_date=None):
         entry_invoice_sft = 0.0
         
         if entry.voucher_type == "Stock Entry":
-            rows = se_items.get(entry.voucher_no, [])
+            rows = _rows_for(entry, se_items)
             for r in rows:
                 desc = r.description or ""
                 import re
@@ -8913,7 +8922,7 @@ def get_glass_stock_ledger(item_code, warehouse, from_date=None, to_date=None):
 
         if not is_laminated:
             if entry.voucher_type == "Purchase Receipt":
-                rows = pr_items.get(entry.voucher_no, [])
+                rows = _rows_for(entry, pr_items)
                 for r in rows:
                     size = (r.custom_sheet_size or "").strip()
                     pcs = frappe.utils.flt(r.custom_sheet_pcs)
@@ -8922,7 +8931,7 @@ def get_glass_stock_ledger(item_code, warehouse, from_date=None, to_date=None):
                         sheet_balance[size] = sheet_balance.get(size, 0) + pcs
                         
             elif entry.voucher_type == "Stock Entry":
-                rows = se_items.get(entry.voucher_no, [])
+                rows = _rows_for(entry, se_items)
                 for r in rows:
                     desc = r.description or ""
                     if "Sheets Consumed: " in desc:

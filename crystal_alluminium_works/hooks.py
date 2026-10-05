@@ -91,6 +91,8 @@ doctype_js = {
 	"Purchase Order" : "public/js/procurement_sheet_items.js",
 	"Purchase Receipt" : "public/js/procurement_sheet_items.js",
 	"Purchase Invoice" : "public/js/procurement_sheet_items.js",
+	# Material Issue: the same category-first glass sheet / ceiling piece entry.
+	"Stock Entry" : "public/js/stock_entry.js",
 	# FIFO cost basis of the USD bank accounts: one script derives the exchange
 	# rate as currency is paid out, the other shows which lots it consumed.
 	"Payment Entry" : [
@@ -260,6 +262,11 @@ doc_events = {
 	# page instead, which posts the equivalent Stock Entry with matching sheet tags.
 	"Stock Reconciliation": {
 		"validate": "crystal_alluminium_works.api.block_glass_stock_reconciliation"
+	},
+	# Material Issue rows entered category-first in the desk form: glass by sheet size +
+	# sheets (tagged for the sheet-count ledger), ceiling by pieces. See stock_entry_handler.
+	"Stock Entry": {
+		"before_validate": "crystal_alluminium_works.stock_entry_handler.recompute_material_issue_rows"
 	}
 }
 
