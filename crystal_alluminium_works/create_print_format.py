@@ -208,6 +208,12 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
     .cq-table.cq-table-lg td {{
         font-size: 14px;
     }}
+    /* Per-glass-type subtotal when a Glass section mixes types (e.g. 3mm and 4mm clear). */
+    .cq-table tr.cq-subtotal-row td {{
+        background-color: #f1f3f5;
+        border-bottom: 2px solid #ced4da;
+        font-weight: bold;
+    }}
     .cq-child-table {{
         width: 100%;
         border-collapse: collapse;
@@ -358,6 +364,27 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
 {{% set show_glass_services = section_rows.glass and (not sectioned_items or doc.doctype == 'Quotation') %}}
 {{% set short_glass_service_headers = doc.doctype == 'Quotation' %}}
 {{% set large_glass_table = section_rows.glass and sectioned_items %}}
+{{# A Glass section mixing types (3mm and 4mm clear, say) prints each type's rows together, in the
+   order the type first appears, followed by that type's own Pcs / Qty / Amount subtotal. #}}
+{{% set glass_groups = namespace(codes=[], items=[]) %}}
+{{% if large_glass_table %}}
+    {{% for row in section_rows.items %}}
+        {{% if (row.item_code or '') not in glass_groups.codes %}}
+            {{% set glass_groups.codes = glass_groups.codes + [row.item_code or ''] %}}
+        {{% endif %}}
+    {{% endfor %}}
+{{% endif %}}
+{{% set show_glass_subtotals = glass_groups.codes|length > 1 %}}
+{{% if show_glass_subtotals %}}
+    {{% for code in glass_groups.codes %}}
+        {{% for row in section_rows.items %}}
+            {{% if (row.item_code or '') == code %}}
+                {{% set glass_groups.items = glass_groups.items + [row] %}}
+            {{% endif %}}
+        {{% endfor %}}
+    {{% endfor %}}
+    {{% set section_rows.items = glass_groups.items %}}
+{{% endif %}}
 {{% if section != 'All' %}}
 <div style="margin: 10px 0 8px 0; font-size: 13px; font-weight: bold; color: #2c3e50; text-transform: uppercase;">{{{{ section }}}} Items</div>
 {{% endif %}}
@@ -399,6 +426,7 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
     </thead>
     <tbody>
         {{% set quotation_totals = namespace(pcs=0, qty=0, holes=0, notches=0) %}}
+        {{% set glass_group_totals = namespace(pcs=0, qty=0, holes=0, notches=0, amount=0) %}}
         {{% for parent in section_rows.items %}}
             {{% if true %}}
                 {{% set parent_category = parent.custom_product_category or '' %}}
@@ -446,6 +474,11 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
                 {{% set quotation_totals.qty = quotation_totals.qty + qty_display %}}
                 {{% set quotation_totals.holes = quotation_totals.holes + frappe.utils.cint(parent.custom_holes or 0) %}}
                 {{% set quotation_totals.notches = quotation_totals.notches + frappe.utils.cint(parent.custom_notches or 0) %}}
+                {{% set glass_group_totals.pcs = glass_group_totals.pcs + frappe.utils.flt(pieces, 2) %}}
+                {{% set glass_group_totals.qty = glass_group_totals.qty + qty_display %}}
+                {{% set glass_group_totals.holes = glass_group_totals.holes + frappe.utils.cint(parent.custom_holes or 0) %}}
+                {{% set glass_group_totals.notches = glass_group_totals.notches + frappe.utils.cint(parent.custom_notches or 0) %}}
+                {{% set glass_group_totals.amount = glass_group_totals.amount + line.amount %}}
                 {{% set is_sheet_glass = parent_category == 'Glass' and parent.custom_glass_sale_mode == 'Sheet' %}}
                 {{% set width_sides = 0 if is_sheet_glass else frappe.utils.cint(parent.custom_polish_width_sides or 0) %}}
                 {{% set height_sides = 0 if is_sheet_glass else frappe.utils.cint(parent.custom_polish_height_sides or 0) %}}
@@ -536,11 +569,31 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
                     {{% set hide_row_amount = large_glass_table and parent_category == 'Glass' and parent.custom_glass_sale_mode not in ['Sheet', 'Full Sheet'] %}}
                     <td style="text-align: right; white-space: nowrap;">{{% if hide_row_amount %}}&nbsp;{{% else %}}{{{{ frappe.format_value(line.amount, df={{'fieldtype': 'Currency'}}, doc=doc) }}}}{{% endif %}}</td>
                 </tr>
+                {{% if show_glass_subtotals and (loop.last or (loop.nextitem.item_code or '') != (parent.item_code or '')) %}}
+                <tr class="cq-subtotal-row">
+                    <td colspan="{{{{ 3 if section_rows.color else 2 }}}}" style="white-space: nowrap;">{{{{ parent.item_name or parent.item_code or '' }}}}</td>
+                    <td colspan="3">&nbsp;</td>
+                    <td style="text-align: center; white-space: nowrap;">{{{{ frappe.utils.flt(glass_group_totals.pcs, 2) }}}}</td>
+                    <td style="text-align: center; white-space: nowrap;">{{{{ frappe.utils.flt(glass_group_totals.qty, 3) }}}}</td>
+                    <td colspan="2">&nbsp;</td>
+                    {{% if show_glass_services %}}
+                    <td>&nbsp;</td>
+                    <td style="text-align: center; white-space: nowrap;">{{{{ glass_group_totals.holes }}}}</td>
+                    <td style="text-align: center; white-space: nowrap;">{{{{ glass_group_totals.notches }}}}</td>
+                    {{% endif %}}
+                    <td style="text-align: right; white-space: nowrap;">{{{{ frappe.format_value(glass_group_totals.amount, df={{'fieldtype': 'Currency'}}, doc=doc) }}}}</td>
+                </tr>
+                {{% set glass_group_totals.pcs = 0 %}}
+                {{% set glass_group_totals.qty = 0 %}}
+                {{% set glass_group_totals.holes = 0 %}}
+                {{% set glass_group_totals.notches = 0 %}}
+                {{% set glass_group_totals.amount = 0 %}}
+                {{% endif %}}
             {{% endif %}}
         {{% endfor %}}
         {{% if doc.doctype in ['Quotation', 'Sales Invoice'] %}}
         <tr>
-            <td colspan="{{{{ 3 if section_rows.color else 2 }}}}" style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
+            <td colspan="{{{{ 3 if section_rows.color else 2 }}}}" style="border-bottom: 1px solid #dee2e6; font-weight: bold;">{{% if show_glass_subtotals %}}Total{{% else %}}&nbsp;{{% endif %}}</td>
             {{% if section_rows.glass %}}
             <td colspan="3" style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
             {{% elif section == 'All' %}}
