@@ -878,7 +878,11 @@ function render_quotation_dashboard(page, quotation_name, wrapper, auto_amend) {
 					<!-- Cash quotations all share the one walk-in Customer record, so party_name/
 					     customer_name is always "Cash Customer" — the walk-in's own name lives in
 					     custom_customer_name, captured in Quotation Builder's cash-mode step. -->
-					<h2>${frappe.utils.escape_html(doc.custom_customer_name || doc.customer_name || doc.party_name || '')}</h2>
+					<h2>${frappe.utils.escape_html(doc.custom_bill_to_name || doc.custom_customer_name || doc.customer_name || doc.party_name || '')}</h2>
+					${doc.custom_bill_to_name ? `<div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">
+						KRA PIN: ${frappe.utils.escape_html(doc.custom_bill_to_pin || '-')} &middot;
+						Contact: ${frappe.utils.escape_html(doc.custom_customer_name || '-')} (${frappe.utils.escape_html(doc.custom_customer_phone || '-')})
+					</div>` : ''}
 					<div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">Created: ${frappe.datetime.global_date_format(doc.creation)}</div>
 				</div>
 				<div style="text-align: right;">
@@ -1102,7 +1106,66 @@ function get_action_buttons(doc, sales_invoices, existing_job_card, deposit_cred
 
 	buttons += deposit_buttons_html;
 
+	// Bill to Organisation: a messenger quoted as a walk-in for their organisation, whose invoice
+	// needs the organisation's name and KRA PIN. Locked once invoiced (api.py set_quotation_bill_to).
+	let has_live_invoice = (sales_invoices || []).some(si => si.docstatus !== 2);
+	if (doc.custom_customer_phone && doc.docstatus !== 2 && !has_live_invoice) {
+		buttons += `
+			<button class="btn btn-default" id="btn-bill-to-organisation">
+				<i class="fa fa-building" style="margin-right:6px;"></i>${doc.custom_bill_to_name ? 'Change Bill To' : 'Bill to Organisation'}
+			</button>
+		`;
+	}
+
 	return (buttons || '<span style="color:var(--text-muted);">No actions available.</span>') + note;
+}
+
+// Print and invoice a cash quotation to an organisation instead of the walk-in who asked for it.
+// The walk-in stays the quotation's contact (Customer Manager, statements and deposits key on
+// their name and phone); the invoice copies the Bill To when it's made. See api.py set_quotation_bill_to.
+function open_bill_to_organisation_dialog(page, doc) {
+	let d = new frappe.ui.Dialog({
+		title: __('Bill to Organisation'),
+		fields: [
+			{
+				fieldtype: 'HTML',
+				fieldname: 'intro',
+				options: `<p style="color:var(--text-muted); font-size:13px;">
+					Prints and invoices this quotation to the organisation below.
+					${frappe.utils.escape_html(doc.custom_customer_name || 'The walk-in')}
+					(${frappe.utils.escape_html(doc.custom_customer_phone || '')}) stays on file as the contact.
+				</p>`
+			},
+			{ fieldtype: 'Data', fieldname: 'bill_to_name', label: __('Organisation Name'), reqd: 1, default: doc.custom_bill_to_name || '' },
+			{ fieldtype: 'Data', fieldname: 'bill_to_pin', label: __('KRA PIN'), reqd: 1, default: doc.custom_bill_to_pin || '', description: __('e.g. P051209779U') }
+		],
+		primary_action_label: __('Save'),
+		primary_action(values) {
+			save_bill_to(values.bill_to_name, values.bill_to_pin);
+		}
+	});
+	if (doc.custom_bill_to_name) {
+		d.set_secondary_action_label(__('Bill the Walk-in Instead'));
+		d.set_secondary_action(() => save_bill_to('', ''));
+	}
+
+	function save_bill_to(bill_to_name, bill_to_pin) {
+		frappe.call({
+			method: 'crystal_alluminium_works.api.set_quotation_bill_to',
+			args: { quotation: doc.name, bill_to_name, bill_to_pin },
+			freeze: true,
+			callback(r) {
+				if (r.exc) return;
+				d.hide();
+				frappe.show_alert({
+					message: bill_to_name ? __('Now billed to {0}', [frappe.utils.escape_html(bill_to_name)]) : __('Billed to the walk-in again'),
+					indicator: 'green'
+				});
+				render_quotation_dashboard(page, doc.name, page.wrapper);
+			}
+		});
+	}
+	d.show();
 }
 
 function normalize_job_card_payment_mode(value) {
@@ -1655,14 +1718,15 @@ async function open_job_card_modal(page, doc) {
 	// Cash quotations all share the same walk-in Customer record, so the Customer
 	// doctype itself carries no phone/PIN — prefer the specific values captured on
 	// this quotation (Quotation Builder's cash-mode step) when present.
-	if (doc.custom_customer_name) {
-		defaults.customer_name = doc.custom_customer_name;
+	if (doc.custom_bill_to_name || doc.custom_customer_name) {
+		defaults.customer_name = doc.custom_bill_to_name || doc.custom_customer_name;
 	}
 	if (doc.custom_customer_phone) {
 		defaults.phone_number = doc.custom_customer_phone;
 	}
-	if (doc.custom_customer_pin) {
-		defaults.customer_pin = doc.custom_customer_pin;
+	// A Bill To replaces the walk-in's PIN along with their name (see open_bill_to_organisation_dialog).
+	if (doc.custom_bill_to_name ? doc.custom_bill_to_pin : doc.custom_customer_pin) {
+		defaults.customer_pin = doc.custom_bill_to_name ? doc.custom_bill_to_pin : doc.custom_customer_pin;
 	}
 	let existing_job_card = await get_existing_job_card_for_quotation(doc.name);
 	let quotation_total = get_manager_quotation_total(doc);
@@ -1856,9 +1920,11 @@ async function open_job_card_modal(page, doc) {
 	// customer" apart from "user picked a different customer", so it knows when to
 	// keep this quotation's captured phone/PIN instead of the customer record's.
 	d._quotation_customer = defaults.customer || quotation_customer;
-	d._quotation_customer_name = doc.custom_customer_name || '';
+	// The name/PIN this Job Card is printed under — a Bill To when set. Saving other values here
+	// sets the quotation's Bill To (api.py _sync_quotation_bill_to_from_job_card).
+	d._quotation_customer_name = doc.custom_bill_to_name || doc.custom_customer_name || '';
 	d._quotation_customer_phone = doc.custom_customer_phone || '';
-	d._quotation_customer_pin = doc.custom_customer_pin || '';
+	d._quotation_customer_pin = (doc.custom_bill_to_name ? doc.custom_bill_to_pin : doc.custom_customer_pin) || '';
 	// The payment mode this quotation's own customer actually belongs to — lets the
 	// Payment Mode change handler below tell "still this quotation's customer, just
 	// re-confirming the mode" apart from "user is switching to a genuinely different
@@ -2234,6 +2300,10 @@ function bind_action_events(page, doc, sales_invoices, existing_job_card) {
 		if (existing_job_card && existing_job_card.name) {
 			frappe.set_route('job-card-detail', existing_job_card.name);
 		}
+	});
+
+	$('#btn-bill-to-organisation').on('click', () => {
+		open_bill_to_organisation_dialog(page, doc);
 	});
 
 	$('#btn-go-to-job-card').on('click', () => {

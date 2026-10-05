@@ -830,6 +830,32 @@ def add_custom_fields():
                 "no_copy": 1,
                 "module": "Crystal Alluminium Works",
             },
+            {
+                # Who a cash quotation is printed and invoiced to when that isn't the walk-in
+                # themselves — an office messenger scouting prices for their organisation, whose
+                # invoice must carry the organisation's name and KRA PIN. Kept apart from
+                # custom_customer_name/phone/pin, which stay the walk-in's identity (Customer
+                # Manager, statements, deposits and the phone-identity check all key on them).
+                # Set by api.set_quotation_bill_to or the Job Card modal, after submit too.
+                "fieldname": "custom_bill_to_name",
+                "label": "Bill To (Organisation)",
+                "fieldtype": "Data",
+                "insert_after": "custom_customer_tax_id",
+                "read_only": 1,
+                "allow_on_submit": 1,
+                "no_copy": 1,
+                "module": "Crystal Alluminium Works",
+            },
+            {
+                "fieldname": "custom_bill_to_pin",
+                "label": "Bill To KRA PIN",
+                "fieldtype": "Data",
+                "insert_after": "custom_bill_to_name",
+                "read_only": 1,
+                "allow_on_submit": 1,
+                "no_copy": 1,
+                "module": "Crystal Alluminium Works",
+            },
         ],
         # Read-only view of what this entry did to the foreign-currency lot
         # ledger. Nothing is stored on the document — the panel calls

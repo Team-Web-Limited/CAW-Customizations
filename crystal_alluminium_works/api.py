@@ -2327,6 +2327,120 @@ def search_builder_customers(doctype, txt, searchfield, start, page_len, filters
     )
 
 
+KRA_PIN_PATTERN = r"[A-Z]\d{9}[A-Z]"
+
+
+def _is_cash_quotation(quotation_doc):
+    """A cash quotation carries its walk-in's phone and bills the shared or own Cash Customer."""
+    return bool((quotation_doc.get("custom_customer_phone") or "").strip()) and bool(
+        _cash_customer_names([quotation_doc.party_name])
+    )
+
+
+def _quotation_walkin_identity(quotation_doc):
+    """The name and PIN the walk-in themselves would be printed under, with no Bill To — the
+    same defaults the Create Job Card modal fills in."""
+    from crystal_alluminium_works.customer_handler import normalize_kra_pin
+
+    customer = frappe.db.get_value(
+        "Customer", quotation_doc.party_name, ["customer_name", "tax_id"], as_dict=True
+    ) or frappe._dict()
+    name = (quotation_doc.get("custom_customer_name") or customer.customer_name or "").strip()
+    pin = normalize_kra_pin(quotation_doc.get("custom_customer_pin") or customer.tax_id)
+    return name, pin
+
+
+def _quotation_is_invoiced(quotation_name):
+    """Any live Sales Invoice across the quotation's amendment chain or from its Job Card."""
+    chain = _resolve_quotation_chain(quotation_name) or [quotation_name]
+    or_filters = [["custom_source_quotation", "in", chain]]
+    job_card = _resolve_job_card_for_quotation(quotation_name)
+    if job_card:
+        or_filters.append(["custom_source_job_card", "=", job_card])
+    return bool(frappe.get_all(
+        "Sales Invoice", filters={"docstatus": ["!=", 2]}, or_filters=or_filters, limit_page_length=1
+    ))
+
+
+def _apply_quotation_bill_to(quotation_doc, bill_to_name, bill_to_pin, job_card=None):
+    """Store the Bill To on the quotation (blank both to bill the walk-in again) and mirror the
+    printed name/PIN onto its Job Card. The invoice copies them from the quotation when it's made
+    (make_sales_invoice_from_quotation), so this is refused once any invoice exists — changing
+    the buyer on an issued invoice takes a credit note, not an edit."""
+    if bill_to_pin and not re.fullmatch(KRA_PIN_PATTERN, bill_to_pin):
+        frappe.throw(f"KRA PIN {frappe.bold(bill_to_pin)} is not valid. Expected e.g. P051209779U.")
+    if bill_to_pin and not bill_to_name:
+        frappe.throw("Enter the organisation's name for this KRA PIN.")
+    if _quotation_is_invoiced(quotation_doc.name):
+        frappe.throw(
+            "This quotation has already been invoiced, so who it is billed to can no longer change. "
+            "Issue a credit note and re-invoice to bill someone else.",
+            title="Already Invoiced",
+        )
+
+    quotation_doc.db_set({"custom_bill_to_name": bill_to_name, "custom_bill_to_pin": bill_to_pin})
+
+    # A Job Card being saved by the caller already carries the values; otherwise mirror them.
+    job_card_name = None if job_card else _resolve_job_card_for_quotation(quotation_doc.name)
+    if job_card_name:
+        walkin_name, walkin_pin = _quotation_walkin_identity(quotation_doc)
+        frappe.db.set_value("CAW Job Card", job_card_name, {
+            "customer_name": bill_to_name or walkin_name,
+            "customer_pin": bill_to_pin if bill_to_name else walkin_pin,
+        })
+
+
+@frappe.whitelist()
+def set_quotation_bill_to(quotation, bill_to_name=None, bill_to_pin=None):
+    """Quotation Manager's Bill to Organisation: print and invoice a cash quotation to an
+    organisation (name + KRA PIN) while the walk-in who asked for it stays its contact."""
+    from crystal_alluminium_works.customer_handler import normalize_kra_pin
+
+    quotation_doc = frappe.get_doc("Quotation", quotation)
+    quotation_doc.check_permission("write")
+    if quotation_doc.docstatus == 2:
+        frappe.throw("This quotation is cancelled.")
+    if not _is_cash_quotation(quotation_doc):
+        frappe.throw("Only cash quotations can be billed to an organisation. Invoice customers are billed under their own Customer record.")
+
+    bill_to_name = " ".join((bill_to_name or "").split())
+    bill_to_pin = normalize_kra_pin(bill_to_pin)
+    if bill_to_name and not bill_to_pin:
+        frappe.throw("The organisation's KRA PIN is required.")
+    _apply_quotation_bill_to(quotation_doc, bill_to_name, bill_to_pin)
+    return {"bill_to_name": bill_to_name, "bill_to_pin": bill_to_pin}
+
+
+def _sync_quotation_bill_to_from_job_card(quotation_doc, customer_doc, payment_mode, job_card,
+                                          previous_name, previous_pin):
+    """The Job Card modals' Customer Name / PIN are what the invoice should carry, but the
+    invoice copies them from the quotation — so a cash Job Card saved under a name or PIN other
+    than the walk-in's own sets the quotation's Bill To (and saving the walk-in's own clears it)."""
+    from crystal_alluminium_works.customer_handler import normalize_kra_pin
+
+    if payment_mode != "Cash Customer" or customer_doc.name != quotation_doc.party_name:
+        return
+    if not _is_cash_quotation(quotation_doc):
+        return
+
+    walkin_name, walkin_pin = _quotation_walkin_identity(quotation_doc)
+    name = " ".join((job_card.customer_name or "").split()) or walkin_name
+    pin = normalize_kra_pin(job_card.customer_pin)
+    if name.lower() == walkin_name.lower() and pin == walkin_pin:
+        name, pin = "", ""
+
+    current = ((quotation_doc.get("custom_bill_to_name") or "").strip(), normalize_kra_pin(quotation_doc.get("custom_bill_to_pin")))
+    if name.lower() == current[0].lower() and pin == current[1]:
+        return
+    if _quotation_is_invoiced(quotation_doc.name):
+        # A card whose name already differed from the quotation before Bill To existed must still
+        # take payments; refuse only an actual edit of the name/PIN in this save.
+        edited = (job_card.customer_name or "").strip() != (previous_name or "").strip() or pin != normalize_kra_pin(previous_pin)
+        if job_card.get("__islocal") or not edited:
+            return
+    _apply_quotation_bill_to(quotation_doc, name, pin, job_card=job_card)
+
+
 @frappe.whitelist()
 def create_job_card_from_quotation(quotation, customer, customer_name=None, payment_mode=None,
                                    payment_option=None, customer_pin=None, phone_number=None, quotation_amount=0,
@@ -2436,6 +2550,7 @@ def create_job_card_from_quotation(quotation, customer, customer_name=None, paym
     balance_amount = _settled_balance(payment_limit - total_payment_amount)
     paid_amount = _round_job_card_amount(paid_to_date + total_payment_amount)
 
+    previous_customer_name, previous_customer_pin = job_card.customer_name, job_card.customer_pin
     job_card.quotation = quotation_doc.name
     job_card.customer = customer_doc.name
     job_card.customer_name = customer_name or customer_doc.customer_name or customer_doc.name
@@ -2461,6 +2576,9 @@ def create_job_card_from_quotation(quotation, customer, customer_name=None, paym
         job_card.payment_option = "Advance"
 
     is_new_job_card = bool(job_card.get("__islocal"))
+    _sync_quotation_bill_to_from_job_card(
+        quotation_doc, customer_doc, payment_mode, job_card, previous_customer_name, previous_customer_pin
+    )
 
     if is_new_job_card:
         job_card.insert(ignore_permissions=True)
@@ -3742,10 +3860,15 @@ def make_sales_invoice_from_quotation(source_name, releases=None):
 
     if hasattr(invoice, "custom_source_quotation"):
         invoice.custom_source_quotation = source_name
-    if hasattr(invoice, "custom_customer_name") and source_doc.get("custom_customer_name"):
-        invoice.custom_customer_name = source_doc.custom_customer_name
-    if hasattr(invoice, "custom_customer_pin") and source_doc.get("custom_customer_pin"):
-        invoice.custom_customer_pin = source_doc.custom_customer_pin
+    # A Bill To (set_quotation_bill_to) replaces the walk-in's name and PIN together, so the
+    # walk-in's own PIN never prints beside the organisation's name.
+    bill_to_name = (source_doc.get("custom_bill_to_name") or "").strip()
+    printed_name = bill_to_name or source_doc.get("custom_customer_name")
+    printed_pin = source_doc.get("custom_bill_to_pin") if bill_to_name else source_doc.get("custom_customer_pin")
+    if hasattr(invoice, "custom_customer_name") and printed_name:
+        invoice.custom_customer_name = printed_name
+    if hasattr(invoice, "custom_customer_pin") and printed_pin:
+        invoice.custom_customer_pin = printed_pin
 
     _copy_aluminium_color_between_rows(source_doc.items, invoice.items)
 
