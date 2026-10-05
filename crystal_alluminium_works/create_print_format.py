@@ -73,11 +73,6 @@ PRINT_UOM_BY_ITEM_CODE = {
 CRYSTAL_PAGE_STYLE = "<style>.print-format { margin-top: 5mm; margin-left: 8mm; margin-right: 8mm; }</style>\n"
 
 
-# Text the Incotex 600 TIMS middleware searches the invoice PDF for, to place its QR code and CU
-# line there. Must match the anchor configured on the device exactly.
-TIMS_STAMP_MARKER = "#TIMS#"
-
-
 def build_crystal_print_format_html(ref_label, terms, payment_details=""):
     html = f"""
 {{% macro short_uom(value) %}}
@@ -697,14 +692,6 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
     &nbsp;&nbsp; Vehicle No <span style="display: inline-block; width: 16%; border-bottom: 1px dotted #2c3e50;"></span>
     &nbsp;&nbsp; Signature <span style="display: inline-block; width: 20%; border-bottom: 1px dotted #2c3e50;"></span>
     {{% endif %}}
-</div>
-{{# The Incotex 600 TIMS middleware stamps its QR code and CU line onto the PDF where it finds
-   TIMS_STAMP_MARKER. Without a marker it stamped at a fixed spot, over a long invoice's item
-   rows. This reserved box always follows the content and never splits across pages. #}}
-<div style="margin-top: 24px; page-break-inside: avoid;">
-    <div style="width: 380px; height: 130px; border: 1px dashed #adb5bd; border-radius: 4px; padding: 6px 8px; box-sizing: border-box;">
-        <div style="font-size: 10px; color: #6c757d;">{TIMS_STAMP_MARKER}</div>
-    </div>
 </div>
 {{% endif %}}
 """
