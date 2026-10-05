@@ -549,7 +549,12 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
                        charge may drop to a second line, so these columns never squeeze the Item column. #}}
                     <td>
                         {{% if parent_category == 'Glass' and polish_sides > 0 %}}
-                            {{{{ polish_sides }}}}
+                            {{# Which edges, as on the Job Card: W = sides along the width, H = along the
+                               height, e.g. "2W + 2H" for all four, "1W" for one long edge. #}}
+                            {{% set polish_parts = [] %}}
+                            {{% if width_sides > 0 %}}{{% set polish_parts = polish_parts + [width_sides ~ 'W'] %}}{{% endif %}}
+                            {{% if height_sides > 0 %}}{{% set polish_parts = polish_parts + [height_sides ~ 'H'] %}}{{% endif %}}
+                            <span style="white-space: nowrap;">{{{{ polish_parts|join(' + ') }}}}</span>
                             {{% if glass_service.polish_amount %}} <span style="white-space: nowrap;">({{{{ frappe.format_value(glass_service.polish_amount, df={{'fieldtype': 'Currency'}}, doc=doc) }}}})</span>{{% endif %}}
                         {{% else %}}-{{% endif %}}
                     </td>
@@ -573,7 +578,7 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
                 </tr>
                 {{% if show_glass_subtotals and (loop.last or (loop.nextitem.item_code or '') != (parent.item_code or '')) %}}
                 <tr class="cq-subtotal-row">
-                    <td colspan="{{{{ 3 if section_rows.color else 2 }}}}" style="white-space: nowrap;">{{{{ parent.item_name or parent.item_code or '' }}}}</td>
+                    <td colspan="{{{{ 3 if section_rows.color else 2 }}}}" style="white-space: nowrap;">Subtotal</td>
                     <td colspan="3">&nbsp;</td>
                     <td style="text-align: center; white-space: nowrap;">{{{{ frappe.utils.flt(glass_group_totals.pcs, 2) }}}}</td>
                     <td style="text-align: center; white-space: nowrap;">{{{{ frappe.utils.flt(glass_group_totals.qty, 3) }}}}</td>
