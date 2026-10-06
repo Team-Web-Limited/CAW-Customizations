@@ -1207,10 +1207,16 @@ function get_workflow_job_card_state(sales_invoices, existing_job_card) {
 	};
 }
 
+// The Payment Method dropdown starts on Paybill when it's offered (cash customers); staff can
+// still pick another method. Only the modal's starting selection — saved payments are untouched.
+function get_default_job_card_payment_option(options) {
+	return options.includes('Paybill') ? 'Paybill' : (options[0] || '');
+}
+
 function refresh_job_card_payment_options(dialog) {
 	let payment_mode = dialog.get_value('payment_mode');
 	let options = get_job_card_payment_option_choices(payment_mode);
-	let option_value = options[0] || '';
+	let option_value = get_default_job_card_payment_option(options);
 	dialog.set_df_property('payment_option', 'options', options.join('\n'));
 	dialog.set_value('payment_option', option_value);
 
@@ -1762,7 +1768,7 @@ async function open_job_card_modal(page, doc) {
 				fieldname: 'payment_option',
 				label: 'Payment Method',
 				options: get_job_card_payment_option_choices(get_job_card_payment_mode_label(defaults.payment_mode)).join('\n'),
-				default: get_job_card_payment_option_choices(get_job_card_payment_mode_label(defaults.payment_mode))[0],
+				default: get_default_job_card_payment_option(get_job_card_payment_option_choices(get_job_card_payment_mode_label(defaults.payment_mode))),
 				reqd: 1,
 				change: function() {
 					// A reference belongs to the method it was typed for — never carry an

@@ -120,10 +120,16 @@ function get_job_card_payment_option_choices(payment_mode) {
 		: ['Cheque'];
 }
 
+// The Payment Method dropdown starts on Paybill when it's offered (cash customers); staff can
+// still pick another method. Only the modal's starting selection — saved payments are untouched.
+function get_default_job_card_payment_option(options) {
+	return options.includes('Paybill') ? 'Paybill' : (options[0] || '');
+}
+
 function refresh_job_card_payment_options(dialog, selected_option) {
 	let payment_mode = dialog.get_value('payment_mode');
 	let options = get_job_card_payment_option_choices(payment_mode);
-	let next_option = options.includes(selected_option) ? selected_option : options[0] || '';
+	let next_option = options.includes(selected_option) ? selected_option : get_default_job_card_payment_option(options);
 	dialog.set_df_property('payment_option', 'options', options.join('\n'));
 	dialog.set_value('payment_option', next_option);
 
@@ -1071,7 +1077,7 @@ async function open_edit_job_card_modal(page, job_card, quotation) {
 				fieldname: 'payment_option',
 				label: 'Payment Method',
 				options: get_job_card_payment_option_choices(job_card.payment_mode || get_job_card_payment_mode_label(defaults.payment_mode)).join('\n'),
-				default: job_card.payment_option || get_job_card_payment_option_choices(job_card.payment_mode || get_job_card_payment_mode_label(defaults.payment_mode))[0],
+				default: get_default_job_card_payment_option(get_job_card_payment_option_choices(job_card.payment_mode || get_job_card_payment_mode_label(defaults.payment_mode))),
 				reqd: 1,
 				change: function() {
 					// A reference belongs to the method it was typed for — never carry an
@@ -1200,9 +1206,10 @@ async function open_edit_job_card_modal(page, job_card, quotation) {
 	d._quotation_customer_phone = job_card.phone_number || defaults.phone_number || '';
 	d._quotation_customer_pin = job_card.customer_pin || defaults.customer_pin || '';
 	d._quotation_payment_mode = job_card.payment_mode || get_job_card_payment_mode_label(defaults.payment_mode);
-	d._saved_payment_option = job_card.payment_option;
+	// Opens (and resets after a rejected payment) on Paybill, not the last payment's method.
+	d._saved_payment_option = null;
 	d.show();
-	refresh_job_card_payment_options(d, job_card.payment_option);
+	refresh_job_card_payment_options(d);
 	if (job_card.customer || defaults.customer || quotation_customer) {
 		await d.set_value('customer', job_card.customer || defaults.customer || quotation_customer);
 	}
