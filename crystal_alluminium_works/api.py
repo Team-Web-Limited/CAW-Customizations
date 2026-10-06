@@ -1986,6 +1986,120 @@ def get_customer_registration_defaults():
     }
 
 
+# What keeps a Customer from being deleted, in the words Customer Manager shows. Cancelled
+# documents don't block (Frappe's own delete check ignores them too).
+CUSTOMER_DELETE_BLOCKERS = (
+    ("Quotation", {"quotation_to": "Customer", "party_name": "{customer}", "docstatus": ["<", 2]}),
+    ("CAW Job Card", {"customer": "{customer}", "status": ["!=", "Cancelled"]}),
+    ("Sales Order", {"customer": "{customer}", "docstatus": ["<", 2]}),
+    ("Sales Invoice", {"customer": "{customer}", "docstatus": ["<", 2]}),
+    ("Delivery Note", {"customer": "{customer}", "docstatus": ["<", 2]}),
+    ("Payments", {"customer": "{customer}"}),
+    ("Payment Entry", {"party_type": "Customer", "party": "{customer}", "docstatus": ["<", 2]}),
+    ("GL Entry", {"party_type": "Customer", "party": "{customer}", "is_cancelled": 0}),
+)
+
+
+CUSTOMER_DELETE_LABELS = {
+    "CAW Job Card": ("Job Card", "Job Cards"),
+    "Payments": ("Payment", "Payments"),
+    "Payment Entry": ("accounting Payment Entry", "accounting Payment Entries"),
+    "GL Entry": ("accounting ledger entry", "accounting ledger entries"),
+}
+
+
+def _customer_delete_blockers(customer):
+    """[{"label", "count", "examples"}] for everything that stops this Customer being deleted.
+    The known business documents are listed by name; anything else Frappe's own delete would
+    refuse on is found by trying the delete and rolling it back."""
+    if customer == SHARED_CASH_CUSTOMER_NAME:
+        return [{"label": "The shared Cash Customer record holds every older walk-in's quotations, invoices and payments", "count": 0, "examples": []}]
+
+    blockers = []
+    for doctype, filters in CUSTOMER_DELETE_BLOCKERS:
+        if not frappe.db.exists("DocType", doctype):
+            continue
+        filters = {k: (customer if v == "{customer}" else v) for k, v in filters.items()}
+        count = frappe.db.count(doctype, filters)
+        if not count:
+            continue
+        examples = [] if doctype == "GL Entry" else frappe.get_all(
+            doctype, filters=filters, pluck="name", order_by="creation desc", limit_page_length=5
+        )
+        singular, plural = CUSTOMER_DELETE_LABELS.get(doctype, (doctype, f"{doctype}s"))
+        label = singular if count == 1 else plural
+        blockers.append({"label": label, "doctype": doctype, "count": count, "examples": [str(e) for e in examples]})
+
+    if not blockers:
+        frappe.db.savepoint("customer_delete_check")
+        try:
+            frappe.delete_doc("Customer", customer)
+        except Exception as e:
+            blockers.append({"label": frappe.utils.strip_html(str(e)) or "Frappe refused the delete", "count": 0, "examples": []})
+        finally:
+            frappe.db.rollback(save_point="customer_delete_check")
+            frappe.clear_messages()
+    return blockers
+
+
+@frappe.whitelist()
+def get_customer_delete_blockers(customer):
+    """Customer Manager's Delete Customer: why this customer can't be deleted (empty = it can)."""
+    frappe.has_permission("Customer", "delete", customer, throw=True)
+    if not frappe.db.exists("Customer", customer):
+        frappe.throw("Customer not found.")
+    return _customer_delete_blockers(customer)
+
+
+@frappe.whitelist(methods=["POST"])
+def delete_customer(customer):
+    """Delete a Customer that nothing depends on (see _customer_delete_blockers). Its contacts
+    and addresses go with it (ERPNext's Customer.on_trash)."""
+    frappe.has_permission("Customer", "delete", customer, throw=True)
+    if not frappe.db.exists("Customer", customer):
+        frappe.throw("Customer not found.")
+    blockers = _customer_delete_blockers(customer)
+    if blockers:
+        frappe.throw(
+            "This customer can't be deleted: "
+            + "; ".join(f"{b['count']} {b['label']}" if b["count"] else b["label"] for b in blockers),
+            title="Customer in use",
+        )
+    frappe.delete_doc("Customer", customer)
+    return {"deleted": customer}
+
+
+@frappe.whitelist(methods=["POST"])
+def delete_customers(customers):
+    """Customer Manager's bulk delete: deletes each customer nothing depends on and reports the
+    rest with their reasons. One customer's refusal never stops the others."""
+    frappe.has_permission("Customer", "delete", throw=True)
+    customers = json.loads(customers) if isinstance(customers, str) else (customers or [])
+    deleted, blocked = [], []
+    for customer in dict.fromkeys(c for c in customers if c):
+        if not frappe.db.exists("Customer", customer):
+            continue
+        customer_name = frappe.db.get_value("Customer", customer, "customer_name") or customer
+        if not frappe.has_permission("Customer", "delete", customer):
+            blocked.append({"customer": customer, "customer_name": customer_name,
+                            "blockers": [{"label": "You don't have permission to delete it", "count": 0, "examples": []}]})
+            continue
+        blockers = _customer_delete_blockers(customer)
+        if blockers:
+            blocked.append({"customer": customer, "customer_name": customer_name, "blockers": blockers})
+            continue
+        frappe.db.savepoint("bulk_customer_delete")
+        try:
+            frappe.delete_doc("Customer", customer)
+            deleted.append({"customer": customer, "customer_name": customer_name})
+        except Exception as e:
+            frappe.db.rollback(save_point="bulk_customer_delete")
+            frappe.clear_messages()
+            blocked.append({"customer": customer, "customer_name": customer_name,
+                            "blockers": [{"label": frappe.utils.strip_html(str(e)) or "Delete failed", "count": 0, "examples": []}]})
+    return {"deleted": deleted, "blocked": blocked}
+
+
 @frappe.whitelist()
 def update_customer_details(customer, customer_name, customer_billing_type, mobile_no=None, tax_id=None, email_id=None):
     """Customer Manager's Edit Customer: the same details Register captures, on an existing Customer.

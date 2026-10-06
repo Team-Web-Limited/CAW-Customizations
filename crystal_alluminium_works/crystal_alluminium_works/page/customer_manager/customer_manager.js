@@ -55,13 +55,33 @@ function get_customer_manager_list_columns() {
 	];
 }
 
+// Delete (per row and bulk) is offered only to roles allowed to delete Customers; the server
+// re-checks. Walk-ins and the shared Cash Customer have no Customer record of their own to delete.
+function cm_can_delete() {
+	return frappe.model.can_delete('Customer');
+}
+
+function cm_row_is_deletable(row) {
+	return !row.is_walkin && !is_walkin_customer_key(row.name) && row.name !== 'Cash Customer';
+}
+
+function cm_list_colspan() {
+	return get_customer_manager_list_columns().length + (cm_can_delete() ? 2 : 0);
+}
+
 function render_customer_manager_list_loading($wrapper, message) {
 	let columns = get_customer_manager_list_columns();
 	let header_html = columns.map(column => `<th>${frappe.utils.escape_html(column.label)}</th>`).join('');
+	if (cm_can_delete()) {
+		header_html = `<th style="width:36px;"><input type="checkbox" class="cm-select-all" title="Select all on this page"></th>`
+			+ header_html + `<th style="width:60px;"></th>`;
+	}
 	$wrapper.find('.cm-list-table thead tr').html(header_html);
+	$wrapper.find('.cm-select-all').prop('checked', false);
+	cm_update_bulk_delete_button($wrapper);
 	$wrapper.find('.cm-list-body').html(`
 		<tr>
-			<td colspan="${columns.length}" style="padding:24px; text-align:center; color:var(--text-muted);">
+			<td colspan="${cm_list_colspan()}" style="padding:24px; text-align:center; color:var(--text-muted);">
 				${frappe.utils.escape_html(message || 'Loading customers...')}
 			</td>
 		</tr>
@@ -97,6 +117,7 @@ function decode_customer_route_name(value) {
 function set_customer_list_actions(page) {
 	page.set_title('Customer Manager');
 	page.clear_secondary_action();
+	page.clear_inner_toolbar();
 	page.set_primary_action('New Customer', function () {
 		open_new_customer_dialog(page);
 	});
@@ -251,10 +272,17 @@ function set_customer_detail_actions(page, customer_name) {
 	page.set_title('Customer Details');
 	page.clear_primary_action();
 	// Walk-ins have no Customer record of their own, and the shared Cash Customer holds them all.
+	page.clear_inner_toolbar();
 	if (!is_walkin_customer_key(customer_name) && customer_name !== 'Cash Customer') {
 		page.set_primary_action('Edit Customer', function () {
 			open_edit_customer_dialog(page, customer_name);
 		});
+		// Only for roles allowed to delete Customers; the server re-checks.
+		if (frappe.model.can_delete('Customer')) {
+			page.add_inner_button('Delete Customer', function () {
+				delete_customer_with_checks(page, customer_name);
+			}, null, 'danger');
+		}
 	}
 	page.set_secondary_action('Back to Customers', function () {
 		frappe.set_route('customer-manager');
@@ -350,6 +378,7 @@ function get_customer_manager_html() {
 					</select>
 				</div>
 				<div class="cm-list-toolbar-actions">
+					<button class="btn btn-danger cm-bulk-delete" style="display:none;">Delete Selected</button>
 					<button class="btn btn-default cm-list-clear">Clear</button>
 					<button class="btn btn-primary cm-list-apply">Apply Filters</button>
 				</div>
@@ -398,8 +427,33 @@ function bind_customer_manager_events(page) {
 	});
 
 	$(wrapper).on('click', '.cm-list-body tr[data-name]', function (e) {
+		if ($(e.target).closest('.cm-no-open').length) {
+			return;
+		}
 		let name = $(this).attr('data-name');
 		frappe.set_route('customer-manager', name);
+	});
+
+	$(wrapper).on('change', '.cm-select-all', function () {
+		$(wrapper).find('.cm-select-row').prop('checked', $(this).prop('checked'));
+		cm_update_bulk_delete_button($(wrapper));
+	});
+
+	$(wrapper).on('change', '.cm-select-row', function () {
+		let $rows = $(wrapper).find('.cm-select-row');
+		$(wrapper).find('.cm-select-all').prop('checked', $rows.length > 0 && $rows.filter(':checked').length === $rows.length);
+		cm_update_bulk_delete_button($(wrapper));
+	});
+
+	$(wrapper).on('click', '.cm-row-delete', function (e) {
+		e.stopPropagation();
+		delete_customer_with_checks(page, $(this).attr('data-name'), () => {
+			load_customers(page, get_customer_manager_list_state(page).page);
+		});
+	});
+
+	$(wrapper).on('click', '.cm-bulk-delete', function () {
+		bulk_delete_customers(page);
 	});
 
 	$(wrapper).on('click', '.cm-detail-back', function () {
@@ -471,6 +525,102 @@ function bind_customer_manager_events(page) {
 		let p = $(this).attr('data-page');
 		load_customers(page, parseInt(p));
 	});
+}
+
+// Delete Customer: first asks the server what would stop the delete (quotations, job cards,
+// invoices, payments, ledger entries...) and lists those instead of deleting; otherwise confirms.
+// The reasons a customer can't be deleted, as a list with links to the documents.
+function cm_blockers_html(blockers) {
+	let items = (blockers || []).map(b => {
+		let head = b.count ? `<b>${b.count}</b> ${frappe.utils.escape_html(b.label)}` : frappe.utils.escape_html(b.label);
+		let examples = (b.examples || []).map(name => b.doctype
+			? `<a href="/desk/${frappe.router.slug(b.doctype)}/${encodeURIComponent(name)}" target="_blank">${frappe.utils.escape_html(name)}</a>`
+			: frappe.utils.escape_html(name)).join(', ');
+		let more = b.count > (b.examples || []).length && examples ? ' …' : '';
+		return `<li style="margin-bottom:6px;">${head}${examples ? `<div style="font-size:12px;color:var(--text-muted);">${examples}${more}</div>` : ''}</li>`;
+	}).join('');
+	return `<ul style="padding-left:18px;margin-bottom:8px;">${items}</ul>`;
+}
+
+function cm_update_bulk_delete_button($wrapper) {
+	let count = $wrapper.find('.cm-select-row:checked').length;
+	$wrapper.find('.cm-bulk-delete').toggle(count > 0).text(`Delete Selected (${count})`);
+}
+
+// Bulk delete: deletes every selected customer nothing refers to, skips the rest and lists why.
+function bulk_delete_customers(page) {
+	let $checked = $(page.body).find('.cm-select-row:checked');
+	let customers = $checked.map((i, el) => $(el).attr('data-name')).get();
+	if (!customers.length) return;
+
+	frappe.confirm(
+		`Delete <b>${customers.length}</b> selected customer${customers.length === 1 ? '' : 's'}? Any that are still used by quotations, job cards, invoices or payments will be skipped, and you'll see why. This can't be undone.`,
+		async () => {
+			let response = await frappe.call({
+				method: 'crystal_alluminium_works.api.delete_customers',
+				args: { customers: JSON.stringify(customers) },
+				freeze: true,
+				freeze_message: `Deleting ${customers.length} customer${customers.length === 1 ? '' : 's'}...`
+			});
+			let result = response.message || {};
+			let deleted = result.deleted || [];
+			let blocked = result.blocked || [];
+
+			let html = '';
+			if (deleted.length) {
+				html += `<p><b>Deleted ${deleted.length}:</b> ${deleted.map(d => frappe.utils.escape_html(d.customer_name)).join(', ')}</p>`;
+			}
+			if (blocked.length) {
+				html += `<p style="margin-top:10px;"><b>Not deleted ${blocked.length}</b> — still in use:</p>`;
+				html += blocked.map(b => `<div style="margin:6px 0 4px;"><b>${frappe.utils.escape_html(b.customer_name)}</b></div>${cm_blockers_html(b.blockers)}`).join('');
+			}
+			frappe.msgprint({
+				title: blocked.length ? (deleted.length ? 'Some customers deleted' : 'No customers deleted') : 'Customers deleted',
+				indicator: blocked.length ? 'orange' : 'green',
+				message: html || 'Nothing to delete.'
+			});
+			load_customers(page, get_customer_manager_list_state(page).page);
+		}
+	);
+}
+
+async function delete_customer_with_checks(page, customer_name, on_deleted) {
+	let response = await frappe.call({
+		method: 'crystal_alluminium_works.api.get_customer_delete_blockers',
+		args: { customer: customer_name },
+		freeze: true,
+		freeze_message: 'Checking whether this customer can be deleted...'
+	});
+	let blockers = response.message || [];
+	let label = frappe.utils.escape_html(customer_name);
+
+	if (blockers.length) {
+		frappe.msgprint({
+			title: __("Can't delete this customer"),
+			indicator: 'orange',
+			message: `<p><b>${label}</b> is still used by:</p>${cm_blockers_html(blockers)}
+				<p style="font-size:12px;color:var(--text-muted);">A customer can only be deleted once nothing refers to it. Cancelled documents don't count.</p>`
+		});
+		return;
+	}
+
+	frappe.confirm(
+		`Delete <b>${label}</b>? Nothing refers to this customer, so it can be removed. Its contacts and addresses go with it, and this can't be undone.`,
+		async () => {
+			await frappe.call({
+				method: 'crystal_alluminium_works.api.delete_customer',
+				args: { customer: customer_name },
+				freeze: true,
+				freeze_message: 'Deleting customer...'
+			});
+			frappe.show_alert({ message: `Customer ${customer_name} deleted`, indicator: 'green' });
+			if (on_deleted) {
+				on_deleted();
+			} else {
+				frappe.set_route('customer-manager');
+			}
+		}
+	);
 }
 
 async function render_customer_detail(page, customer_name) {
@@ -1258,7 +1408,7 @@ function load_customers(page, page_no) {
 			state.has_more = !!message.has_more;
 
 			if (data.length === 0) {
-				tbody.html(`<tr><td colspan="${columns.length}" style="padding:24px; text-align:center; color:var(--text-muted);">No customers found.</td></tr>`);
+				tbody.html(`<tr><td colspan="${cm_list_colspan()}" style="padding:24px; text-align:center; color:var(--text-muted);">No customers found.</td></tr>`);
 				render_customer_manager_pagination(page);
 				return;
 			}
@@ -1270,6 +1420,15 @@ function load_customers(page, page_no) {
 					`<td>${frappe.utils.escape_html(d.tax_id || '-')}</td>`,
 					`<td>${frappe.utils.escape_html(d.phone_number || '-')}</td>`,
 				];
+				if (cm_can_delete()) {
+					let deletable = cm_row_is_deletable(d);
+					row_cells.unshift(deletable
+						? `<td class="cm-no-open"><input type="checkbox" class="cm-select-row" data-name="${cm_attr(d.name)}" data-label="${cm_attr(d.customer_name || d.name)}"></td>`
+						: `<td class="cm-no-open"></td>`);
+					row_cells.push(deletable
+						? `<td class="cm-no-open" style="text-align:right;"><button type="button" class="btn btn-xs btn-default cm-row-delete" data-name="${cm_attr(d.name)}" title="Delete customer"><i class="fa fa-trash" style="color:var(--red-500);"></i></button></td>`
+						: `<td class="cm-no-open"></td>`);
+				}
 				html += `
 					<tr data-name="${frappe.utils.escape_html(d.name || '')}">
 						${row_cells.join('')}
