@@ -144,6 +144,11 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
         <div style="margin-top: 10px; font-size: 14px; font-weight: bold; color: #000; text-transform: uppercase; white-space: nowrap;">
             {{{{ 'Sale No' if is_cash_sale else 'Invoice No' }}}}: {{{{ doc.name }}}}
         </div>
+        {{% if doc.get('custom_source_job_card') %}}
+        <div style="margin-top: 6px; font-size: 14px; font-weight: bold; color: #000; text-transform: uppercase; white-space: nowrap;">
+            Job Card No: {{{{ doc.custom_source_job_card }}}}
+        </div>
+        {{% endif %}}
         {{% else %}}
         <div style="color: #7f8c8d; font-size: 12px; text-transform: uppercase; margin-top: 10px;">{ref_label}:</div>
         <div style="font-size: 14px;">{{{{ doc.name }}}}</div>
