@@ -670,6 +670,20 @@ def add_custom_fields():
                 "hidden": 1,
                 "no_copy": 1,
                 "read_only": 1,
+            },
+            {
+                # The Quotation Item this row was invoiced from (Sales Invoice Item has no
+                # reliable back-link of its own). sales_invoice_handler keeps that row's quoted
+                # price instead of re-pricing glass / ceiling / glass services at today's rates,
+                # so a price change never reaches a quotation the customer already accepted.
+                "fieldname": "custom_quotation_row",
+                "label": "Quotation Row",
+                "fieldtype": "Data",
+                "insert_after": "custom_ceiling_paid_amount",
+                "hidden": 1,
+                "no_copy": 1,
+                "read_only": 1,
+                "module": "Crystal Alluminium Works",
             }
         ],
         "Sales Invoice": _get_price_adjustment_fields() + [

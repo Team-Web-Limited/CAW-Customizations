@@ -159,6 +159,7 @@ def on_validate(doc, method):
     # The Quotation Builder's +/- %, mapped here from the Quotation — see reapply_price_adjustment.
     adjustment_multiplier = get_price_adjustment_multiplier(doc)
     rates_adjusted = False
+    quoted = _QuotedRates(doc)
 
     # ── 2. Process each remaining item through the pricing engine ─────
     for idx, item in enumerate(doc.items):
@@ -172,10 +173,16 @@ def on_validate(doc, method):
             new_items.extend(auto_rows)
         else:
             continue
+        # The engine priced the row at today's rates; a row invoiced from a quotation goes back
+        # to its quoted price, which already carries the Builder's +/- %.
+        if quoted.restore_row(item, idx + 1):
+            rates_adjusted = True
+            continue
         rates_adjusted = reapply_price_adjustment(item, item_group, adjustment_multiplier) or rates_adjusted
 
     # ── 3. Append generated service rows ──────────────────────────────
     for new_item in new_items:
+        quoted.restore_service_row(new_item)
         doc.append("items", new_item)
 
     # Ensure invoice-only accounting fields are filled for both mapped
@@ -186,6 +193,65 @@ def on_validate(doc, method):
     # ── 4. Recalculate totals since we added new items ────────────────
     if new_items or rates_adjusted:
         doc.calculate_taxes_and_totals()
+
+
+class _QuotedRates:
+    """The prices a Sales Invoice made from a quotation must keep.
+
+    The pricing engine re-prices cut-size / full-sheet glass and ceiling bundles from the Item's
+    current rate, and rebuilds glass service rows (polishing, holes, notches, sandblasting) at
+    today's service rates — so a price change after the customer accepted and paid the quotation
+    made its invoice cost more (or less) than quoted, and the cash release check then asked them
+    to pay the difference. Rows linked to their Quotation Item (custom_quotation_row, set by
+    api.make_sales_invoice_from_quotation) get the quoted price back here; quantities, area and
+    which service rows exist still come from the engine, so partial releases scale as before.
+    Aluminium, fittings and the rest are never re-priced, so they keep the mapped quoted rate.
+    Rows without the link (invoices made before it existed) are priced as before."""
+
+    def __init__(self, doc):
+        names = [row.custom_quotation_row for row in doc.items if row.get("custom_quotation_row")]
+        self.rows = {}
+        self.services = {}
+        self.parent_by_invoice_idx = {}
+        if not names:
+            return
+        fields = ["name", "parent", "idx", "item_code", "rate", "custom_ceiling_sq_m"]
+        for row in frappe.get_all("Quotation Item", filters={"name": ["in", names]}, fields=fields):
+            self.rows[row.name] = row
+        parents = list({row.parent for row in self.rows.values()})
+        for row in frappe.get_all(
+            "Quotation Item",
+            filters={"parent": ["in", parents], "custom_auto_generated": 1},
+            fields=["parent", "custom_parent_row_idx", "item_code", "rate"],
+        ):
+            self.services[(row.parent, frappe.utils.cint(row.custom_parent_row_idx), row.item_code)] = row.rate
+
+    def restore_row(self, item, invoice_idx):
+        source = self.rows.get(item.get("custom_quotation_row"))
+        if not source or frappe.utils.flt(source.rate) <= 0:
+            return False
+        self.parent_by_invoice_idx[invoice_idx] = source
+
+        quoted_sq_m = frappe.utils.flt(source.custom_ceiling_sq_m)
+        if quoted_sq_m and frappe.utils.flt(item.get("custom_ceiling_sq_m")):
+            # A ceiling bundle is one row priced sqm x rate per sqm, and a partial release
+            # carries fewer sqm — keep the quoted rate per sqm, not the whole-bundle rate.
+            item.rate = frappe.utils.flt(item.custom_ceiling_sq_m) * frappe.utils.flt(source.rate) / quoted_sq_m
+        else:
+            # Glass is priced per piece; a partial release only changes the number of pieces.
+            item.rate = frappe.utils.flt(source.rate)
+        item.amount = frappe.utils.flt(item.qty) * item.rate
+        return True
+
+    def restore_service_row(self, service_row):
+        parent = self.parent_by_invoice_idx.get(frappe.utils.cint(service_row.get("custom_parent_row_idx")))
+        if not parent:
+            return
+        rate = self.services.get((parent.parent, frappe.utils.cint(parent.idx), service_row.get("item_code")))
+        if rate is None:
+            return
+        service_row["rate"] = frappe.utils.flt(rate)
+        service_row["amount"] = frappe.utils.flt(service_row.get("qty")) * service_row["rate"]
 
 
 def refresh_draft_invoice(name):

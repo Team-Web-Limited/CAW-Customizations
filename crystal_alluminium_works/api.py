@@ -3872,6 +3872,18 @@ def make_sales_invoice_from_quotation(source_name, releases=None):
 
     _copy_aluminium_color_between_rows(source_doc.items, invoice.items)
 
+    # Link each row to the Quotation Item it came from, so the invoice keeps the quoted price
+    # (sales_invoice_handler._keep_quoted_rates). get_mapped_doc copies the non-alternative
+    # rows (only the released ones on a partial) in source order, so they pair by position.
+    mapped_source = [
+        r for r in source_doc.items
+        if not r.get("is_alternative") and (not releases or r.name in releases)
+    ]
+    if len(mapped_source) == len(invoice.items):
+        for src, row in zip(mapped_source, invoice.items):
+            if src.item_code == row.item_code:
+                row.custom_quotation_row = src.name
+
     if releases:
         invoice.custom_is_partial = 1
         # get_mapped_doc copies the selected rows in source order and the invoice
