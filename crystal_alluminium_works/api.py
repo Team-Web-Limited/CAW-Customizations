@@ -7668,7 +7668,8 @@ def _apply_job_card_refund(job_card_name, amount, payment_name):
     job_card = frappe.get_doc("CAW Job Card", job_card_name)
     new_payment = _round_job_card_amount(max(flt(job_card.payment_amount) - flt(amount), 0))
     job_card.payment_amount = new_payment
-    job_card.balance_amount = _round_job_card_amount(max(flt(job_card.quotation_amount) - new_payment, 0))
+    # Settled like every other balance write, so a sub-shilling remainder doesn't linger as owed.
+    job_card.balance_amount = _job_card_balance(job_card.quotation_amount, new_payment)
     job_card.flags.ignore_permissions = True
     job_card.save(ignore_permissions=True)
     _write_job_card_amendment_event(
@@ -7863,9 +7864,9 @@ def on_payments_trash(doc, method=None):
         elif abs(contribution) > 0.0001:
             new_payment_amount = _round_job_card_amount(max(flt(job_card.payment_amount) - contribution, 0))
             job_card.payment_amount = new_payment_amount
-            job_card.balance_amount = _round_job_card_amount(
-                max(flt(job_card.quotation_amount) - new_payment_amount, 0)
-            )
+            # Settled like every other balance write (see PAYMENT_SETTLEMENT_TOLERANCE), so a
+            # customer who paid the whole shilling doesn't show the cents as still owed.
+            job_card.balance_amount = _job_card_balance(job_card.quotation_amount, new_payment_amount)
             job_card.flags.ignore_permissions = True
             job_card.save(ignore_permissions=True)
         else:
@@ -8406,9 +8407,9 @@ def _apply_correction_to_job_cards(old_by_job_card, new_by_job_card, original, r
             # recomputing from Payments would erase it.
             new_payment_amount = _round_job_card_amount(max(flt(job_card.payment_amount) + delta, 0))
             job_card.payment_amount = new_payment_amount
-            job_card.balance_amount = _round_job_card_amount(
-                max(flt(job_card.quotation_amount) - new_payment_amount, 0)
-            )
+            # Settled like every other balance write (see PAYMENT_SETTLEMENT_TOLERANCE), so a
+            # customer who paid the whole shilling doesn't show the cents as still owed.
+            job_card.balance_amount = _job_card_balance(job_card.quotation_amount, new_payment_amount)
             job_card.flags.ignore_permissions = True
             job_card.save(ignore_permissions=True)
 
