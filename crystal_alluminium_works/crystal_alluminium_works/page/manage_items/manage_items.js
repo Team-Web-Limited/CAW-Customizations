@@ -1347,9 +1347,15 @@ function open_aluminium_colors_modal(page) {
 			let seen = new Set();
 			let has_duplicate = false;
 
+			// Each row carries the name it was loaded with (data-original), so the server can tell
+			// an edited name (renamed, quotations follow it) from a removed one (refused while in
+			// use) — see api.py save_aluminium_colors.
 			d.$wrapper.find('.mi-color-row').each(function() {
-				let color_name = ($(this).find('.mi-color-name').val() || '').trim();
+				let $input = $(this).find('.mi-color-name');
+				let color_name = ($input.val() || '').trim();
+				let original = $input.attr('data-original') || '';
 				if (!color_name) {
+					if (original) colors.push({ original: original, color_name: '' });
 					return;
 				}
 
@@ -1359,7 +1365,7 @@ function open_aluminium_colors_modal(page) {
 					return;
 				}
 				seen.add(normalized);
-				colors.push(color_name);
+				colors.push({ original: original, color_name: color_name });
 			});
 
 			if (has_duplicate) {
@@ -1401,7 +1407,7 @@ function open_aluminium_colors_modal(page) {
 		rows.forEach(color => {
 			html += `
 				<tr class="mi-color-row">
-					<td><input type="text" class="form-control mi-color-name" value="${frappe.utils.escape_html(color || '')}" placeholder="e.g. Bronze"></td>
+					<td><input type="text" class="form-control mi-color-name" value="${frappe.utils.escape_html(color || '')}" data-original="${frappe.utils.escape_html(color || '')}" placeholder="e.g. Bronze"></td>
 					<td style="text-align:center;"><button class="btn btn-xs btn-danger mi-del-color-row">✕</button></td>
 				</tr>
 			`;

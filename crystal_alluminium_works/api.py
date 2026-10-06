@@ -5599,38 +5599,92 @@ def get_aluminium_colors():
     )
 
 
+# Rows that store an Aluminium Color, checked before a colour is deleted.
+ALUMINIUM_COLOR_LINKS = (
+    ("Quotation Item", "Quotation"),
+    ("Sales Order Item", "Sales Order"),
+    ("Sales Invoice Item", "Sales Invoice"),
+)
+
+
 @frappe.whitelist()
 def save_aluminium_colors(colors):
+    """Manage Items' Aluminium Colors dialog. Each entry is {"original": <name it had when the
+    dialog opened, or "" for a new row>, "color_name": <name now>} (a plain string is a new row).
+
+    Only what changed is applied. This used to delete every colour and re-insert the list with
+    force=1, so editing a name ("9005 BLACK MATT" -> "RAL 9005 BLACK MATT") deleted the old
+    colour while quotations still linked to it, and invoicing them then failed with "Could not
+    find Row #1: Color". Now an edited name is renamed — rename_doc carries every quotation,
+    sales order and invoice row along — and a colour still in use can't be deleted."""
     frappe.only_for(["System Manager", "Sales User"])
     _ensure_aluminium_color_doctype()
 
-    colors = json.loads(colors) if isinstance(colors, str) else (colors or [])
-    clean_colors = []
+    entries = json.loads(colors) if isinstance(colors, str) else (colors or [])
+    wanted = []
     seen = set()
-    for color in colors:
-        color_name = str(color or "").strip()
+    for entry in entries:
+        if isinstance(entry, dict):
+            original = str(entry.get("original") or "").strip()
+            color_name = str(entry.get("color_name") or "").strip()
+        else:
+            original, color_name = "", str(entry or "").strip()
         if not color_name:
+            if original:
+                wanted.append(("", original, True))  # blanked out: treat as removed
             continue
+        if color_name.lower() in seen:
+            frappe.throw(f"{frappe.bold(color_name)} appears more than once. Each color should only appear once.")
+        seen.add(color_name.lower())
+        wanted.append((color_name, original, False))
 
-        normalized = color_name.lower()
-        if normalized in seen:
+    existing = set(frappe.get_all("Aluminium Color", pluck="name"))
+    existing_by_lower = {name.lower(): name for name in existing}
+    # A row without an original (a new row, or a plain name from a page loaded before this
+    # change) whose name already exists keeps that colour rather than re-creating it.
+    wanted = [
+        (name, original or (existing_by_lower.get(name.lower(), "") if not removed else ""), removed)
+        for name, original, removed in wanted
+    ]
+    kept = {original for name, original, removed in wanted if original and not removed}
+    removed = [name for name in existing if name not in kept]
+
+    in_use = {}
+    for name in removed:
+        for child, parent in ALUMINIUM_COLOR_LINKS:
+            parents = frappe.get_all(
+                child, filters={"custom_aluminium_color": name, "parenttype": parent},
+                pluck="parent", distinct=True, limit_page_length=3,
+            )
+            if parents:
+                in_use.setdefault(name, []).extend(parents)
+    if in_use:
+        detail = "<br>".join(
+            f"{frappe.bold(name)} — used on {', '.join(docs[:3])}{' and more' if len(docs) > 3 else ''}"
+            for name, docs in in_use.items()
+        )
+        frappe.throw(
+            "These colors are still used and can't be removed. Rename them instead, or leave them in the list:<br>" + detail,
+            title="Color in use",
+        )
+
+    for name in removed:
+        frappe.delete_doc("Aluminium Color", name, ignore_permissions=True)
+
+    for color_name, original, is_removed in wanted:
+        if is_removed:
             continue
-
-        seen.add(normalized)
-        clean_colors.append(color_name)
-
-    existing = frappe.get_all("Aluminium Color", fields=["name"])
-    for row in existing:
-        frappe.delete_doc("Aluminium Color", row.name, ignore_permissions=True, force=1)
-
-    for color_name in clean_colors:
-        frappe.get_doc({
-            "doctype": "Aluminium Color",
-            "color_name": color_name,
-        }).insert(ignore_permissions=True)
+        if original and original in existing:
+            if original != color_name:
+                if original.lower() != color_name.lower() and frappe.db.exists("Aluminium Color", color_name):
+                    frappe.throw(f"{frappe.bold(color_name)} already exists.")
+                frappe.rename_doc("Aluminium Color", original, color_name, force=True)
+                frappe.db.set_value("Aluminium Color", color_name, "color_name", color_name, update_modified=False)
+        elif not frappe.db.exists("Aluminium Color", color_name):
+            frappe.get_doc({"doctype": "Aluminium Color", "color_name": color_name}).insert(ignore_permissions=True)
 
     frappe.db.commit()
-    return clean_colors
+    return [color_name for color_name, original, is_removed in wanted if not is_removed]
 
 
 def _copy_aluminium_color_between_rows(source_rows, target_rows):
