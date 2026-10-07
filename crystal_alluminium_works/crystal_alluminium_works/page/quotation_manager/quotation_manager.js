@@ -1510,8 +1510,7 @@ async function validate_job_card_mpesa_code(dialog) {
 function reset_job_card_payment_capture(dialog) {
 	refresh_job_card_payment_options(dialog);
 	dialog.set_value('reference', '');
-	dialog._autofilled_payment_amount = flt(dialog._payment_limit || 0);
-	dialog.set_value('payment_amount', flt(dialog._payment_limit || 0));
+	dialog.set_value('payment_amount', 0);
 	update_job_card_balance(dialog);
 	refresh_job_card_payment_capture_fields(dialog);
 }
@@ -1693,12 +1692,11 @@ function apply_job_card_customer_advance(dialog, credit) {
 		dialog.set_value('advance', applied);
 	}
 
+	// Payment Amount is never auto-filled with what's left (it starts at 0); only clear a typed
+	// figure the new limit no longer allows.
 	let current = flt(dialog.get_value('payment_amount') || 0);
-	let was_autofilled = dialog._autofilled_payment_amount === undefined
-		|| Math.abs(current - flt(dialog._autofilled_payment_amount)) < 0.0001;
-	if (was_autofilled) {
-		dialog._autofilled_payment_amount = remaining;
-		dialog.set_value('payment_amount', remaining);
+	if (current > remaining + 0.0001) {
+		dialog.set_value('payment_amount', 0);
 	}
 	update_job_card_balance(dialog);
 	refresh_job_card_payment_capture_fields(dialog);
@@ -1829,7 +1827,9 @@ async function open_job_card_modal(page, doc) {
 			{ fieldtype: 'Section Break', label: 'Payment' },
 			{ fieldtype: 'Currency', fieldname: 'quotation_amount', label: 'Quotation Amount', read_only: 1, default: quotation_total },
 			{ fieldtype: 'Column Break' },
-			{ fieldtype: 'Currency', fieldname: 'payment_amount', label: 'Payment Amount', default: remaining_after_credit, reqd: 1 },
+			// Starts at 0, never pre-filled with the balance: a pre-filled amount saved unnoticed records
+			// money that was never paid (HAUSSMAN, QTN-2026-60178). Staff type what was received.
+			{ fieldtype: 'Currency', fieldname: 'payment_amount', label: 'Payment Amount', default: 0 },
 			{ fieldtype: 'Currency', fieldname: 'balance_amount', label: 'Balance', read_only: 1, default: remaining_after_credit },
 			{ fieldtype: 'Column Break' },
 			{
