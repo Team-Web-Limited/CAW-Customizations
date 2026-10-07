@@ -2559,6 +2559,24 @@ def set_quotation_bill_to(quotation, bill_to_name=None, bill_to_pin=None, bill_t
     if bill_to_name and not bill_to_pin:
         frappe.throw("The organisation's KRA PIN is required.")
 
+    # A first-time customer (only drafts, nothing paid or started) asked to be registered starts
+    # straight on invoice terms: the customer-level conversion moves their drafts to the
+    # organisation instead of billing this one to it as a cash sale.
+    if bill_to_name and frappe.utils.cint(register_invoice_customer):
+        if quotation_doc.party_name == SHARED_CASH_CUSTOMER_NAME:
+            customer_key = _walkin_customer_key(quotation_doc.get("custom_customer_name"), quotation_doc.get("custom_customer_phone"))
+        else:
+            customer_key = quotation_doc.party_name
+        walkin = _parse_walkin_customer_key(customer_key)
+        candidates = [
+            q for q in (frappe.get_doc("Quotation", n) for n in _customer_manager_quotation_names(customer_key))
+            if q.docstatus != 2 and _is_cash_quotation(q)
+        ]
+        if _customer_has_only_drafts(customer_key, walkin, candidates):
+            return convert_customer_to_organisation(
+                customer_key, bill_to_name, bill_to_pin, bill_to_phone, contact_name, contact_phone,
+            )
+
     if bill_to_name:
         contact_name = " ".join((contact_name or "").split()) or (quotation_doc.get("custom_customer_name") or "").strip()
         contact_phone = _clean_phone(contact_phone, "Contact Phone") or (quotation_doc.get("custom_customer_phone") or "").strip()
@@ -2662,7 +2680,12 @@ def convert_customer_to_organisation(customer, organisation_name, kra_pin, telep
       gets one registered (or the Customer already holding this KRA PIN is reused).
 
     Refused while the customer has Job Cards in progress — editing one after the billing type
-    changed would be refused for its payment mode no longer matching."""
+    changed would be refused for its payment mode no longer matching.
+
+    First-time customers start straight on invoice terms instead: when every live quotation is
+    still a Draft with no Job Card, deposit, payment or invoice, those drafts move to the
+    organisation as invoice quotations (_start_as_invoice_customer) rather than being billed to it
+    as cash sales."""
     from crystal_alluminium_works.customer_handler import normalize_kra_pin
 
     frappe.has_permission("Customer", "write", throw=True)
@@ -2682,6 +2705,11 @@ def convert_customer_to_organisation(customer, organisation_name, kra_pin, telep
         quotation for quotation in (frappe.get_doc("Quotation", name) for name in _customer_manager_quotation_names(customer))
         if quotation.docstatus != 2 and _is_cash_quotation(quotation)
     ]
+
+    if _customer_has_only_drafts(customer, walkin, cash_quotations):
+        return _start_as_invoice_customer(
+            customer, walkin, cash_quotations, organisation_name, kra_pin, telephone, contact_name, contact_phone,
+        )
 
     # 1. The customer: an Invoice Customer from here on.
     if walkin:
@@ -2735,7 +2763,103 @@ def convert_customer_to_organisation(customer, organisation_name, kra_pin, telep
             frappe.db.set_value("CAW Job Card", job_card, "customer_name", organisation_name)
         renamed.append(name)
 
-    return {"registered": registered, "quotations": renamed}
+    return {"mode": "bill_to", "registered": registered, "quotations": renamed}
+
+
+def _customer_has_only_drafts(customer, walkin, quotations):
+    """Nothing has happened yet that ties this customer to cash terms: every live quotation is a
+    Draft, with no Job Card, invoice, deposit or other payment behind it."""
+    for quotation in quotations:
+        if quotation.docstatus != 0 or _resolve_job_card_for_quotation(quotation.name) or _quotation_is_invoiced(quotation.name):
+            return False
+    names = [q.name for q in quotations]
+    if names and frappe.db.exists("Payments", {"quotation": ["in", names]}):
+        return False
+    if walkin:
+        if walkin.phone and frappe.db.exists("Payments", {"customer": SHARED_CASH_CUSTOMER_NAME, "customer_phone": walkin.phone}):
+            return False
+    elif frappe.db.exists("Payments", {"customer": customer}) or frappe.db.exists("CAW Job Card", {"customer": customer, "status": ["!=", "Cancelled"]}):
+        return False
+    return True
+
+
+def _move_quotation_to_invoice_customer(quotation, customer, contact_name, contact_phone):
+    """A Draft cash quotation becomes an invoice quotation of `customer`. Items, prices and totals
+    are left untouched (no re-save, so nothing is re-priced); the walk-in's cash details and any
+    Bill To are cleared — they would otherwise print in place of the customer — and the walk-in
+    is kept as the Contact."""
+    details = frappe.db.get_value("Customer", customer, ["customer_name", "tax_id"], as_dict=True)
+    quotation.db_set({
+        "quotation_to": "Customer",
+        "party_name": customer,
+        "customer_name": details.customer_name,
+        "custom_customer_tax_id": details.tax_id,
+        "custom_customer_name": None,
+        "custom_customer_phone": None,
+        "custom_customer_pin": None,
+        "custom_bill_to_name": None,
+        "custom_bill_to_pin": None,
+        "custom_bill_to_phone": None,
+        "custom_contact_name": contact_name,
+        "custom_contact_phone": contact_phone,
+        "custom_converted_to_customer": customer,
+    })
+
+
+def _start_as_invoice_customer(customer, walkin, quotations, organisation_name, kra_pin, telephone,
+                               contact_name, contact_phone):
+    """convert_customer_to_organisation for a first-time customer (see _customer_has_only_drafts):
+    the organisation becomes an Invoice Customer and the drafts move to it.
+
+    A Cash Customer record is itself converted and renamed to the organisation (rename_doc carries
+    its drafts along) — unless another Customer already holds this KRA PIN, which is then used and
+    the record is left as it is. A walk-in, who has no record, gets the organisation registered."""
+    from crystal_alluminium_works.customer_handler import normalize_kra_pin
+
+    if walkin:
+        contact_name = " ".join((contact_name or "").split()) or walkin.name
+        contact_phone = _clean_phone(contact_phone, "Contact Phone") or walkin.phone
+        target = _register_bill_to_invoice_customer(organisation_name, kra_pin, telephone or contact_phone)["customer"]
+    else:
+        doc = frappe.get_doc("Customer", customer)
+        if doc.custom_customer_billing_type == "Invoice Customer":
+            frappe.throw(f"{frappe.bold(doc.customer_name)} is already an Invoice Customer.")
+        contact_name = " ".join((contact_name or "").split()) or doc.customer_name
+        contact_phone = _clean_phone(contact_phone, "Contact Phone") or (doc.mobile_no or "")
+        holder = frappe.db.sql(
+            """SELECT name FROM `tabCustomer`
+               WHERE UPPER(REPLACE(TRIM(IFNULL(tax_id, '')), ' ', '')) = %(pin)s AND name NOT IN (%(shared)s, %(this)s)
+               ORDER BY creation LIMIT 1""",
+            {"pin": normalize_kra_pin(kra_pin), "shared": SHARED_CASH_CUSTOMER_NAME, "this": doc.name},
+        )
+        if holder:
+            target = _register_bill_to_invoice_customer(organisation_name, kra_pin, telephone)["customer"]
+        else:
+            doc.customer_name = organisation_name
+            doc.customer_type = "Company"
+            doc.tax_id = kra_pin
+            if telephone:
+                doc.mobile_no = telephone
+            doc.custom_customer_billing_type = "Invoice Customer"
+            doc.save()
+            target = doc.name
+            if organisation_name != doc.name and not frappe.db.exists("Customer", organisation_name):
+                target = frappe.rename_doc("Customer", doc.name, organisation_name, force=True)
+
+    _add_customer_contact_note(target, contact_name, contact_phone)
+    moved = []
+    for quotation in quotations:
+        quotation.reload()  # a rename above re-pointed party_name
+        _move_quotation_to_invoice_customer(quotation, target, contact_name, contact_phone)
+        moved.append(quotation.name)
+
+    target_name = frappe.db.get_value("Customer", target, "customer_name") or target
+    return {
+        "mode": "invoice_start",
+        "registered": {"customer": target, "action": "invoice_start",
+                       "message": f"{target_name} starts as an Invoice Customer."},
+        "quotations": moved,
+    }
 
 
 def _sync_quotation_bill_to_from_job_card(quotation_doc, customer_doc, payment_mode, job_card,

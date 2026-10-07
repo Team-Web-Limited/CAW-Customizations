@@ -666,7 +666,9 @@ function open_customer_bill_to_dialog(page, customer_name, customer) {
 						title: __('Converted'),
 						indicator: 'green',
 						message: `<p>${cm_text((result.registered || {}).message)}</p>
-							<p>${(result.quotations || []).length} past quotation(s) now show <b>${cm_text(values.organisation_name)}</b>.</p>`
+							<p>${result.mode === 'invoice_start'
+								? `${(result.quotations || []).length} draft quotation(s) moved to it as invoice quotations${(result.quotations || []).length ? ': ' + result.quotations.map(cm_text).join(', ') : ''}.`
+								: `${(result.quotations || []).length} past quotation(s) now show <b>${cm_text(values.organisation_name)}</b>.`}</p>`
 					});
 					let target = (result.registered || {}).customer;
 					page.customer_manager_route_key = null;

@@ -1175,7 +1175,15 @@ function open_bill_to_organisation_dialog(page, doc) {
 					message: values.bill_to_name ? __('Now billed to {0}', [frappe.utils.escape_html(values.bill_to_name)]) : __('Billed to the walk-in again'),
 					indicator: 'green'
 				});
-				if (result.registered && result.registered.message) {
+				if (result.mode === 'invoice_start') {
+					// First-time customer: their drafts moved to the organisation as invoice quotations.
+					frappe.msgprint({
+						title: __('Invoice Customer'),
+						indicator: 'green',
+						message: `<p>${frappe.utils.escape_html(result.registered.message)}</p>
+							<p>${(result.quotations || []).length} draft quotation(s) moved to it as invoice quotations: ${(result.quotations || []).map(frappe.utils.escape_html).join(', ')}</p>`
+					});
+				} else if (result.registered && result.registered.message) {
 					frappe.msgprint({ title: __('Invoice Customer'), indicator: 'green', message: frappe.utils.escape_html(result.registered.message) });
 				}
 				render_quotation_dashboard(page, doc.name, page.wrapper);
