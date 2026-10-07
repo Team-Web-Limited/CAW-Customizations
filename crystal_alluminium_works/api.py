@@ -1443,6 +1443,9 @@ def get_quotations_page(search=None, status=None, customer=None, from_date=None,
                 # phone number is what actually lets staff find a walk-in's past
                 # quotations again.
                 ["Quotation", "custom_customer_phone", "like", like],
+                # Billed to an organisation: found by the organisation or its contact.
+                ["Quotation", "custom_bill_to_name", "like", like],
+                ["Quotation", "custom_contact_name", "like", like],
             ]
 
     fields = [
@@ -1450,6 +1453,7 @@ def get_quotations_page(search=None, status=None, customer=None, from_date=None,
         "party_name",
         "customer_name",
         "custom_customer_name",
+        "custom_bill_to_name",
         "transaction_date",
         "valid_till",
         "grand_total",
@@ -1488,7 +1492,7 @@ def get_quotations_page(search=None, status=None, customer=None, from_date=None,
             2,
         )
         row["display_name"] = (
-            row.get("custom_customer_name") or row.get("customer_name") or row.get("party_name")
+            row.get("custom_bill_to_name") or row.get("custom_customer_name") or row.get("customer_name") or row.get("party_name")
             if is_cash
             else (row.get("customer_name") or row.get("party_name"))
         )
@@ -2372,9 +2376,22 @@ def search_cash_customer_history(txt=None, limit=8):
         as_dict=True,
     )
 
+    # Walk-ins converted to an organisation (convert_customer_to_organisation) are billed on
+    # invoice terms now — leave them out so staff don't start another cash quote for them.
+    seen = {
+        ((row.name or "").strip().lower(), (row.phone or "").strip())
+        for row in frappe.db.sql(
+            """
+            SELECT DISTINCT custom_customer_name AS name, custom_customer_phone AS phone
+            FROM `tabQuotation`
+            WHERE party_name = %(shared_customer)s AND IFNULL(custom_converted_to_customer, '') != ''
+            """,
+            {"shared_customer": SHARED_CASH_CUSTOMER_NAME},
+            as_dict=True,
+        )
+    }
     # Dedupe by name + phone, keeping the most recent sighting (rows are
     # already ordered by modified DESC) so a changed PIN/phone wins.
-    seen = set()
     matches = []
     for row in rows:
         key = ((row.customer_name or "").strip().lower(), (row.phone_number or "").strip())
@@ -2410,7 +2427,12 @@ def search_builder_customers(doctype, txt, searchfield, start, page_len, filters
 
     if txt:
         params["txt"] = f"%{txt}%"
-        conditions.append("(name LIKE %(txt)s OR customer_name LIKE %(txt)s OR IFNULL(tax_id, '') LIKE %(txt)s)")
+        # Phone and Customer Details too: an organisation converted from a walk-in carries its
+        # contact there ("Contact: <name>, <phone>"), so the messenger's name or phone finds it.
+        conditions.append(
+            "(name LIKE %(txt)s OR customer_name LIKE %(txt)s OR IFNULL(tax_id, '') LIKE %(txt)s"
+            " OR IFNULL(mobile_no, '') LIKE %(txt)s OR IFNULL(customer_details, '') LIKE %(txt)s)"
+        )
 
     if payment_mode == "cash":
         conditions.append("IFNULL(TRIM(tax_id), '') = ''")
@@ -2504,10 +2526,25 @@ def _apply_quotation_bill_to(quotation_doc, bill_to_name, bill_to_pin, job_card=
         })
 
 
+def _clean_phone(value, label):
+    phone = re.sub(r"[\s-]", "", value or "")
+    if phone and not re.fullmatch(r"\d{10}", phone):
+        frappe.throw(f"{label} must be exactly 10 digits, e.g. 0712345678.")
+    return phone
+
+
 @frappe.whitelist()
-def set_quotation_bill_to(quotation, bill_to_name=None, bill_to_pin=None):
-    """Quotation Manager's Bill to Organisation: print and invoice a cash quotation to an
-    organisation (name + KRA PIN) while the walk-in who asked for it stays its contact."""
+def set_quotation_bill_to(quotation, bill_to_name=None, bill_to_pin=None, bill_to_phone=None,
+                          contact_name=None, contact_phone=None, register_invoice_customer=0):
+    """Quotation Manager's Bill to Organisation: the organisation replaces the cash customer on
+    the quotation, its Job Card, the invoice and their prints and lists; the walk-in who asked for
+    it becomes the Contact (name / phone, editable). Telephone is the organisation's own number and
+    falls back to the contact's. The walk-in's identity fields, deposits and payments are left as
+    they are. Blank name and PIN bill the walk-in again.
+
+    register_invoice_customer also registers the organisation as an Invoice Customer for future
+    quotations (or converts a Cash Customer already holding this KRA PIN); the current quotation
+    stays a cash sale."""
     from crystal_alluminium_works.customer_handler import normalize_kra_pin
 
     quotation_doc = frappe.get_doc("Quotation", quotation)
@@ -2521,8 +2558,184 @@ def set_quotation_bill_to(quotation, bill_to_name=None, bill_to_pin=None):
     bill_to_pin = normalize_kra_pin(bill_to_pin)
     if bill_to_name and not bill_to_pin:
         frappe.throw("The organisation's KRA PIN is required.")
+
+    if bill_to_name:
+        contact_name = " ".join((contact_name or "").split()) or (quotation_doc.get("custom_customer_name") or "").strip()
+        contact_phone = _clean_phone(contact_phone, "Contact Phone") or (quotation_doc.get("custom_customer_phone") or "").strip()
+        bill_to_phone = _clean_phone(bill_to_phone, "Telephone") or contact_phone
+    else:
+        bill_to_phone = contact_name = contact_phone = ""
+
     _apply_quotation_bill_to(quotation_doc, bill_to_name, bill_to_pin)
-    return {"bill_to_name": bill_to_name, "bill_to_pin": bill_to_pin}
+    quotation_doc.db_set({
+        "custom_bill_to_phone": bill_to_phone,
+        "custom_contact_name": contact_name,
+        "custom_contact_phone": contact_phone,
+    })
+
+    registered = None
+    if bill_to_name and frappe.utils.cint(register_invoice_customer):
+        registered = _register_bill_to_invoice_customer(bill_to_name, bill_to_pin, bill_to_phone)
+    return {"bill_to_name": bill_to_name, "bill_to_pin": bill_to_pin, "registered": registered}
+
+
+def _add_customer_contact_note(customer, contact_name, contact_phone):
+    """Record the contact person on a Customer's Customer Details, once per name/phone."""
+    contact = ", ".join(part for part in ((contact_name or "").strip(), (contact_phone or "").strip()) if part)
+    if not customer or not contact:
+        return
+    line = f"Contact: {contact}"
+    details = frappe.db.get_value("Customer", customer, "customer_details") or ""
+    if line.lower() in details.lower():
+        return
+    frappe.db.set_value("Customer", customer, "customer_details", (details.rstrip() + "\n" + line).strip(), update_modified=False)
+
+
+def _register_bill_to_invoice_customer(name, pin, phone):
+    """An Invoice Customer for the organisation, so its next quotation is raised to it on invoice
+    terms. A Customer already holding this KRA PIN is reused: left as it is when it already bills
+    on invoice, converted when it is a Cash Customer with no Job Card still in progress (editing
+    one would otherwise be refused for its payment mode no longer matching the billing type)."""
+    from crystal_alluminium_works.customer_handler import normalize_kra_pin
+
+    existing = frappe.db.sql(
+        """SELECT name, customer_name, custom_customer_billing_type FROM `tabCustomer`
+           WHERE UPPER(REPLACE(TRIM(IFNULL(tax_id, '')), ' ', '')) = %(pin)s AND name != %(shared)s
+           ORDER BY creation LIMIT 1""",
+        {"pin": normalize_kra_pin(pin), "shared": SHARED_CASH_CUSTOMER_NAME},
+        as_dict=True,
+    )
+    if existing:
+        customer = existing[0]
+        if customer.custom_customer_billing_type == "Invoice Customer":
+            return {"customer": customer.name, "action": "exists",
+                    "message": f"{customer.customer_name} is already an Invoice Customer."}
+        open_cards = frappe.get_all(
+            "CAW Job Card",
+            filters={"customer": customer.name, "status": ["not in", ["Completed", "Cancelled"]]},
+            pluck="name", limit_page_length=3,
+        )
+        if open_cards:
+            frappe.throw(
+                f"{frappe.bold(customer.customer_name)} (KRA PIN {pin}) is a Cash Customer with Job Cards "
+                f"still in progress ({', '.join(open_cards)}). Finish those first, then convert it in "
+                "Customer Manager. The organisation was not registered.",
+                title="Can't convert yet",
+            )
+        doc = frappe.get_doc("Customer", customer.name)
+        doc.custom_customer_billing_type = "Invoice Customer"
+        doc.save()
+        return {"customer": doc.name, "action": "converted",
+                "message": f"{doc.customer_name} converted from Cash to Invoice Customer."}
+
+    if not phone:
+        frappe.throw("Enter the organisation's telephone to register it as an Invoice Customer.")
+    result = register_customer(
+        customer_name=name, customer_billing_type="Invoice Customer", customer_type="Company",
+        tax_id=pin, mobile_no=phone,
+    )
+    return {"customer": result["name"], "action": "registered",
+            "message": f"{result['customer_name']} registered as an Invoice Customer."}
+
+
+def _customer_manager_quotation_names(customer):
+    """A Customer Manager entry's quotations: a walk-in's (name + phone on the shared Cash
+    Customer, see get_walkin_records) or a registered customer's own."""
+    if _parse_walkin_customer_key(customer):
+        return get_walkin_records(customer).quotations
+    if customer == SHARED_CASH_CUSTOMER_NAME:
+        frappe.throw("Open the walk-in from the list — the shared Cash Customer holds many people's quotations.")
+    return frappe.get_all("Quotation", filters={"quotation_to": "Customer", "party_name": customer}, pluck="name")
+
+
+@frappe.whitelist()
+def convert_customer_to_organisation(customer, organisation_name, kra_pin, telephone=None,
+                                     contact_name=None, contact_phone=None):
+    """Customer Manager's Bill to Organisation: a cash customer becomes an organisation billed on
+    invoice terms.
+
+    * Every past quotation (not cancelled) takes the organisation's name, with its Job Card; each
+      keeps the KRA PIN and telephone it already had, and invoices already issued are left as
+      they are. The walk-in stays the Contact.
+    * From the next quotation on, the customer is an Invoice Customer: a Cash Customer record is
+      converted in place (name, KRA PIN, telephone); a walk-in, who has no record of their own,
+      gets one registered (or the Customer already holding this KRA PIN is reused).
+
+    Refused while the customer has Job Cards in progress — editing one after the billing type
+    changed would be refused for its payment mode no longer matching."""
+    from crystal_alluminium_works.customer_handler import normalize_kra_pin
+
+    frappe.has_permission("Customer", "write", throw=True)
+    frappe.has_permission("Quotation", "write", throw=True)
+    organisation_name = " ".join((organisation_name or "").split())
+    kra_pin = normalize_kra_pin(kra_pin)
+    telephone = _clean_phone(telephone, "Telephone")
+    if not organisation_name:
+        frappe.throw("Organisation Name is required.")
+    if not re.fullmatch(KRA_PIN_PATTERN, kra_pin or ""):
+        frappe.throw(f"KRA PIN {frappe.bold(kra_pin or '(blank)')} is not valid. Expected e.g. P051209779U.")
+
+    walkin = _parse_walkin_customer_key(customer)
+    # Collected before the customer is converted: afterwards a record's quotations no longer read
+    # as cash quotations (_is_cash_quotation checks the party's billing type).
+    cash_quotations = [
+        quotation for quotation in (frappe.get_doc("Quotation", name) for name in _customer_manager_quotation_names(customer))
+        if quotation.docstatus != 2 and _is_cash_quotation(quotation)
+    ]
+
+    # 1. The customer: an Invoice Customer from here on.
+    if walkin:
+        contact_name = " ".join((contact_name or "").split()) or walkin.name
+        contact_phone = _clean_phone(contact_phone, "Contact Phone") or walkin.phone
+        registered = _register_bill_to_invoice_customer(organisation_name, kra_pin, telephone or contact_phone)
+    else:
+        doc = frappe.get_doc("Customer", customer)
+        if doc.custom_customer_billing_type == "Invoice Customer":
+            frappe.throw(f"{frappe.bold(doc.customer_name)} is already an Invoice Customer.")
+        open_cards = frappe.get_all(
+            "CAW Job Card", filters={"customer": doc.name, "status": ["not in", ["Completed", "Cancelled"]]},
+            pluck="name", limit_page_length=3,
+        )
+        if open_cards:
+            frappe.throw(
+                f"{frappe.bold(doc.customer_name)} still has Job Cards in progress ({', '.join(open_cards)}). "
+                "Finish them first, then convert.",
+                title="Can't convert yet",
+            )
+        contact_name = " ".join((contact_name or "").split()) or doc.customer_name
+        contact_phone = _clean_phone(contact_phone, "Contact Phone") or (doc.mobile_no or "")
+        doc.customer_name = organisation_name
+        doc.customer_type = "Company"
+        doc.tax_id = kra_pin
+        if telephone:
+            doc.mobile_no = telephone
+        doc.custom_customer_billing_type = "Invoice Customer"
+        doc.save()
+        registered = {"customer": doc.name, "action": "converted",
+                      "message": f"{organisation_name} is now an Invoice Customer."}
+
+    # The contact on the organisation's record, so searching the messenger's name or phone in the
+    # Quotation Builder finds it (search_builder_customers looks in Customer Details).
+    _add_customer_contact_note(registered["customer"], contact_name, contact_phone)
+
+    # 2. Past quotations: the organisation's name; PIN and telephone as they were.
+    renamed = []
+    for quotation in cash_quotations:
+        name = quotation.name
+        quotation.db_set({
+            "custom_bill_to_name": organisation_name,
+            "custom_bill_to_pin": quotation.get("custom_bill_to_pin") or quotation.get("custom_customer_pin") or "",
+            "custom_bill_to_phone": quotation.get("custom_bill_to_phone") or quotation.get("custom_customer_phone") or "",
+            "custom_contact_name": quotation.get("custom_contact_name") or contact_name,
+            "custom_contact_phone": quotation.get("custom_contact_phone") or contact_phone,
+            "custom_converted_to_customer": registered["customer"],
+        })
+        job_card = _resolve_job_card_for_quotation(name)
+        if job_card:
+            frappe.db.set_value("CAW Job Card", job_card, "customer_name", organisation_name)
+        renamed.append(name)
+
+    return {"registered": registered, "quotations": renamed}
 
 
 def _sync_quotation_bill_to_from_job_card(quotation_doc, customer_doc, payment_mode, job_card,

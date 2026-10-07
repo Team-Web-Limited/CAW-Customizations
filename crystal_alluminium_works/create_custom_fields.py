@@ -910,6 +910,54 @@ def add_custom_fields():
                 "no_copy": 1,
                 "module": "Crystal Alluminium Works",
             },
+            {
+                # The organisation's own telephone; defaults to the contact's until one is set.
+                "fieldname": "custom_bill_to_phone",
+                "label": "Bill To Telephone",
+                "fieldtype": "Data",
+                "insert_after": "custom_bill_to_pin",
+                "read_only": 1,
+                "allow_on_submit": 1,
+                "no_copy": 1,
+                "module": "Crystal Alluminium Works",
+            },
+            {
+                # Who to deal with for a quotation billed to an organisation — the walk-in who
+                # asked for it, until staff change it. Display only: the walk-in's identity
+                # (custom_customer_name / phone) stays as it was.
+                "fieldname": "custom_contact_name",
+                "label": "Contact Name",
+                "fieldtype": "Data",
+                "insert_after": "custom_bill_to_phone",
+                "read_only": 1,
+                "allow_on_submit": 1,
+                "no_copy": 1,
+                "module": "Crystal Alluminium Works",
+            },
+            {
+                "fieldname": "custom_contact_phone",
+                "label": "Contact Phone",
+                "fieldtype": "Data",
+                "insert_after": "custom_contact_name",
+                "read_only": 1,
+                "allow_on_submit": 1,
+                "no_copy": 1,
+                "module": "Crystal Alluminium Works",
+            },
+            {
+                # Set when the cash customer behind this quotation was converted to an organisation
+                # billed on invoice terms (api.convert_customer_to_organisation): the Invoice
+                # Customer it became. The cash-mode customer history leaves such walk-ins out.
+                "fieldname": "custom_converted_to_customer",
+                "label": "Converted To Customer",
+                "fieldtype": "Link",
+                "options": "Customer",
+                "insert_after": "custom_contact_phone",
+                "read_only": 1,
+                "allow_on_submit": 1,
+                "no_copy": 1,
+                "module": "Crystal Alluminium Works",
+            },
         ],
         # Read-only view of what this entry did to the foreign-currency lot
         # ledger. Nothing is stored on the document — the panel calls

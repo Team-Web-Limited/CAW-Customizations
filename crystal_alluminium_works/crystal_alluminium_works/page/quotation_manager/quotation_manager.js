@@ -881,7 +881,8 @@ function render_quotation_dashboard(page, quotation_name, wrapper, auto_amend) {
 					<h2>${frappe.utils.escape_html(doc.custom_bill_to_name || doc.custom_customer_name || doc.customer_name || doc.party_name || '')}</h2>
 					${doc.custom_bill_to_name ? `<div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">
 						KRA PIN: ${frappe.utils.escape_html(doc.custom_bill_to_pin || '-')} &middot;
-						Contact: ${frappe.utils.escape_html(doc.custom_customer_name || '-')} (${frappe.utils.escape_html(doc.custom_customer_phone || '-')})
+						Tel: ${frappe.utils.escape_html(doc.custom_bill_to_phone || doc.custom_contact_phone || doc.custom_customer_phone || '-')} &middot;
+						Contact: ${frappe.utils.escape_html(doc.custom_contact_name || doc.custom_customer_name || '-')} (${frappe.utils.escape_html(doc.custom_contact_phone || doc.custom_customer_phone || '-')})
 					</div>` : ''}
 					<div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">Created: ${frappe.datetime.global_date_format(doc.creation)}</div>
 				</div>
@@ -1120,10 +1121,14 @@ function get_action_buttons(doc, sales_invoices, existing_job_card, deposit_cred
 	return (buttons || '<span style="color:var(--text-muted);">No actions available.</span>') + note;
 }
 
-// Print and invoice a cash quotation to an organisation instead of the walk-in who asked for it.
-// The walk-in stays the quotation's contact (Customer Manager, statements and deposits key on
-// their name and phone); the invoice copies the Bill To when it's made. See api.py set_quotation_bill_to.
+// Bill to Organisation: the organisation replaces the cash customer on this quotation, its Job
+// Card, the invoice and their prints and lists; the walk-in becomes the Contact (name / phone,
+// pre-filled and kept until edited). Telephone falls back to the contact's phone. Optionally also
+// registers the organisation as an Invoice Customer for future quotations. Deposits and payments
+// stay where they are. See api.py set_quotation_bill_to.
 function open_bill_to_organisation_dialog(page, doc) {
+	let contact_name = doc.custom_contact_name || doc.custom_customer_name || '';
+	let contact_phone = doc.custom_contact_phone || doc.custom_customer_phone || '';
 	let d = new frappe.ui.Dialog({
 		title: __('Bill to Organisation'),
 		fields: [
@@ -1131,36 +1136,56 @@ function open_bill_to_organisation_dialog(page, doc) {
 				fieldtype: 'HTML',
 				fieldname: 'intro',
 				options: `<p style="color:var(--text-muted); font-size:13px;">
-					Prints and invoices this quotation to the organisation below.
-					${frappe.utils.escape_html(doc.custom_customer_name || 'The walk-in')}
-					(${frappe.utils.escape_html(doc.custom_customer_phone || '')}) stays on file as the contact.
+					The organisation replaces the cash customer on this quotation, its Job Card and the invoice.
+					Deposits and payments already taken stay as they are.
 				</p>`
 			},
 			{ fieldtype: 'Data', fieldname: 'bill_to_name', label: __('Organisation Name'), reqd: 1, default: doc.custom_bill_to_name || '' },
-			{ fieldtype: 'Data', fieldname: 'bill_to_pin', label: __('KRA PIN'), reqd: 1, default: doc.custom_bill_to_pin || '', description: __('e.g. P051209779U') }
+			{ fieldtype: 'Data', fieldname: 'bill_to_pin', label: __('KRA PIN'), reqd: 1, default: doc.custom_bill_to_pin || '', description: __('e.g. P051209779U') },
+			{ fieldtype: 'Data', fieldname: 'bill_to_phone', label: __('Telephone'), default: doc.custom_bill_to_phone || '',
+			  description: __('The organisation\'s number. Left blank, the contact\'s phone is used.') },
+			{ fieldtype: 'Section Break', label: __('Contact') },
+			{ fieldtype: 'Data', fieldname: 'contact_name', label: __('Contact Name'), default: contact_name },
+			{ fieldtype: 'Column Break' },
+			{ fieldtype: 'Data', fieldname: 'contact_phone', label: __('Contact Phone'), default: contact_phone, description: __('10 digits, e.g. 0712345678') },
+			{ fieldtype: 'Section Break' },
+			{ fieldtype: 'Check', fieldname: 'register_invoice_customer', label: __('Also register as an Invoice Customer'),
+			  description: __('For future quotations to this organisation on invoice terms. This quotation stays a cash sale. A Cash Customer with this KRA PIN is converted instead.') }
 		],
 		primary_action_label: __('Save'),
 		primary_action(values) {
-			save_bill_to(values.bill_to_name, values.bill_to_pin);
+			save_bill_to(values);
 		}
 	});
 	if (doc.custom_bill_to_name) {
 		d.set_secondary_action_label(__('Bill the Walk-in Instead'));
-		d.set_secondary_action(() => save_bill_to('', ''));
+		d.set_secondary_action(() => save_bill_to({}));
 	}
 
-	function save_bill_to(bill_to_name, bill_to_pin) {
+	function save_bill_to(values) {
 		frappe.call({
 			method: 'crystal_alluminium_works.api.set_quotation_bill_to',
-			args: { quotation: doc.name, bill_to_name, bill_to_pin },
+			args: {
+				quotation: doc.name,
+				bill_to_name: values.bill_to_name || '',
+				bill_to_pin: values.bill_to_pin || '',
+				bill_to_phone: values.bill_to_phone || '',
+				contact_name: values.contact_name || '',
+				contact_phone: values.contact_phone || '',
+				register_invoice_customer: values.register_invoice_customer ? 1 : 0
+			},
 			freeze: true,
 			callback(r) {
 				if (r.exc) return;
 				d.hide();
+				let result = r.message || {};
 				frappe.show_alert({
-					message: bill_to_name ? __('Now billed to {0}', [frappe.utils.escape_html(bill_to_name)]) : __('Billed to the walk-in again'),
+					message: values.bill_to_name ? __('Now billed to {0}', [frappe.utils.escape_html(values.bill_to_name)]) : __('Billed to the walk-in again'),
 					indicator: 'green'
 				});
+				if (result.registered && result.registered.message) {
+					frappe.msgprint({ title: __('Invoice Customer'), indicator: 'green', message: frappe.utils.escape_html(result.registered.message) });
+				}
 				render_quotation_dashboard(page, doc.name, page.wrapper);
 			}
 		});

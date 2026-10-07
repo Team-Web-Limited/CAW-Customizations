@@ -623,6 +623,72 @@ async function delete_customer_with_checks(page, customer_name, on_deleted) {
 	);
 }
 
+// Bill to Organisation from a cash customer's page: the customer becomes an organisation billed
+// on invoice terms. All their past quotations take the organisation's name (keeping their own
+// KRA PIN and telephone); from the next quotation on they're an Invoice Customer. See api.py
+// convert_customer_to_organisation.
+function open_customer_bill_to_dialog(page, customer_name, customer) {
+	let label = cm_text(customer.customer_name || customer_name);
+	let d = new frappe.ui.Dialog({
+		title: __('Bill to Organisation'),
+		fields: [
+			{ fieldtype: 'HTML', fieldname: 'intro', options: `<div style="color:var(--text-muted); font-size:13px;">
+				<p><b>${label}</b> becomes the organisation below:</p>
+				<ul style="padding-left:18px;">
+					<li>All past quotations take the organisation's name (their KRA PIN and telephone stay as they were). Invoices already issued are not changed.</li>
+					<li>The next quotation is raised to the organisation as an <b>Invoice Customer</b>.</li>
+					<li>Deposits and payments stay where they are.</li>
+				</ul></div>` },
+			{ fieldtype: 'Data', fieldname: 'organisation_name', label: __('Organisation Name'), reqd: 1 },
+			{ fieldtype: 'Data', fieldname: 'kra_pin', label: __('KRA PIN'), reqd: 1, default: customer.tax_id || '', description: __('e.g. P051209779U') },
+			{ fieldtype: 'Data', fieldname: 'telephone', label: __('Telephone'), default: customer.mobile_no || '',
+			  description: __('The organisation\'s number. Left blank, the contact\'s phone is used.') },
+			{ fieldtype: 'Section Break', label: __('Contact') },
+			{ fieldtype: 'Data', fieldname: 'contact_name', label: __('Contact Name'), default: customer.customer_name || '' },
+			{ fieldtype: 'Column Break' },
+			{ fieldtype: 'Data', fieldname: 'contact_phone', label: __('Contact Phone'), default: customer.mobile_no || '', description: __('10 digits, e.g. 0712345678') }
+		],
+		primary_action_label: __('Convert'),
+		primary_action(values) {
+			frappe.confirm(
+				__('Convert {0} to {1}? Past quotations will show the new name and the next quotation will be on invoice terms.',
+					[label, `<b>${cm_text(values.organisation_name)}</b>`]),
+				async () => {
+					let r = await frappe.call({
+						method: 'crystal_alluminium_works.api.convert_customer_to_organisation',
+						args: {
+							customer: customer_name,
+							organisation_name: values.organisation_name,
+							kra_pin: values.kra_pin,
+							telephone: values.telephone || '',
+							contact_name: values.contact_name || '',
+							contact_phone: values.contact_phone || ''
+						},
+						freeze: true,
+						freeze_message: __('Converting...')
+					});
+					let result = r.message || {};
+					d.hide();
+					frappe.msgprint({
+						title: __('Converted'),
+						indicator: 'green',
+						message: `<p>${cm_text((result.registered || {}).message)}</p>
+							<p>${(result.quotations || []).length} past quotation(s) now show <b>${cm_text(values.organisation_name)}</b>.</p>`
+					});
+					let target = (result.registered || {}).customer;
+					page.customer_manager_route_key = null;
+					if (target && target !== customer_name) {
+						frappe.set_route('customer-manager', target);
+					} else {
+						render_customer_manager_route(page);
+					}
+				}
+			);
+		}
+	});
+	d.show();
+}
+
 async function render_customer_detail(page, customer_name) {
 	page.customer_manager_current_customer = customer_name;
 	set_customer_detail_actions(page, customer_name);
@@ -678,6 +744,13 @@ async function render_customer_detail(page, customer_name) {
 			job_cards: job_cards,
 		};
 		page.set_title(customer.customer_name || customer.name);
+		// Bill to Organisation: for cash customers (walk-ins and Cash Customer records).
+		let is_cash = is_walkin_customer_key(customer_name) || customer.custom_customer_billing_type === 'Cash Customer';
+		if (is_cash && customer_name !== 'Cash Customer' && frappe.model.can_write('Quotation')) {
+			page.add_inner_button('Bill to Organisation', function () {
+				open_customer_bill_to_dialog(page, customer_name, customer);
+			});
+		}
 		$(page.body).html(get_customer_detail_html(customer, page.customer_manager_transactions));
 		render_customer_selected_transaction_table(page);
 	} catch (error) {
