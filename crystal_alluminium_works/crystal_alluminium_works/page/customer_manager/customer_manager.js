@@ -632,13 +632,6 @@ function open_customer_bill_to_dialog(page, customer_name, customer) {
 	let d = new frappe.ui.Dialog({
 		title: __('Bill to Organisation'),
 		fields: [
-			{ fieldtype: 'HTML', fieldname: 'intro', options: `<div style="color:var(--text-muted); font-size:13px;">
-				<p><b>${label}</b> becomes the organisation below:</p>
-				<ul style="padding-left:18px;">
-					<li>All past quotations take the organisation's name (their KRA PIN and telephone stay as they were). Invoices already issued are not changed.</li>
-					<li>The next quotation is raised to the organisation as an <b>Invoice Customer</b>.</li>
-					<li>Deposits and payments stay where they are.</li>
-				</ul></div>` },
 			{ fieldtype: 'Data', fieldname: 'organisation_name', label: __('Organisation Name'), reqd: 1 },
 			{ fieldtype: 'Data', fieldname: 'kra_pin', label: __('KRA PIN'), reqd: 1, default: customer.tax_id || '', description: __('e.g. P051209779U') },
 			{ fieldtype: 'Data', fieldname: 'telephone', label: __('Telephone'), default: customer.mobile_no || '',

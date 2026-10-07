@@ -1132,14 +1132,6 @@ function open_bill_to_organisation_dialog(page, doc) {
 	let d = new frappe.ui.Dialog({
 		title: __('Bill to Organisation'),
 		fields: [
-			{
-				fieldtype: 'HTML',
-				fieldname: 'intro',
-				options: `<p style="color:var(--text-muted); font-size:13px;">
-					The organisation replaces the cash customer on this quotation, its Job Card and the invoice.
-					Deposits and payments already taken stay as they are.
-				</p>`
-			},
 			{ fieldtype: 'Data', fieldname: 'bill_to_name', label: __('Organisation Name'), reqd: 1, default: doc.custom_bill_to_name || '' },
 			{ fieldtype: 'Data', fieldname: 'bill_to_pin', label: __('KRA PIN'), reqd: 1, default: doc.custom_bill_to_pin || '', description: __('e.g. P051209779U') },
 			{ fieldtype: 'Data', fieldname: 'bill_to_phone', label: __('Telephone'), default: doc.custom_bill_to_phone || '',
