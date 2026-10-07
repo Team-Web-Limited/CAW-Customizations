@@ -12,8 +12,23 @@ frappe.pages['sales-orders'].on_page_load = function(wrapper) {
 	wrapper.sales_orders_page = page;
 	$(page.body).html(get_sales_orders_html());
 	bind_sales_orders_events(page);
+	page.caw_skip_next_show = true;
 	load_sales_orders(page, 1);
 };
+
+// Reload when returning to this page (e.g. after converting a quotation in another page), keeping
+// the current filters and page number. on_page_load already loaded the first view, so the show
+// that immediately follows it is skipped.
+frappe.pages['sales-orders'].on_page_show = function(wrapper) {
+	let page = wrapper.sales_orders_page;
+	if (!page) return;
+	if (page.caw_skip_next_show) {
+		page.caw_skip_next_show = false;
+		return;
+	}
+	load_sales_orders(page, get_sales_orders_state(page).page || 1);
+};
+
 
 function get_sales_orders_state(page) {
 	if (!page.sales_orders_state) {

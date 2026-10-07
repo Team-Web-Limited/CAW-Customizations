@@ -12,10 +12,26 @@ frappe.pages['job-cards'].on_page_load = function(wrapper) {
 		frappe.set_route('crystal-aluminium-wo');
 	});
 
+	wrapper.job_cards_page = page;
 	$(page.body).html(get_job_cards_html());
 	bind_job_cards_events(page);
+	page.caw_skip_next_show = true;
 	load_job_cards(page, 1);
 };
+
+// Reload when returning to this page (e.g. after converting a quotation in another page), keeping
+// the current filters and page number. on_page_load already loaded the first view, so the show
+// that immediately follows it is skipped.
+frappe.pages['job-cards'].on_page_show = function(wrapper) {
+	let page = wrapper.job_cards_page;
+	if (!page) return;
+	if (page.caw_skip_next_show) {
+		page.caw_skip_next_show = false;
+		return;
+	}
+	load_job_cards(page, page.job_cards_page_no || 1);
+};
+
 
 function bind_job_cards_events(page) {
 	let $body = $(page.body);
@@ -55,6 +71,7 @@ function bind_job_cards_events(page) {
 }
 
 function load_job_cards(page, page_no) {
+	page.job_cards_page_no = page_no || 1;
 	let $body = $(page.body);
 	let $tbody = $body.find('.jc-list-body');
 	let filters = {

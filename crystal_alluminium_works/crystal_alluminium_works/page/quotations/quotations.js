@@ -12,8 +12,23 @@ frappe.pages['quotations'].on_page_load = function(wrapper) {
 	wrapper.quotations_page = page;
 	$(page.body).html(get_quotations_html());
 	bind_quotations_events(page);
+	page.caw_skip_next_show = true;
 	load_quotations(page, 1);
 };
+
+// Reload when returning to this page (e.g. after converting a quotation in another page), keeping
+// the current filters and page number. on_page_load already loaded the first view, so the show
+// that immediately follows it is skipped.
+frappe.pages['quotations'].on_page_show = function(wrapper) {
+	let page = wrapper.quotations_page;
+	if (!page) return;
+	if (page.caw_skip_next_show) {
+		page.caw_skip_next_show = false;
+		return;
+	}
+	load_quotations(page, get_quotations_state(page).page || 1);
+};
+
 
 function get_quotations_state(page) {
 	if (!page.quotations_state) {
