@@ -91,7 +91,11 @@ def _resolve_mpesa_claim(reference, amount, payment_method, payment_type=None, e
 	}
 	if exclude:
 		filters["name"] = ["not in", exclude]
-	claimed_by = frappe.db.get_value("Payments", filters, "name")
+	# Locking read, not a plain one: under REPEATABLE READ a plain read sees the snapshot taken at
+	# this request's first query, so a second save of the same code that waited on the lock above
+	# would still not see the Payment the first save just committed (Payments 174/175, recorded
+	# 0.05s apart, both claimed UJ2OM8N4KA that way).
+	claimed_by = frappe.db.get_value("Payments", filters, "name", for_update=lock)
 	if claimed_by:
 		frappe.throw(
 			f"M-Pesa code {code} has already been recorded on Payment #{claimed_by}.",
@@ -123,6 +127,82 @@ def _resolve_mpesa_claim(reference, amount, payment_method, payment_type=None, e
 		)
 
 	return transaction.name
+
+
+def _is_bank_payment_method(payment_method):
+	return bool(payment_method) and frappe.db.get_value("Mode of Payment", payment_method, "type") == "Bank"
+
+
+def _resolve_duplicate_bank_reference(reference, amount, payment_method, customer, payment_type=None, exclude=None, lock=False):
+	"""Throw if this Bank-type payment (PESALINK, Cheque, RTGS...) repeats one already recorded:
+	same customer, method, reference and amount. Bank transfers have no Safaricom-style log to
+	claim, so this is the only guard against the same transfer being entered twice (Payment 370
+	re-entered JC-2026-00129's 300,000 PESALINK deposit after its quotation was amended).
+
+	Only an exact repeat is refused: one transfer is sometimes recorded in parts under the same
+	reference (RIMA GLAZING's Payments 166/167), which differ in amount."""
+	if payment_type == "Refund" or not customer or not _is_bank_payment_method(payment_method):
+		return
+
+	code = normalize_mpesa_code(reference)
+	if not code:
+		return
+
+	if lock:
+		# Serialises two saves for the same customer, so a double-submitted payment can't slip
+		# past the check below while the other is still uncommitted.
+		frappe.db.get_value("Customer", customer, "name", for_update=True)
+
+	exclude = [str(name) for name in (exclude or []) if name]
+	existing = frappe.db.sql(
+		f"""select name, amount, date from `tabPayments`
+		where customer = %(customer)s and payment_method = %(payment_method)s
+			and is_corrected = 0 and payment_type != 'Refund'
+			and upper(replace(reference, ' ', '')) = %(code)s
+			and abs(amount - %(amount)s) < 0.0001
+			{"and name not in %(exclude)s" if exclude else ""}
+		limit 1 {"for update" if lock else ""}""",
+		{
+			"customer": customer,
+			"payment_method": payment_method,
+			"code": code,
+			"amount": flt(amount),
+			"exclude": tuple(exclude),
+		},
+		as_dict=True,
+	)
+	if existing:
+		row = existing[0]
+		frappe.throw(
+			f"{payment_method} reference {code} for {fmt_money(row.amount, currency='KES')} was already "
+			f"recorded for {customer} on Payment #{row.name} ({frappe.format(row.date, 'Date')}). "
+			"This looks like the same payment entered twice, so it has not been saved.",
+			title="Payment already recorded",
+		)
+
+
+def check_duplicate_bank_reference(doc):
+	"""Payments.validate: refuse an exact repeat of a Bank-type payment (see
+	_resolve_duplicate_bank_reference). Payments saved before this rule re-save unchanged; only a
+	new payment, or one whose customer/method/reference/amount changed, is checked."""
+	if doc.is_corrected:
+		return
+	if not doc.is_new():
+		before = doc.get_doc_before_save()
+		if before and all(
+			before.get(field) == doc.get(field) for field in ("customer", "payment_method", "reference")
+		) and abs(flt(before.amount) - flt(doc.amount)) <= 0.0001:
+			return
+
+	_resolve_duplicate_bank_reference(
+		doc.reference,
+		doc.amount,
+		doc.payment_method,
+		doc.customer,
+		payment_type=doc.payment_type,
+		exclude=[None if doc.is_new() else doc.name, doc.corrects_payment],
+		lock=True,
+	)
 
 
 def link_payment_to_mpesa(doc):
@@ -181,11 +261,19 @@ def _must_confirm_code(doc):
 
 
 @frappe.whitelist()
-def check_mpesa_reference(reference, amount, payment_method):
+def check_payment_reference(reference, amount, payment_method, customer=None):
 	"""Pre-flight for the Create/Edit Job Card modals, which save the Job Card before recording the
-	payment — a code rejected only at that second step would leave a Job Card with no payment."""
+	payment — a reference rejected only at that second step would leave a Job Card with no payment.
+	Runs the same checks Payments.validate does: the M-Pesa claim, and the Bank-type repeat."""
 	_resolve_mpesa_claim(reference, amount, payment_method, require_confirmed=True)
+	_resolve_duplicate_bank_reference(reference, amount, payment_method, customer)
 	return True
+
+
+@frappe.whitelist()
+def check_mpesa_reference(reference, amount, payment_method):
+	"""Kept for browsers still holding the page JS from before check_payment_reference."""
+	return check_payment_reference(reference, amount, payment_method)
 
 
 def link_late_confirmation(doc, method=None):

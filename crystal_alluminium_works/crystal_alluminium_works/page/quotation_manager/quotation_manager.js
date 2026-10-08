@@ -1293,7 +1293,7 @@ function refresh_job_card_payment_capture_fields(dialog) {
 		dialog.set_value('reference', '');
 	}
 	// Bank types need their reference; the Paybill M-Pesa code is optional but, when entered, must be
-	// one Safaricom has confirmed (see validate_job_card_mpesa_code / mpesa_link.py).
+	// one Safaricom has confirmed (see validate_job_card_payment_reference / mpesa_link.py).
 	dialog.set_df_property('reference', 'reqd', (reference_visible && mop_is_bank_type) ? 1 : 0);
 	update_job_card_save_button_visibility(dialog);
 }
@@ -1478,24 +1478,27 @@ function validate_job_card_payment_capture(dialog) {
 	return true;
 }
 
-async function validate_job_card_mpesa_code(dialog) {
+async function validate_job_card_payment_reference(dialog) {
 	// The Job Card is created before the payment is recorded, so an M-Pesa code the server
-	// would reject (never sent by Safaricom, already used, or more than M-Pesa received) must be
+	// would reject (never sent by Safaricom, already used, or more than M-Pesa received) — or a
+	// bank reference repeating a payment already recorded for this customer — must be
 	// caught here — otherwise the Job Card would be left behind with no payment. Same rule
 	// Payments.validate enforces; see mpesa_link.py.
 	let is_cash = normalize_job_card_payment_mode(dialog.get_value('payment_mode')) === 'cash';
 	let amount = flt(dialog.get_value('payment_amount') || 0);
 	let reference = (dialog.get_value('reference') || '').trim();
 	let mop_is_phone_type = (dialog._mode_of_payment_type || '').toLowerCase() === 'phone';
-	if (!is_cash || amount <= 0 || !reference || !mop_is_phone_type) {
+	let mop_is_bank_type = (dialog._mode_of_payment_type || '').toLowerCase() === 'bank';
+	if (!is_cash || amount <= 0 || !reference || !(mop_is_phone_type || mop_is_bank_type)) {
 		return true;
 	}
 
 	try {
-		await frappe.xcall('crystal_alluminium_works.mpesa_link.check_mpesa_reference', {
+		await frappe.xcall('crystal_alluminium_works.mpesa_link.check_payment_reference', {
 			reference: reference,
 			amount: amount,
-			payment_method: dialog.get_value('payment_option')
+			payment_method: dialog.get_value('payment_option'),
+			customer: dialog.get_value('customer')
 		});
 		return true;
 	} catch (e) {
@@ -1864,20 +1867,26 @@ async function open_job_card_modal(page, doc) {
 		],
 		primary_action_label: 'Save',
 		primary_action: async function(values) {
-			if (!validate_job_card_payment_amount(d)) {
+			// The await below is a network call made before any freeze overlay is up, so a double
+			// click would otherwise save the Job Card — and record its payment — twice.
+			if (!CAWPaymentDialog.begin_save(d)) {
 				return;
+			}
+
+			if (!validate_job_card_payment_amount(d)) {
+				return CAWPaymentDialog.end_save(d);
 			}
 
 			if (!validate_job_card_payment_capture(d)) {
-				return;
+				return CAWPaymentDialog.end_save(d);
 			}
 
 			if (!validate_job_card_phone_number(d)) {
-				return;
+				return CAWPaymentDialog.end_save(d);
 			}
 
-			if (!(await validate_job_card_mpesa_code(d))) {
-				return;
+			if (!(await validate_job_card_payment_reference(d))) {
+				return CAWPaymentDialog.end_save(d);
 			}
 
 			let is_invoice = normalize_job_card_payment_mode(values.payment_mode) === 'invoice';
@@ -1899,8 +1908,12 @@ async function open_job_card_modal(page, doc) {
 				},
 				freeze: true,
 				freeze_message: 'Creating Job Card...',
+				error: function() {
+					CAWPaymentDialog.end_save(d);
+				},
 				callback: function(r) {
 					if (!r.message) {
+						CAWPaymentDialog.end_save(d);
 						return;
 					}
 
@@ -1920,6 +1933,9 @@ async function open_job_card_modal(page, doc) {
 							},
 							freeze: true,
 							freeze_message: 'Recording Payment...',
+							error: function() {
+								CAWPaymentDialog.end_save(d);
+							},
 							callback: function() {
 								d.hide();
 								frappe.show_alert({ message: `Job Card ${job_card_name} created and payment recorded`, indicator: 'green' });

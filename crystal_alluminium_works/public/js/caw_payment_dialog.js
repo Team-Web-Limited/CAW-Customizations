@@ -857,6 +857,9 @@
 					: (values.payment_type || 'General Payment');
 
 				let save_payment = function() {
+					if (!begin_save(d)) {
+						return;
+					}
 					frappe.call({
 						method: 'crystal_alluminium_works.api.record_customer_payment',
 						args: {
@@ -873,8 +876,12 @@
 						},
 						freeze: true,
 						freeze_message: 'Recording Payment...',
+						error: function() {
+							end_save(d);
+						},
 						callback: function(r) {
 							if (!r.message) {
+								end_save(d);
 								return;
 							}
 							// record_customer_payment returns a plain Payments name normally, but an
@@ -1289,5 +1296,23 @@
 		d.show();
 	}
 
-	window.CAWPaymentDialog = { open: open, openCorrection: open_correction };
+	// One save at a time per dialog. A second click (or Ctrl+Enter) landing before the first
+	// request's freeze overlay is up otherwise records the payment twice — Payments 174/175 were
+	// created 0.05s apart that way. The disabled class only stops the mouse; the flag stops the
+	// keyboard shortcut too. Release only on failure: on success the dialog closes.
+	function begin_save(dialog) {
+		if (dialog._caw_saving) {
+			return false;
+		}
+		dialog._caw_saving = true;
+		dialog.disable_primary_action();
+		return true;
+	}
+
+	function end_save(dialog) {
+		dialog._caw_saving = false;
+		dialog.enable_primary_action();
+	}
+
+	window.CAWPaymentDialog = { open: open, openCorrection: open_correction, begin_save: begin_save, end_save: end_save };
 })();

@@ -7,7 +7,7 @@ from frappe.model.document import Document
 
 class Payments(Document):
 	def validate(self):
-		from crystal_alluminium_works.mpesa_link import link_payment_to_mpesa
+		from crystal_alluminium_works.mpesa_link import check_duplicate_bank_reference, link_payment_to_mpesa
 
 		# Cash has no transaction reference; one here is a leftover typed for another method
 		# (e.g. an M-Pesa code before switching to Cash) and would mislead reconciliation.
@@ -15,3 +15,4 @@ class Payments(Document):
 			self.reference = None
 
 		link_payment_to_mpesa(self)
+		check_duplicate_bank_reference(self)
