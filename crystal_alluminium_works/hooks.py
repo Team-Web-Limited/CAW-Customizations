@@ -63,6 +63,8 @@ app_include_js = [
 	# Shared "Create Payment" dialog (moved out of the Payments page), used by Quotation
 	# Manager's Record/Refund Deposit actions so they open in place instead of navigating away.
 	"/assets/crystal_alluminium_works/js/caw_payment_dialog.js",
+	# Bank Reconciliation Statement: Payment Document links open their own document again.
+	"/assets/crystal_alluminium_works/js/bank_reconciliation_statement_links.js",
 ]
 
 # include js, css files in header of web template
