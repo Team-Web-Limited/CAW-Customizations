@@ -639,7 +639,15 @@ function open_customer_bill_to_dialog(page, customer_name, customer) {
 			{ fieldtype: 'Section Break', label: __('Contact') },
 			{ fieldtype: 'Data', fieldname: 'contact_name', label: __('Contact Name'), default: customer.customer_name || '' },
 			{ fieldtype: 'Column Break' },
-			{ fieldtype: 'Data', fieldname: 'contact_phone', label: __('Contact Phone'), default: customer.mobile_no || '', description: __('10 digits, e.g. 0712345678') }
+			{ fieldtype: 'Data', fieldname: 'contact_phone', label: __('Contact Phone'), default: customer.mobile_no || '', description: __('10 digits, e.g. 0712345678') },
+			// Not optional here, unlike Quotation Manager's per-quotation Bill to Organisation (which
+			// has an "Also register as an Invoice Customer" tick): converting always moves the
+			// customer to invoice terms, so say so before Convert rather than only in the confirm.
+			{ fieldtype: 'Section Break' },
+			{ fieldtype: 'HTML', fieldname: 'invoice_customer_note', options: `<div class="text-muted" style="font-size:12px; line-height:1.5;">
+				<i class="fa fa-info-circle" style="margin-right:4px;"></i>
+				${__('This customer becomes an <b>Invoice Customer</b>: their next quotation is on invoice terms. Past quotations take the organisation\'s name and stay as they are.')}
+			</div>` }
 		],
 		primary_action_label: __('Convert'),
 		primary_action(values) {
