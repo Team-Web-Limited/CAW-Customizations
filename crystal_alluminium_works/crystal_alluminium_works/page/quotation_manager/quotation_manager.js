@@ -1309,10 +1309,18 @@ async function refresh_job_card_deposit_to_options(dialog) {
 		return;
 	}
 
+	// Changing the method quickly leaves several lookups in flight; only the latest may land, or
+	// an older answer leaves the previous method's account in the read-only Deposit To. The
+	// server derives the account itself anyway (api.py _mode_of_payment_deposit_account).
+	let request_id = (dialog._deposit_to_request_id || 0) + 1;
+	dialog._deposit_to_request_id = request_id;
 	let response = await frappe.call({
 		method: 'crystal_alluminium_works.api.get_mode_of_payment_account_info',
 		args: { payment_method: payment_method }
 	});
+	if (request_id !== dialog._deposit_to_request_id) {
+		return;
+	}
 	let info = (response && response.message) || {};
 	dialog._mode_of_payment_type = info.mode_of_payment_type || null;
 	dialog._deposit_to_account_type = info.account_type || null;

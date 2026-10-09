@@ -382,6 +382,22 @@ def get_mode_of_payment_account_info(payment_method, company=None):
     }
 
 
+def _mode_of_payment_deposit_account(payment_method):
+    """The account a payment by `payment_method` lands in: its Mode of Payment Account.
+
+    Deposit To is read-only in every payment form and only ever meant to be this, so the value
+    a form sends is never trusted. Create Job Card looked it up again on every method change
+    without discarding stale answers, and Cash payments posted to I & M or Paybill while the
+    Job Card itself read Cash (1-8 Oct 2026)."""
+    account = get_mode_of_payment_account_info(payment_method).get("default_account")
+    if not account:
+        frappe.throw(
+            f"No deposit account is configured for {payment_method}. "
+            "Set one on its Mode of Payment Account for this company."
+        )
+    return account
+
+
 def _force_invoice_paid_display(invoice):
     """Force a partial/full job-card invoice's paid/outstanding/status fields to read
     as fully settled, without creating a Payment Entry or POS payment row — so this
@@ -7889,8 +7905,7 @@ def record_customer_payment(customer, amount, date, payment_method, deposit_to, 
         frappe.throw("Date is required.")
     if not payment_method:
         frappe.throw("Payment Method is required.")
-    if not deposit_to:
-        frappe.throw("Deposit To account is required.")
+    deposit_to = _mode_of_payment_deposit_account(payment_method)
 
     payment_type = payment_type or "General Payment"
     # Existing advance/credit this customer already has on file — folded into the allocation
@@ -8600,6 +8615,10 @@ def correct_payment(payment, amount, payment_method, deposit_to, reason, referen
         )
     if not frappe.db.exists("Mode of Payment", payment_method):
         frappe.throw(f"{payment_method} is not a valid Payment Method.")
+    # Derived, not taken from the dialog — see _mode_of_payment_deposit_account. This is also what
+    # lets a payment that posted to the wrong account be corrected without changing anything
+    # else: the derived account differs from the original's, so it is not "unchanged".
+    deposit_to = _mode_of_payment_deposit_account(payment_method)
     if not frappe.db.exists("Account", deposit_to):
         frappe.throw(f"{deposit_to} is not a valid Deposit To account.")
     if _forex_tracked_deposit_account(deposit_to):
