@@ -1949,7 +1949,8 @@ def get_walkin_customer_detail(key):
     if records.payments:
         payments = frappe.get_all(
             "Payments",
-            filters={"name": ["in", records.payments]},
+            # Superseded (corrected or voided) rows left out, as in get_customer_payments.
+            filters={"name": ["in", records.payments], "is_corrected": 0},
             fields=["name", "amount", "date", "payment_method", "deposit_to", "reference", "job_card", "payment_type", "creation"],
             order_by="date desc, creation desc",
             limit_page_length=0,
@@ -3628,6 +3629,7 @@ def _release_job_card_payment_allocations(job_card_name):
             "job_card": job_card_name,
             "name": ["not in", list(payments_with_allocations) or [""]],
             "payment_type": ["!=", "Refund"],
+            "is_corrected": 0,
         },
         fields=["name", "amount"],
     )
@@ -7253,7 +7255,7 @@ def get_payments_page(search=None, payment_method=None, from_date=None, to_date=
             "reference", "job_card", "quotation", "payment_type",
             # Correction state — drives the struck-through/badged rendering and the cheap
             # client-side gate on the Correct button (see correction_window_open below).
-            "creation", "payment_entry", "is_corrected", "corrected_by_payment", "corrected_on",
+            "creation", "payment_entry", "is_corrected", "is_voided", "corrected_by_payment", "corrected_on",
             "corrected_by", "corrects_payment", "correction_reason",
         ],
         order_by="creation desc",
@@ -8185,7 +8187,15 @@ def on_payments_trash(doc, method=None):
     first captured and re-open a Payment Entry cancellation that is already the ledger's record
     of the reversal; deleting the replacement would leave the original flagged corrected, its
     Payment Entry cancelled, and the money gone from every balance. Unwinding a correction means
-    clearing the correction links first, deliberately."""
+    clearing the correction links first, deliberately.
+
+    Deleting is reserved for Administrator: a payment recorded in error is voided instead
+    (void_payment), which reverses it the same way but keeps the row as the audit record."""
+    if frappe.session.user != "Administrator":
+        frappe.throw(
+            "Payments cannot be deleted. Use Void on the Payments page to reverse a payment "
+            "recorded in error — it is kept on file with the reason."
+        )
     if doc.is_corrected:
         frappe.throw(
             f"Payment {doc.name} has been corrected by Payment {doc.corrected_by_payment} and "
@@ -8203,6 +8213,22 @@ def on_payments_trash(doc, method=None):
             pe.flags.ignore_permissions = True
             pe.cancel()
 
+    _give_back_payment_to_job_cards(doc, "Payment Deleted", "deleted", exclude_payment=doc.name)
+
+
+def _give_back_payment_to_job_cards(doc, change_type, verb, exclude_payment=None):
+    """Take a deleted or voided payment's money back off every job card it funded, and write a
+    history row saying so. Shared by on_payments_trash and void_payment.
+
+    The give-back splits by customer type, the same asymmetry correct_payment has to handle: an
+    Invoice Customer job card is recomputed from the Payments that remain, while a Cash Customer
+    one is moved by this payment's own contribution, because _sync_job_card_balance_from_payments
+    deliberately refuses to touch it (its payment_amount may also hold money typed straight into
+    Create/Edit Job Card that has no Payments row at all, and recomputing would erase that).
+
+    exclude_payment: on_trash fires while the row and its allocations are still physically in
+    the database, so the recompute must be told to skip it. void_payment flags the row
+    is_corrected first, which already excludes it."""
     for job_card_name in sorted(_payment_job_cards(doc)):
         if not frappe.db.exists("CAW Job Card", job_card_name):
             continue
@@ -8213,10 +8239,7 @@ def on_payments_trash(doc, method=None):
         contribution = _payment_contribution_to_job_card(doc, job_card_name)
 
         if (job_card.payment_mode or "") == "Invoice Customer":
-            # Recomputed from what is left. exclude_payment is required here (unlike in the
-            # correction path, which flags the old row first): on_trash fires while this row and
-            # its allocations are still physically in the database.
-            _sync_job_card_balance_from_payments(job_card_name, exclude_payment=doc.name)
+            _sync_job_card_balance_from_payments(job_card_name, exclude_payment=exclude_payment)
         elif abs(contribution) > 0.0001:
             new_payment_amount = _round_job_card_amount(max(flt(job_card.payment_amount) - contribution, 0))
             job_card.payment_amount = new_payment_amount
@@ -8233,9 +8256,9 @@ def on_payments_trash(doc, method=None):
         # being taken off a job card would otherwise leave no trace at all.
         _write_job_card_amendment_event(
             frappe.get_doc("CAW Job Card", job_card_name),
-            "Payment Deleted",
+            change_type,
             amount_paid=-contribution,
-            note=(f"Payment {doc.name} deleted "
+            note=(f"Payment {doc.name} {verb} "
                   f"({frappe.utils.fmt_money(abs(contribution))} "
                   f"{'returned to' if contribution < 0 else 'removed from'} this Job Card)."),
         )
@@ -8295,7 +8318,7 @@ def _forex_tracked_deposit_account(account, company=None):
 
 
 @frappe.whitelist()
-def get_payment_correction_eligibility(payment):
+def get_payment_correction_eligibility(payment, action="correct"):
     """Whether this payment can still be corrected, and if not, every reason why.
 
     Modelled on get_job_card_cancel_eligibility: it returns reasons rather than throwing, so the
@@ -8322,8 +8345,10 @@ def get_payment_correction_eligibility(payment):
 
     roles = set(frappe.get_roles())
     is_system_manager = "System Manager" in roles
+    # Void runs through the same gate (see void_payment); only the wording differs.
+    verb = "void" if action == "void" else "correct"
     if not (PAYMENT_CORRECTION_ROLES & roles):
-        reasons.append("You do not have permission to correct a payment.")
+        reasons.append(f"You do not have permission to {verb} a payment.")
 
     # Measured on `creation` — when the row was actually keyed in — not on `date`, which is the
     # user-entered posting date, is not correctable, and could be backdated arbitrarily.
@@ -8332,7 +8357,7 @@ def get_payment_correction_eligibility(payment):
     window_expires_at = frappe.utils.add_to_date(created, hours=PAYMENT_CORRECTION_WINDOW_HOURS)
     if age_hours > PAYMENT_CORRECTION_WINDOW_HOURS and not is_system_manager:
         reasons.append(
-            f"A payment can only be corrected within {PAYMENT_CORRECTION_WINDOW_HOURS} hours of "
+            f"A payment can only be {verb}ed within {PAYMENT_CORRECTION_WINDOW_HOURS} hours of "
             f"being recorded — this one was recorded {int(age_hours)} hours ago. Ask a System "
             "Manager to make the adjustment."
         )
@@ -8340,7 +8365,9 @@ def get_payment_correction_eligibility(payment):
     # Two checks, not one: the flag is the normal case, the reverse lookup catches a correction
     # that crashed after inserting the replacement but before flagging the original.
     existing_correction = frappe.db.exists("Payments", {"corrects_payment": str(doc.name)})
-    if doc.is_corrected or existing_correction:
+    if doc.is_voided:
+        reasons.append("This payment has already been voided.")
+    elif doc.is_corrected or existing_correction:
         reasons.append(
             f"This payment has already been corrected by Payment "
             f"{doc.corrected_by_payment or existing_correction}."
@@ -8351,7 +8378,7 @@ def get_payment_correction_eligibility(payment):
         # CAW Job Card.payment_amount for BOTH customer types and writes a Refunded history row.
         # Unwinding that is a different operation from reverse-and-replace, and none of the four
         # entry points in scope create refunds.
-        reasons.append("Refunds cannot be corrected — record a fresh deposit or refund instead.")
+        reasons.append(f"Refunds cannot be {verb}ed — record a fresh deposit or refund instead.")
 
     if not doc.payment_entry or not frappe.db.exists("Payment Entry", doc.payment_entry):
         reasons.append("This payment has no Payment Entry behind it, so there is nothing to reverse.")
@@ -8722,6 +8749,47 @@ def correct_payment(payment, amount, payment_method, deposit_to, reason, referen
     }
 
 
+@frappe.whitelist()
+def void_payment(payment, reason):
+    """Reverse a payment recorded in error, keeping the row. The replacement for deleting one.
+
+    Same gate as correct_payment (get_payment_correction_eligibility): 24 hours for sales users,
+    no limit for System Manager, and refused once a funded job card has released items, consumed
+    stock or been invoiced, or the period is closed. The Payment Entry is cancelled (ERPNext keeps
+    it, marked Cancelled, beside its reversal), the row is flagged is_corrected + is_voided so it
+    stops counting everywhere a corrected original already does (balances, credit, totals, the
+    M-Pesa claim), and every job card it funded is given the money back."""
+    reason = (reason or "").strip()
+    if len(reason) < 5:
+        frappe.throw("Please give a reason for voiding this payment — it is the only record of why.")
+    if not payment or not frappe.db.exists("Payments", payment):
+        frappe.throw("Please select a valid payment.")
+
+    # Row-lock before re-checking, so two clicks can't both pass and cancel twice.
+    frappe.db.get_value("Payments", payment, "is_corrected", for_update=True)
+    eligibility = get_payment_correction_eligibility(payment, action="void")
+    if not eligibility["can_correct"]:
+        frappe.throw("This payment cannot be voided:<br>• " + "<br>• ".join(eligibility["reasons"]))
+
+    doc = frappe.get_doc("Payments", payment)
+    pe = frappe.get_doc("Payment Entry", doc.payment_entry)
+    pe.flags.ignore_permissions = True
+    pe.cancel()
+
+    frappe.db.set_value("Payments", doc.name, {
+        "is_corrected": 1,
+        "is_voided": 1,
+        "corrected_on": frappe.utils.now_datetime(),
+        "corrected_by": frappe.session.user,
+        "correction_reason": reason,
+    }, update_modified=False)
+
+    _give_back_payment_to_job_cards(doc, "Payment Voided", "voided")
+
+    doc.add_comment("Comment", f"Voided by {frappe.session.user}: {reason}. Payment Entry {pe.name} cancelled.")
+    return {"voided": doc.name, "payment_entry": pe.name}
+
+
 def _describe_payment_correction(original, amount, payment_method, deposit_to, reference):
     """Human-readable before→after list for the audit note and the UI confirmation."""
     changes = []
@@ -8841,7 +8909,8 @@ def get_customer_outstanding(customer):
     )
 
     # Sum payment allocations per job card (invoice customers settle via Payments, not the JC).
-    payments = frappe.get_all("Payments", filters={"customer": customer}, fields=["name", "amount", "job_card"])
+    # is_corrected: a corrected original or a voided payment no longer counts (see correct_payment).
+    payments = frappe.get_all("Payments", filters={"customer": customer, "is_corrected": 0}, fields=["name", "amount", "job_card"])
     payment_names = [p.name for p in payments]
     allocation_rows = frappe.get_all(
         "Payment Job Card Allocation",
@@ -9043,7 +9112,8 @@ def get_customer_outstanding_job_cards(customer, customer_name=None):
     )
 
     # Build paid_by_job_card using the same logic as get_customer_outstanding
-    payments = frappe.get_all("Payments", filters={"customer": customer}, fields=["name", "amount", "job_card"])
+    # is_corrected: a corrected original or a voided payment no longer counts (see correct_payment).
+    payments = frappe.get_all("Payments", filters={"customer": customer, "is_corrected": 0}, fields=["name", "amount", "job_card"])
     payment_names = [p.name for p in payments]
     allocation_rows = frappe.get_all(
         "Payment Job Card Allocation",
@@ -9094,9 +9164,11 @@ def get_customer_payments(customer):
     if not customer:
         return []
 
+    # Superseded (corrected or voided) rows are left out: the Customer Manager derives advance and
+    # overpayment credit from this list. The Payments page is where they stay visible.
     payments = frappe.get_all(
         "Payments",
-        filters={"customer": customer},
+        filters={"customer": customer, "is_corrected": 0},
         fields=["name", "amount", "date", "payment_method", "deposit_to", "reference", "job_card", "creation"],
         order_by="date desc, creation desc",
         limit_page_length=0,

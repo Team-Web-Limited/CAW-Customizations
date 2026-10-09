@@ -127,7 +127,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Change Type",
-   "options": "Created\nUpdated\nQuotation Amended\nInvoice Cancelled\nInvoice Amended\nRefunded\nCancelled\nPayment Corrected\nPayment Deleted",
+   "options": "Created\nUpdated\nQuotation Amended\nInvoice Cancelled\nInvoice Amended\nRefunded\nCancelled\nPayment Corrected\nPayment Deleted\nPayment Voided",
    "read_only": 1
   },
   {
@@ -162,7 +162,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-10-01 00:30:00.000000",
+ "modified": "2026-10-09 16:00:00.000000",
  "modified_by": "Administrator",
  "module": "Crystal Alluminium Works",
  "name": "CAW Job Card History",

@@ -22,6 +22,7 @@
   "payment_entry",
   "correction_section",
   "is_corrected",
+  "is_voided",
   "corrected_by_payment",
   "corrected_on",
   "corrected_by",
@@ -144,6 +145,15 @@
    "read_only": 1
   },
   {
+   "default": "0",
+   "fieldname": "is_voided",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Is Voided",
+   "read_only": 1,
+   "description": "Set by void_payment in api.py: the payment was recorded in error and has been cancelled with no replacement. Is Corrected is set too, so every balance, credit, total and M-Pesa claim already excludes it; Corrected On / By record when and who, and Correction Reason why. The row is kept as the audit record instead of being deleted."
+  },
+  {
    "description": "The replacement Payments row that supersedes this one. NOTE: Payments.autoname is \"autoincrement\", so a Payments name is an int while this Link column is varchar — str() both sides on every write and filter (same trap as _get_job_card_allocated_payments).",
    "fieldname": "corrected_by_payment",
    "fieldtype": "Link",
@@ -189,7 +199,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-09-28 12:30:00.000000",
+ "modified": "2026-10-09 16:00:00.000000",
  "modified_by": "Administrator",
  "module": "Crystal Alluminium Works",
  "name": "Payments",
@@ -198,7 +208,7 @@
  "permissions": [
   {
    "create": 1,
-   "delete": 1,
+   "delete": 0,
    "email": 1,
    "export": 1,
    "print": 1,

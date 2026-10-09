@@ -145,7 +145,9 @@ def _gather_events(customer, job_cards, walkin=None):
 				)
 			)
 
-	payment_filters = {"customer": customer}
+	# A corrected original or a voided payment no longer counts; listing it put the money on the
+	# statement twice (corrected 50,000 + its 50,000 replacement).
+	payment_filters = {"customer": customer, "is_corrected": 0}
 	if walkin:
 		payment_filters["name"] = ["in", walkin.payments or [""]]
 	for p in frappe.get_all(

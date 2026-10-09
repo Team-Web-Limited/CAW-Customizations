@@ -58,6 +58,7 @@ async function render_payments_page(page) {
 		.pay-cbadge { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; margin-right: 6px; border-radius: 50%; font-size: 10px; font-weight: 700; line-height: 1; cursor: help; vertical-align: middle; }
 		.pay-cbadge-corrected { background: #e74c3c; color: #fff; }
 		.pay-cbadge-correction { background: #f39c12; color: #fff; }
+		.pay-cbadge-voided { background: #7f8c8d; color: #fff; }
 		.pay-method-pill .pay-method-pill-label { color: var(--text-muted); font-weight: 600; margin-right: 5px; }
 		.pay-method-pill-total { background: #2c3e50; border-color: #2c3e50; color: #fff; }
 		.pay-method-pill-total .pay-method-pill-label { color: rgba(255,255,255,.75); }
@@ -246,6 +247,17 @@ function build_correction_display(row) {
 	let counterpart = row.correction_counterpart || null;
 	let display = { badge: '', amount_style: '', action: '<span class="pay-muted">-</span>' };
 
+	if (row.is_voided) {
+		let bits = [];
+		if (row.correction_reason) bits.push(`Reason: ${row.correction_reason}`);
+		if (row.corrected_on) bits.push(`Voided ${frappe.datetime.str_to_user(row.corrected_on)} by ${row.corrected_by || '—'}`);
+		display.badge = `<span class="pay-cbadge pay-cbadge-voided" title="${frappe.utils.escape_html('Voided — ' + bits.join(' · '))}">V</span>`;
+		// Struck through like a corrected original: it is history, not money, and is excluded
+		// from the totals pills and both report downloads.
+		display.amount_style = ' style="text-decoration:line-through;opacity:.55;"';
+		return display;
+	}
+
 	if (row.is_corrected) {
 		let bits = [];
 		if (counterpart) {
@@ -287,7 +299,11 @@ function build_correction_display(row) {
 	let correctable = !row.is_corrected && row.payment_type !== 'Refund'
 		&& row.correction_window_open && row.payment_entry;
 	if (correctable) {
-		display.action = `<button class="btn btn-xs btn-default pay-correct-btn" data-payment="${frappe.utils.escape_html(String(row.name))}" title="Correct a mis-keyed amount, method or account">Correct</button>`;
+		let payment_attr = frappe.utils.escape_html(String(row.name));
+		display.action = `<span style="white-space:nowrap;">`
+			+ `<button class="btn btn-xs btn-default pay-correct-btn" data-payment="${payment_attr}" title="Correct a mis-keyed amount, method or account">Correct</button> `
+			+ `<button class="btn btn-xs btn-default pay-void-btn" data-payment="${payment_attr}" title="Reverse a payment recorded in error — kept on file with the reason">Void</button>`
+			+ `</span>`;
 	}
 	return display;
 }
@@ -405,6 +421,10 @@ function bind_payments_page_events(page, $body) {
 		open_correct_payment_modal(page, $(this).attr('data-payment'));
 	});
 
+	$body.on('click.paymentsPage', '.pay-void-btn', function() {
+		open_void_payment_modal(page, $(this).attr('data-payment'));
+	});
+
 	$body.on('input.paymentsPage', '[data-filter="search"]', function() {
 		clearTimeout(page._payments_search_timer);
 		page._payments_search_timer = setTimeout(function() {
@@ -510,6 +530,71 @@ function open_create_payment_modal(page) {
 	}
 	window.CAWPaymentDialog.open({
 		onSaved: () => load_payment_records(page, 1)
+	});
+}
+
+function open_void_payment_modal(page, payment) {
+	// Same gate as Correct, checked on click (see api.py void_payment).
+	frappe.call({
+		method: 'crystal_alluminium_works.api.get_payment_correction_eligibility',
+		args: { payment: payment, action: 'void' },
+		freeze: true,
+		freeze_message: __('Checking...'),
+		callback: function(r) {
+			let eligibility = r && r.message;
+			if (!eligibility) return;
+			if (!eligibility.can_correct) {
+				frappe.msgprint({
+					title: __('Cannot void Payment #{0}', [payment]),
+					message: '<ul style="margin:0;"><li>' + eligibility.reasons.map(frappe.utils.escape_html).join('</li><li>') + '</li></ul>',
+					indicator: 'red'
+				});
+				return;
+			}
+			let current = eligibility.current || {};
+			let job_cards = eligibility.job_cards || [];
+			let summary = `<div style="font-size:13px;line-height:1.6;">`
+				+ `<b>${format_currency(current.amount || 0, 'KES')}</b> · ${frappe.utils.escape_html(current.payment_method || '')}`
+				+ ` · ${frappe.utils.escape_html(current.customer || '')}<br>`
+				+ __('Payment Entry {0} will be cancelled, so the money comes off {1}.',
+					[frappe.utils.escape_html(current.payment_entry || ''), frappe.utils.escape_html(current.deposit_to || '')])
+				+ (job_cards.length ? '<br>' + __('Taken back off: {0}', [job_cards.map(frappe.utils.escape_html).join(', ')]) : '')
+				+ ((eligibility.warnings || []).length ? '<br><span style="color:#a35b00;">' + eligibility.warnings.map(frappe.utils.escape_html).join('<br>') + '</span>' : '')
+				+ '<br>' + __('The payment stays on this page, struck through, with your reason.')
+				+ `</div>`;
+			let d = new frappe.ui.Dialog({
+				title: __('Void Payment #{0}', [payment]),
+				fields: [
+					{ fieldtype: 'HTML', options: summary },
+					{ fieldtype: 'Small Text', fieldname: 'reason', label: __('Reason'), reqd: 1,
+						description: __('e.g. duplicate of Payment #123, customer never paid, wrong customer') }
+				],
+				primary_action_label: __('Void Payment'),
+				primary_action: function(values) {
+					if (!CAWPaymentDialog.begin_save(d)) return;
+					frappe.call({
+						method: 'crystal_alluminium_works.api.void_payment',
+						args: { payment: payment, reason: values.reason },
+						freeze: true,
+						freeze_message: __('Voiding payment...'),
+						error: function() {
+							CAWPaymentDialog.end_save(d);
+						},
+						callback: function(res) {
+							if (!res || !res.message) {
+								CAWPaymentDialog.end_save(d);
+								return;
+							}
+							d.hide();
+							frappe.show_alert({ message: __('Payment #{0} voided.', [payment]), indicator: 'green' });
+							load_payment_records(page, 1);
+						}
+					});
+				}
+			});
+			d.get_primary_btn().removeClass('btn-primary').addClass('btn-danger');
+			d.show();
+		}
 	});
 }
 
