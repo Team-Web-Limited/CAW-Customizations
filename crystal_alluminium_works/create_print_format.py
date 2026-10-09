@@ -67,10 +67,14 @@ PRINT_UOM_BY_ITEM_CODE = {
 # Frappe gives a PDF with no separate header a 15mm top page margin, which left a blank band
 # above the letterhead. get_pdf reads margin overrides from a `.print-format { ... }` rule in the
 # page itself (read_options_from_html), so every Crystal template starts with this to pull the
-# letterhead up to the top of the page. The side margins drop from Frappe's 15mm to 8mm so the
-# item tables have room for every column (a wide font such as DejaVu Sans otherwise pushed the
-# Amount column off the page).
-CRYSTAL_PAGE_STYLE = "<style>.print-format { margin-top: 5mm; margin-left: 8mm; margin-right: 8mm; }</style>\n"
+# letterhead up to the top of the page. The side margins work the same way: 4mm a side (down from
+# Frappe's 15mm, then 8mm) gives the item tables the page width while staying inside most printers'
+# printable area.
+CRYSTAL_SIDE_MARGIN_MM = 4
+CRYSTAL_PAGE_STYLE = (
+    f"<style>.print-format {{ margin-top: 5mm; margin-left: {CRYSTAL_SIDE_MARGIN_MM}mm; "
+    f"margin-right: {CRYSTAL_SIDE_MARGIN_MM}mm; }}</style>\n"
+)
 
 
 def build_crystal_print_format_html(ref_label, terms, payment_details=""):
