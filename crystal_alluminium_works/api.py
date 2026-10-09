@@ -7218,6 +7218,10 @@ def _attach_payment_correction_context(rows):
             counterparts[str(other.name)] = other
 
     now = frappe.utils.now_datetime()
+    # Same exemption get_payment_correction_eligibility grants: without it the Correct button
+    # vanished after the window for System Managers too, so the break-glass path was unreachable
+    # and old payments got fixed by amending Payment Entries in the desk instead.
+    is_system_manager = "System Manager" in frappe.get_roles()
     for row in rows:
         counterpart_id = row.get("corrects_payment") or row.get("corrected_by_payment")
         row["correction_counterpart"] = counterparts.get(str(counterpart_id)) if counterpart_id else None
@@ -7226,7 +7230,7 @@ def _attach_payment_correction_context(rows):
         # not correctable, and could be backdated arbitrarily — it says nothing about when the
         # row was actually keyed in.
         age_hours = frappe.utils.time_diff_in_hours(now, frappe.utils.get_datetime(row["creation"]))
-        row["correction_window_open"] = age_hours <= PAYMENT_CORRECTION_WINDOW_HOURS
+        row["correction_window_open"] = is_system_manager or age_hours <= PAYMENT_CORRECTION_WINDOW_HOURS
 
 
 @frappe.whitelist()
