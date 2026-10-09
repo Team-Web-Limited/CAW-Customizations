@@ -444,7 +444,10 @@ function sl_render_standard_detail(page, entries) {
 
 	let rows_html = [...entries].reverse().map(row => {
 		let date_str = row.posting_date ? frappe.datetime.str_to_user(row.posting_date) : '';
-		let voucher_link = `<a href="/app/${encodeURIComponent(row.voucher_type.toLowerCase().replace(/ /g, '-'))}/${encodeURIComponent(row.voucher_no)}">${frappe.utils.escape_html(row.voucher_no)}</a>`;
+		// The 30 Sep count, folded server-side into one opening row (api.STOCK_START_DATE).
+		let voucher_link = row.is_opening
+			? '<span style="font-weight:600;">Counted 30-09-2026</span>'
+			: `<a href="/app/${encodeURIComponent(row.voucher_type.toLowerCase().replace(/ /g, '-'))}/${encodeURIComponent(row.voucher_no)}">${frappe.utils.escape_html(row.voucher_no)}</a>`;
 		let qty_class = row.actual_qty > 0 ? 'sl-qty-positive' : (row.actual_qty < 0 ? 'sl-qty-negative' : 'sl-qty-zero');
 		let qty_prefix = row.actual_qty > 0 ? '+' : '';
 
@@ -560,7 +563,10 @@ function sl_render_glass_detail(page, result) {
 		if (row.posting_time && date_str) {
 			date_str += ' ' + row.posting_time;
 		}
-		let voucher_link = `<a href="/app/${encodeURIComponent(row.voucher_type.toLowerCase().replace(/ /g, '-'))}/${encodeURIComponent(row.voucher_no)}">${frappe.utils.escape_html(row.voucher_no)}</a>`;
+		// The 30 Sep count, folded server-side into one opening row (api.STOCK_START_DATE).
+		let voucher_link = row.is_opening
+			? '<span style="font-weight:600;">Counted 30-09-2026</span>'
+			: `<a href="/app/${encodeURIComponent(row.voucher_type.toLowerCase().replace(/ /g, '-'))}/${encodeURIComponent(row.voucher_no)}">${frappe.utils.escape_html(row.voucher_no)}</a>`;
 		let qty_class = row.actual_qty > 0 ? 'sl-qty-positive' : (row.actual_qty < 0 ? 'sl-qty-negative' : 'sl-qty-zero');
 		let qty_prefix = row.actual_qty > 0 ? '+' : '';
 

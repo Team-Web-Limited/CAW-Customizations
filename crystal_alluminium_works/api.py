@@ -9462,6 +9462,50 @@ def block_glass_stock_reconciliation(doc, method=None):
         )
 
 
+# Stock was counted afresh on this date: Stock Reconciliations for most items, tagged Stock
+# Entries for glass (which cannot be reconciled), all posted on it. Everything before is test
+# data, so the Stock Ledger page starts here, with the count as each item's opening balance.
+STOCK_START_DATE = "2026-09-30"
+
+
+def _fold_opening_stock(entries, from_date=None, glass=False):
+    """Hide ledger rows before STOCK_START_DATE and fold the rows posted on it (the opening
+    count, often an issue + receipt pair per item) into one "Opening Stock" row carrying the
+    balance they left. Rows after it pass through unchanged. `entries` must be in posting order.
+
+    The underlying ledger is untouched; this is display only. Deleting the earlier history was
+    not an option: the glass count was posted as quantities relative to the balances it left."""
+    start = frappe.utils.getdate(STOCK_START_DATE)
+    if from_date and frappe.utils.getdate(from_date) > start:
+        return [e for e in entries if frappe.utils.getdate(e.posting_date) >= frappe.utils.getdate(from_date)]
+
+    opening = None
+    kept = []
+    for e in entries:
+        posted = frappe.utils.getdate(e.posting_date)
+        if posted <= start:
+            opening = e  # the last row on or before the start date carries the opening balance
+        else:
+            kept.append(e)
+    if opening is None:
+        return kept
+
+    row = frappe._dict(opening)
+    row.update({
+        "posting_date": start,
+        "posting_time": None,
+        "voucher_type": "Opening Stock",
+        "voucher_no": "",
+        "is_opening": 1,
+        "actual_qty": opening.qty_after_transaction,
+        "sales_invoice": None,
+        "sales_invoices": [],
+    })
+    if glass:
+        row.update({"sheets_in": dict(opening.get("sheet_balance") or {}), "sheets_out": {}, "invoice_sft": 0})
+    return [row] + kept
+
+
 @frappe.whitelist()
 def get_glass_stock_ledger(item_code, warehouse, from_date=None, to_date=None):
     """Reconstruct a running sheet balance alongside the standard SFT balance by parsing
@@ -9591,16 +9635,13 @@ def get_glass_stock_ledger(item_code, warehouse, from_date=None, to_date=None):
         entry.sheet_balance = dict(sheet_balance_clean) # copy
         entry.invoice_sft = entry_invoice_sft
         
-        # Only include in result if it falls within the requested date range
-        include = True
-        if from_date and str(entry.posting_date) < from_date:
-            include = False
-        if to_date and str(entry.posting_date) > to_date:
-            include = False
-            
-        if include:
+        # Only include in result if it falls before the requested end date; the start of the range
+        # (and the 30 Sep opening) is applied by _fold_opening_stock below.
+        if not (to_date and str(entry.posting_date) > to_date):
             result.append(entry)
-            
+
+    result = _fold_opening_stock(result, from_date=from_date, glass=True)
+
     total_invoice_sft = sum(e.invoice_sft for e in result)
 
     # Enrich entries with linked Sales Invoice
@@ -9674,11 +9715,9 @@ def get_standard_stock_ledger(item_code, warehouse=None, from_date=None, to_date
     }
     if warehouse:
         filters["warehouse"] = warehouse
-    if from_date and to_date:
-        filters["posting_date"] = ["between", [from_date, to_date]]
-    elif from_date:
-        filters["posting_date"] = [">=", from_date]
-    elif to_date:
+    # The start of the range is applied by _fold_opening_stock, which needs the rows before it
+    # to build the opening balance.
+    if to_date:
         filters["posting_date"] = ["<=", to_date]
 
     entries = frappe.get_all(
@@ -9692,9 +9731,10 @@ def get_standard_stock_ledger(item_code, warehouse=None, from_date=None, to_date
         order_by="posting_date asc, posting_time asc, creation asc",
         limit_page_length=0
     )
+    entries = _fold_opening_stock(entries, from_date=from_date)
 
     # Enrich entries with linked Sales Invoice
-    _attach_sales_invoices_to_entries(entries)
+    _attach_sales_invoices_to_entries([e for e in entries if not e.get("is_opening")])
 
     return entries
 
