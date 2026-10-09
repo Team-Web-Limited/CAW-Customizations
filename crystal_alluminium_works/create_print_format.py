@@ -196,10 +196,12 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
         border-collapse: collapse;
         margin-bottom: 20px;
     }}
+    /* Every item cell is boxed, so a row reads across without guessing columns. */
     .cq-table th {{
         background-color: #f8f9fa;
         color: #2c3e50;
-        border-bottom: 2px solid #dee2e6;
+        border: 1px solid #ced4da;
+        border-bottom: 2px solid #adb5bd;
         /* 12px still fits a glass table with every column filled (polish, holes and notches with
            charges) in DejaVu Sans, the font staging renders in — see the padding rule below. */
         font-size: 12px;
@@ -208,7 +210,7 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
         white-space: normal !important;
     }}
     .cq-table td {{
-        border-bottom: 1px solid #dee2e6;
+        border: 1px solid #ced4da;
         vertical-align: middle;
         font-size: 12px;
     }}
@@ -960,16 +962,18 @@ def build_crystal_job_card_print_format_html():
         border-collapse: collapse;
         margin-bottom: 20px;
     }
+    /* Every item cell is boxed, as on the Quotation / Invoice. */
     .cq-table th {
         background-color: #f8f9fa;
         color: #2c3e50;
         padding: 6px 4px;
-        border-bottom: 2px solid #dee2e6;
+        border: 1px solid #ced4da;
+        border-bottom: 2px solid #adb5bd;
         font-size: 14px;
     }
     .cq-table td {
         padding: 6px 4px;
-        border-bottom: 1px solid #dee2e6;
+        border: 1px solid #ced4da;
         vertical-align: middle;
         font-size: 14px;
     }
