@@ -963,6 +963,12 @@ def build_crystal_job_card_print_format_html():
         font-size: 11px;
         color: #495057;
     }
+    /* Per-glass-type subtotal when a glass section mixes types, as on the Quotation. */
+    .cq-table tr.cq-subtotal-row td {
+        background-color: #f1f3f5;
+        border-bottom: 2px solid #ced4da;
+        font-weight: bold;
+    }
     .jc-section-title {
         margin: 10px 0 8px 0;
         font-size: 13px;
@@ -1100,6 +1106,29 @@ def build_crystal_job_card_print_format_html():
     {% endif %}
 {% endfor %}
 
+{# A glass section mixing types (4mm and 6mm clear, say) prints each type's rows together, in the
+   order the type first appears, followed by that type's own subtotal: the Quotation / Sales
+   Invoice split. #}
+{% set glass_groups = namespace(codes=[], rows=[]) %}
+{% if section.key in ['Glass Cut Size', 'Glass Sheet'] %}
+    {% for row in section_data.rows %}
+        {% if (row.item_code or '') not in glass_groups.codes %}
+            {% set glass_groups.codes = glass_groups.codes + [row.item_code or ''] %}
+        {% endif %}
+    {% endfor %}
+{% endif %}
+{% set show_glass_subtotals = glass_groups.codes|length > 1 %}
+{% if show_glass_subtotals %}
+    {% for code in glass_groups.codes %}
+        {% for row in section_data.rows %}
+            {% if (row.item_code or '') == code %}
+                {% set glass_groups.rows = glass_groups.rows + [row] %}
+            {% endif %}
+        {% endfor %}
+    {% endfor %}
+    {% set section_data.rows = glass_groups.rows %}
+{% endif %}
+
 {% if section_data.rows %}
 <div class="jc-section-title">{{ section.label }}</div>
 {% if section.key == 'Glass Cut Size' %}
@@ -1121,6 +1150,7 @@ def build_crystal_job_card_print_format_html():
     </thead>
     <tbody>
         {% set totals = namespace(pcs=0, qty=0, holes=0, notches=0) %}
+        {% set group = namespace(pcs=0, qty=0, holes=0, notches=0) %}
         {% for parent in section_data.rows %}
             {% set pieces = parent.qty or 0 %}
             {% if parent.custom_glass_sale_mode == 'Full Sheet' %}
@@ -1143,6 +1173,10 @@ def build_crystal_job_card_print_format_html():
             {% set totals.qty = totals.qty + frappe.utils.flt(qty, 3) %}
             {% set totals.holes = totals.holes + holes %}
             {% set totals.notches = totals.notches + notches %}
+            {% set group.pcs = group.pcs + frappe.utils.flt(pieces, 2) %}
+            {% set group.qty = group.qty + frappe.utils.flt(qty, 3) %}
+            {% set group.holes = group.holes + holes %}
+            {% set group.notches = group.notches + notches %}
             <tr>
                 <td style="font-weight: bold; white-space: nowrap;">{{ parent.item_code or '' }}</td>
                 <td>{{ parent.item_name or parent.item_code or '' }}</td>
@@ -1161,9 +1195,23 @@ def build_crystal_job_card_print_format_html():
                 <td style="text-align: center; white-space: nowrap;">{% if holes > 0 %}{{ holes }}{% else %}-{% endif %}</td>
                 <td style="text-align: center; white-space: nowrap;">{% if notches > 0 %}{{ notches }}{% else %}-{% endif %}</td>
             </tr>
+            {% if show_glass_subtotals and (loop.last or (loop.nextitem.item_code or '') != (parent.item_code or '')) %}
+            <tr class="cq-subtotal-row">
+                <td colspan="2" style="white-space: nowrap;">Subtotal</td>
+                <td style="text-align: center; white-space: nowrap;">{{ frappe.utils.flt(group.pcs, 2) }}</td>
+                <td style="text-align: center; white-space: nowrap;">{{ frappe.utils.flt(group.qty, 3) }}</td>
+                <td colspan="5">&nbsp;</td>
+                <td style="text-align: center; white-space: nowrap;">{{ group.holes }}</td>
+                <td style="text-align: center; white-space: nowrap;">{{ group.notches }}</td>
+            </tr>
+            {% set group.pcs = 0 %}
+            {% set group.qty = 0 %}
+            {% set group.holes = 0 %}
+            {% set group.notches = 0 %}
+            {% endif %}
         {% endfor %}
         <tr>
-            <td colspan="2" style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
+            <td colspan="2" style="border-bottom: 1px solid #dee2e6; font-weight: bold;">{% if show_glass_subtotals %}Total{% else %}&nbsp;{% endif %}</td>
             <td style="text-align: center; white-space: nowrap; font-weight: bold;">{{ frappe.utils.flt(totals.pcs, 2) }}</td>
             <td style="text-align: center; white-space: nowrap; font-weight: bold;">{{ frappe.utils.flt(totals.qty, 3) }}</td>
             <td colspan="5" style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
@@ -1187,11 +1235,14 @@ def build_crystal_job_card_print_format_html():
     </thead>
     <tbody>
         {% set totals = namespace(pcs=0, qty=0) %}
+        {% set group = namespace(pcs=0, qty=0) %}
         {% for parent in section_data.rows %}
             {% set pieces = parent.custom_sheet_pcs or 0 %}
             {% set qty = parent.qty or 0 %}
             {% set totals.pcs = totals.pcs + frappe.utils.flt(pieces, 2) %}
             {% set totals.qty = totals.qty + frappe.utils.flt(qty, 3) %}
+            {% set group.pcs = group.pcs + frappe.utils.flt(pieces, 2) %}
+            {% set group.qty = group.qty + frappe.utils.flt(qty, 3) %}
             <tr>
                 <td style="font-weight: bold; white-space: nowrap;">{{ parent.item_code or '' }}</td>
                 <td>{{ parent.item_name or parent.item_code or '' }}</td>
@@ -1201,9 +1252,19 @@ def build_crystal_job_card_print_format_html():
                 <td style="text-align: center; white-space: nowrap;">{{ frappe.utils.flt(qty, 3) }}</td>
                 <td style="text-align: center; white-space: nowrap;">{{ short_uom(parent.uom or 'Square Foot') }}</td>
             </tr>
+            {% if show_glass_subtotals and (loop.last or (loop.nextitem.item_code or '') != (parent.item_code or '')) %}
+            <tr class="cq-subtotal-row">
+                <td colspan="4" style="white-space: nowrap;">Subtotal</td>
+                <td style="text-align: center; white-space: nowrap;">{{ frappe.utils.flt(group.pcs, 2) }}</td>
+                <td style="text-align: center; white-space: nowrap;">{{ frappe.utils.flt(group.qty, 3) }}</td>
+                <td>&nbsp;</td>
+            </tr>
+            {% set group.pcs = 0 %}
+            {% set group.qty = 0 %}
+            {% endif %}
         {% endfor %}
         <tr>
-            <td colspan="4" style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
+            <td colspan="4" style="border-bottom: 1px solid #dee2e6; font-weight: bold;">{% if show_glass_subtotals %}Total{% else %}&nbsp;{% endif %}</td>
             <td style="text-align: center; white-space: nowrap; font-weight: bold;">{{ frappe.utils.flt(totals.pcs, 2) }}</td>
             <td style="text-align: center; white-space: nowrap; font-weight: bold;">{{ frappe.utils.flt(totals.qty, 3) }}</td>
             <td style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
