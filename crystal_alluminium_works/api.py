@@ -2800,6 +2800,17 @@ def _customer_has_only_drafts(customer, walkin, quotations):
     return True
 
 
+# A quotation's Contact Person and addresses belong to its customer: ERPNext refuses to submit one
+# whose Contact Person is linked to another party ("Contact Person does not belong to ..."). Cleared
+# whenever a quotation changes customer (QTN-2026-60454 kept a walk-in's contact after its customer
+# was switched to Hebatullah Brothers Ltd. in the Builder). The walk-in is kept in custom_contact_*.
+CLEARED_PARTY_CONTACT = {
+    field: None
+    for field in ("contact_person", "contact_display", "contact_mobile", "contact_email",
+                  "customer_address", "address_display", "shipping_address_name", "shipping_address")
+}
+
+
 def _move_quotation_to_invoice_customer(quotation, customer, contact_name, contact_phone):
     """A Draft cash quotation becomes an invoice quotation of `customer`. Items, prices and totals
     are left untouched (no re-save, so nothing is re-priced); the walk-in's cash details and any
@@ -2820,6 +2831,7 @@ def _move_quotation_to_invoice_customer(quotation, customer, contact_name, conta
         "custom_contact_name": contact_name,
         "custom_contact_phone": contact_phone,
         "custom_converted_to_customer": customer,
+        **CLEARED_PARTY_CONTACT,
     })
 
 
@@ -3955,6 +3967,8 @@ def _save_quotation_from_builder(
         quo = frappe.get_doc("Quotation", quotation_name)
         if quo.docstatus != 0:
             frappe.throw("Only Draft quotations can be edited via the Builder.")
+        if quo.party_name != customer:
+            quo.update(CLEARED_PARTY_CONTACT)
         quo.party_name = customer
         quo.company = quo.company or company
         quo.selling_price_list = default_price_list
