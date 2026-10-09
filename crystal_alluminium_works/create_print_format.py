@@ -121,11 +121,20 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
         <div style="margin-top: 6px; font-size: 14px; font-weight: bold; color: #000; text-transform: uppercase; white-space: nowrap;">
             PIN Number: {{{{ customer_pin or '-' }}}}
         </div>
+        {{# An invoice prints its date with the customer details, leaving the right-hand column to
+           the document numbers. #}}
+        {{% if doc.doctype == 'Sales Invoice' %}}
+        <div style="margin-top: 6px; font-size: 14px; font-weight: bold; color: #000; text-transform: uppercase; white-space: nowrap;">
+            Date: {{{{ frappe.utils.formatdate(doc.posting_date) }}}}
+        </div>
+        {{% endif %}}
     </div>
     <div class="col-xs-4 text-right">
+        {{% if doc.doctype != 'Sales Invoice' %}}
         <div style="font-size: 14px; font-weight: bold; color: #000; text-transform: uppercase; white-space: nowrap;">
             Date: {{{{ frappe.utils.formatdate(doc.posting_date or doc.transaction_date) }}}}
         </div>
+        {{% endif %}}
         {{% if doc.doctype != 'Sales Invoice' and doc.due_date %}}
         <div style="font-size: 14px; font-weight: bold; color: #e74c3c; text-transform: uppercase; margin-top: 5px; white-space: nowrap;">
             Due Date: {{{{ frappe.utils.formatdate(doc.due_date) }}}}
@@ -140,10 +149,18 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
             Quote No: {{{{ quote_name_parts[3 if quote_name_parts[0] == 'SAL' else 2]|int }}}}
         </div>
         {{% elif doc.doctype == 'Sales Invoice' and not doc.get('is_return') %}}
-        <!-- Same bold one-line style as the Quotation's Quote No. -->
-        <div style="margin-top: 10px; font-size: 14px; font-weight: bold; color: #000; text-transform: uppercase; white-space: nowrap;">
+        <!-- Same bold one-line style as the Quotation's Quote No. First line of the column now
+             that the invoice date prints on the left, so no top margin. -->
+        <div style="font-size: 14px; font-weight: bold; color: #000; text-transform: uppercase; white-space: nowrap;">
             {{{{ 'Sale No' if is_cash_sale else 'Invoice No' }}}}: {{{{ doc.name }}}}
         </div>
+        {{% if doc.get('custom_source_quotation') %}}
+        {{# The quotation's number as its own print shows it: QTN-2026-60603 -> 60603. #}}
+        {{% set source_quote_parts = doc.custom_source_quotation.split('-') %}}
+        <div style="margin-top: 6px; font-size: 14px; font-weight: bold; color: #000; text-transform: uppercase; white-space: nowrap;">
+            Quote No: {{{{ source_quote_parts[3 if source_quote_parts[0] == 'SAL' else 2]|int }}}}
+        </div>
+        {{% endif %}}
         {{% if doc.get('custom_source_job_card') %}}
         <div style="margin-top: 6px; font-size: 14px; font-weight: bold; color: #000; text-transform: uppercase; white-space: nowrap;">
             Job Card No: {{{{ doc.custom_source_job_card }}}}
