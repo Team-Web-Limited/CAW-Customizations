@@ -1659,6 +1659,9 @@ def _get_sales_invoice_list_filters(search=None, status=None, customer=None, fro
     filters = {}
     if status and status != "All":
         filters["status"] = status
+    else:
+        # "All" means every live invoice; cancelled ones only show under Status = Cancelled.
+        filters["docstatus"] = ["!=", 2]
     if customer:
         filters["customer"] = customer
     if from_date:
