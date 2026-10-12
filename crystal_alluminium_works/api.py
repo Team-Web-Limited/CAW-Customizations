@@ -7861,6 +7861,24 @@ def get_quotation_deposit_credit(quotation):
     return {"credit": credit, "payments": payments, "is_latest_revision": is_latest_revision}
 
 
+@frappe.whitelist()
+def get_job_card_for_quotation(quotation):
+    """The live Job Card owning this quotation's amendment chain, for Quotation Manager.
+
+    Goes through _resolve_job_card_for_quotation rather than a plain `quotation` filter: an
+    amended revision is created *after* the Job Card that gets re-pointed to it, so a cutoff
+    on the revision's own creation hid the card and offered "Create Job Card" again."""
+    if not quotation or not frappe.db.exists("Quotation", quotation):
+        return None
+    frappe.has_permission("Quotation", "read", quotation, throw=True)
+    name = _resolve_job_card_for_quotation(quotation)
+    if not name:
+        return None
+    return frappe.db.get_value(
+        "CAW Job Card", name, ["name", "payment_amount", "balance_amount"], as_dict=True
+    )
+
+
 def _post_customer_payment_entry(customer, amount, date, payment_method, deposit_to, reference, is_refund, payments_doc_name):
     """Submit a real Payment Entry mirroring a Payments row, so the receipt/refund this
     app already captures in full detail (method, account, reference, date) actually

@@ -1590,26 +1590,15 @@ async function get_existing_job_card_for_quotation(quotation) {
 		return null;
 	}
 
-	// Job Cards keep a link to their quotation, so a quotation number
-	// reissued after the original was deleted would otherwise pick up the old quotation's
-	// Job Card — showing "View Job Card" (and hiding Record Deposit) on a brand-new draft
-	// that nobody has paid against. A card that existed before the quotation can't be its own.
-	let quotation_created = await frappe.db.get_value('Quotation', quotation, 'creation');
-	let created_on = (quotation_created && quotation_created.message && quotation_created.message.creation) || null;
-
-	let filters = { quotation: quotation };
-	if (created_on) {
-		filters.creation = ['>=', created_on];
-	}
-
-	let job_cards = await frappe.db.get_list('CAW Job Card', {
-		filters: filters,
-		fields: ['name', 'payment_amount', 'balance_amount'],
-		order_by: 'creation desc',
-		limit: 1
+	// Resolved on the server across the whole amendment chain (api.py
+	// _resolve_job_card_for_quotation): an amended revision is newer than the Job Card
+	// re-pointed to it, and a reissued quotation number must not adopt a deleted
+	// quotation's card — one rule for both, instead of a client copy that drifted.
+	let r = await frappe.call({
+		method: 'crystal_alluminium_works.api.get_job_card_for_quotation',
+		args: { quotation: quotation }
 	});
-
-	return job_cards && job_cards.length ? job_cards[0] : null;
+	return r.message || null;
 }
 
 // The customer's unallocated advance/credit — the same customer-wide figure the Create
