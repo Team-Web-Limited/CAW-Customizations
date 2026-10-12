@@ -63,6 +63,8 @@ app_include_js = [
 	# Shared "Create Payment" dialog (moved out of the Payments page), used by Quotation
 	# Manager's Record/Refund Deposit actions so they open in place instead of navigating away.
 	"/assets/crystal_alluminium_works/js/caw_payment_dialog.js",
+	# Adds a Customer Billing Type filter to the standard Customer Ledger Summary report.
+	"/assets/crystal_alluminium_works/js/customer_ledger_summary_filter.js",
 	# Bank Reconciliation Statement: Payment Document links open their own document again.
 	"/assets/crystal_alluminium_works/js/bank_reconciliation_statement_links.js",
 ]
@@ -341,12 +343,14 @@ override_whitelisted_methods = {
 
 # Request Events
 # ----------------
-# before_request = ["crystal_alluminium_works.utils.before_request"]
+# Patches Customer Ledger Summary to honour the Customer Billing Type filter (see
+# customer_ledger_summary_override.py). before_job covers prepared/background reports.
+before_request = ["crystal_alluminium_works.customer_ledger_summary_override.apply"]
 # after_request = ["crystal_alluminium_works.utils.after_request"]
 
 # Job Events
 # ----------
-# before_job = ["crystal_alluminium_works.utils.before_job"]
+before_job = ["crystal_alluminium_works.customer_ledger_summary_override.apply"]
 # after_job = ["crystal_alluminium_works.utils.after_job"]
 
 # User Data Protection
