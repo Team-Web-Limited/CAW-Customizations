@@ -277,13 +277,20 @@ def _job_card_quotation_amendment_pending(job_card):
 
 def _job_card_invoice_amendment_pending(job_card):
     """True while a job-card Sales Invoice has been cancelled and has no active
-    (submitted) replacement amendment yet."""
+    (submitted) replacement amendment yet.
+
+    Only this Job Card's own invoices count: a cancelled invoice left behind by an earlier,
+    since-cancelled Job Card on the same quotation chain must not freeze its replacement."""
     if not job_card:
         return False
     chain = _resolve_quotation_chain(job_card.quotation) or [job_card.quotation]
     cancelled = frappe.get_all(
         "Sales Invoice",
         filters={"custom_source_quotation": ["in", chain], "docstatus": 2},
+        or_filters=[
+            ["custom_source_job_card", "=", job_card.name],
+            ["custom_source_job_card", "is", "not set"],
+        ],
         pluck="name",
     )
     for name in cancelled:
@@ -5025,6 +5032,22 @@ def _reverse_partial_invoice_payment(job_card, invoice):
     )
 
 
+def _quotation_chain_has_live_invoice(chain):
+    """Any Sales Invoice on this chain that still has to be amended rather than the Quotation.
+    A cancelled invoice whose Job Card was cancelled too is a fully reversed sale (nothing left
+    to amend), so the Quotation itself may be amended again."""
+    for invoice in frappe.get_all(
+        "Sales Invoice",
+        filters={"custom_source_quotation": ["in", chain]},
+        fields=["docstatus", "custom_source_job_card"],
+    ):
+        if invoice.docstatus != 2 or not invoice.custom_source_job_card:
+            return True
+        if frappe.db.get_value("CAW Job Card", invoice.custom_source_job_card, "status") != "Cancelled":
+            return True
+    return False
+
+
 @frappe.whitelist()
 def get_quotation_amendment_eligibility(quotation):
     if not quotation or not frappe.db.exists("Quotation", quotation):
@@ -5042,7 +5065,7 @@ def get_quotation_amendment_eligibility(quotation):
         reasons.append("This Quotation has already been amended.")
     if frappe.db.exists("Sales Order Item", {"prevdoc_docname": ["in", chain], "docstatus": ["<", 2]}):
         reasons.append("A Sales Order exists for this Quotation.")
-    if frappe.db.exists("Sales Invoice", {"custom_source_quotation": ["in", chain]}):
+    if _quotation_chain_has_live_invoice(chain):
         reasons.append("A Sales Invoice exists for this Quotation — amend the invoice instead.")
     if frappe.db.exists("CAW Ceiling Release", {"quotation": ["in", chain]}):
         reasons.append("Goods have already been released for this Quotation.")
