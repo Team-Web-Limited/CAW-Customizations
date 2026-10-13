@@ -144,9 +144,10 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
             Due Date: {{{{ frappe.utils.formatdate(doc.due_date) }}}}
         </div>
         {{% endif %}}
-        {{# A cash customer's invoice prints as a Cash Sale, with a Sale No (billing type, as in
-           api.is_cash_customer). Credit notes and invoice customers are unchanged. #}}
-        {{% set is_cash_sale = doc.doctype == 'Sales Invoice' and not doc.get('is_return') and frappe.call('crystal_alluminium_works.api.is_cash_customer', customer=doc.customer) %}}
+        {{# A cash customer's invoice prints as a Cash Sale, with a Sale No (its Job Card's payment
+           mode, else the billing type — see api.is_cash_customer). Credit notes and invoice
+           customers are unchanged. #}}
+        {{% set is_cash_sale = doc.doctype == 'Sales Invoice' and not doc.get('is_return') and frappe.call('crystal_alluminium_works.api.is_cash_customer', customer=doc.customer, invoice=doc.name) %}}
         {{% if doc.doctype == 'Quotation' %}}
         {{% set quote_name_parts = doc.name.split('-') %}}
         <div style="margin-top: 10px; font-size: 14px; font-weight: bold; color: #000; text-transform: uppercase; white-space: nowrap;">

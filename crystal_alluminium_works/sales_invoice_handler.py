@@ -111,10 +111,17 @@ def before_insert(doc, method):
         doc.naming_series = CREDIT_NOTE_NAMING_SERIES
         return
 
-    from crystal_alluminium_works.api import SHARED_CASH_CUSTOMER_NAME
+    from crystal_alluminium_works.api import SHARED_CASH_CUSTOMER_NAME, sales_invoice_job_card_payment_mode
 
-    billing_type = frappe.db.get_value("Customer", doc.customer, "custom_customer_billing_type")
-    is_cash = billing_type == "Cash Customer" or doc.customer == SHARED_CASH_CUSTOMER_NAME
+    # The Job Card's payment mode when the invoice is made from one — the same rule that lists it
+    # on the Invoices / Cash Sales page and prints it — so a cash sale still being released after
+    # its customer was converted to invoice terms keeps the cash series. Else the billing type.
+    payment_mode = sales_invoice_job_card_payment_mode(doc)
+    if payment_mode:
+        is_cash = payment_mode == "Cash Customer"
+    else:
+        billing_type = frappe.db.get_value("Customer", doc.customer, "custom_customer_billing_type")
+        is_cash = billing_type == "Cash Customer" or doc.customer == SHARED_CASH_CUSTOMER_NAME
     doc.naming_series = CASH_CUSTOMER_NAMING_SERIES if is_cash else INVOICE_CUSTOMER_NAMING_SERIES
 
 

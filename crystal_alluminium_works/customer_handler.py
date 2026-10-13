@@ -35,6 +35,29 @@ def assert_unique_customer_phone(phone, exclude=None):
         )
 
 
+def _assert_billing_type_unchanged(doc, before):
+    """A Customer's Billing Type is set when it is registered and only ever changes through
+    Convert to Invoice Customer (api.convert_customer_to_organisation and friends set
+    flags.allow_billing_type_change), which moves the customer's Job Cards and deposits to invoice
+    terms along with it. Changed anywhere else, the Job Cards stay cash while new invoices take the
+    invoice series, and those invoices land on the Cash Sales page (VAKRATUNDA, 2026-10-13).
+    A System Manager can still change it on the Customer form."""
+    if not before or doc.flags.allow_billing_type_change:
+        return
+    old = (before.get("custom_customer_billing_type") or "").strip()
+    if not old or old == (doc.get("custom_customer_billing_type") or "").strip():
+        return
+    if "System Manager" in frappe.get_roles():
+        return
+    if old == "Cash Customer":
+        frappe.throw(
+            "A Cash Customer becomes an Invoice Customer only through <b>Convert to Invoice Customer</b> in "
+            "Customer Manager, which moves their Job Cards and deposits to invoice terms too.",
+            title="Billing Type can't be changed here",
+        )
+    frappe.throw("An Invoice Customer can't be changed back to a Cash Customer.", title="Billing Type can't be changed")
+
+
 def validate(doc, method):
     """One Customer per KRA PIN, and per mobile number (see assert_unique_customer_phone).
 
@@ -44,6 +67,7 @@ def validate(doc, method):
     Customer is created or its PIN changes, so the pairs that already share a PIN stay editable.
     """
     before = doc.get_doc_before_save()
+    _assert_billing_type_unchanged(doc, before)
     # Like the PIN, only checked when the number is new or changed, so existing pairs stay editable.
     if normalize_phone(doc.mobile_no) and (not before or normalize_phone(before.mobile_no) != normalize_phone(doc.mobile_no)):
         assert_unique_customer_phone(doc.mobile_no, exclude=doc.name)

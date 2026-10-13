@@ -207,7 +207,13 @@ async function open_edit_customer_dialog(page, customer_name) {
 				label: 'Customer Type',
 				options: 'Invoice Customer\nCash Customer',
 				default: customer.custom_customer_billing_type || 'Cash Customer',
-				reqd: 1
+				reqd: 1,
+				// Fixed once registered: Cash → Invoice only through Convert to Invoice Customer, which moves
+				// the Job Cards and deposits too (api.update_customer_details refuses a change).
+				read_only: 1,
+				description: customer.custom_customer_billing_type === 'Cash Customer'
+					? 'To bill this customer on invoice terms, use Convert to Invoice Customer.'
+					: ''
 			},
 			{ fieldtype: 'Data', fieldname: 'customer_name', label: 'Customer Name', reqd: 1, default: customer.customer_name || customer.name },
 			{
@@ -623,14 +629,14 @@ async function delete_customer_with_checks(page, customer_name, on_deleted) {
 	);
 }
 
-// Bill to Organisation from a cash customer's page: the customer becomes an organisation billed
-// on invoice terms. All their past quotations take the organisation's name (keeping their own
-// KRA PIN and telephone); from the next quotation on they're an Invoice Customer. See api.py
-// convert_customer_to_organisation.
+// Convert to Invoice Customer from a cash customer's page (named Bill to Organisation until 2026-10-13) — the only way a Billing Type changes: the
+// customer becomes an organisation billed on invoice terms. Work not yet invoiced moves with them
+// (Job Cards to invoice terms, deposits counted as invoice payments); cash sales already invoiced
+// stay cash sales. See api.py convert_customer_to_organisation.
 function open_customer_bill_to_dialog(page, customer_name, customer) {
 	let label = cm_text(customer.customer_name || customer_name);
 	let d = new frappe.ui.Dialog({
-		title: __('Bill to Organisation'),
+		title: __('Convert to Invoice Customer'),
 		fields: [
 			{ fieldtype: 'Data', fieldname: 'organisation_name', label: __('Organisation Name'), reqd: 1 },
 			{ fieldtype: 'Data', fieldname: 'kra_pin', label: __('KRA PIN'), reqd: 1, default: customer.tax_id || '', description: __('e.g. P051209779U') },
@@ -646,13 +652,13 @@ function open_customer_bill_to_dialog(page, customer_name, customer) {
 			{ fieldtype: 'Section Break' },
 			{ fieldtype: 'HTML', fieldname: 'invoice_customer_note', options: `<div class="text-muted" style="font-size:12px; line-height:1.5;">
 				<i class="fa fa-info-circle" style="margin-right:4px;"></i>
-				${__('This customer becomes an <b>Invoice Customer</b>: their next quotation is on invoice terms. Past quotations take the organisation\'s name and stay as they are.')}
+				${__('This customer becomes an <b>Invoice Customer</b>. Work not yet invoiced moves to invoice terms, and its deposits stop counting as cash sales. Cash sales already invoiced stay as they are.')}
 			</div>` }
 		],
 		primary_action_label: __('Convert'),
 		primary_action(values) {
 			frappe.confirm(
-				__('Convert {0} to {1}? Past quotations will show the new name and the next quotation will be on invoice terms.',
+				__('Convert {0} to {1}? Work not yet invoiced and its deposits move to invoice terms; invoiced cash sales stay as they are.',
 					[label, `<b>${cm_text(values.organisation_name)}</b>`]),
 				async () => {
 					let r = await frappe.call({
@@ -676,7 +682,10 @@ function open_customer_bill_to_dialog(page, customer_name, customer) {
 						message: `<p>${cm_text((result.registered || {}).message)}</p>
 							<p>${result.mode === 'invoice_start'
 								? `${(result.quotations || []).length} draft quotation(s) moved to it as invoice quotations${(result.quotations || []).length ? ': ' + result.quotations.map(cm_text).join(', ') : ''}.`
-								: `${(result.quotations || []).length} past quotation(s) now show <b>${cm_text(values.organisation_name)}</b>.`}</p>`
+								: `${(result.quotations || []).length} past quotation(s) now show <b>${cm_text(values.organisation_name)}</b>.`}</p>
+							${(result.job_cards || []).length ? `<p>${result.job_cards.length} Job Card(s) moved to invoice terms: ${result.job_cards.map(cm_text).join(', ')}.</p>` : ''}
+							${(result.kept_cash || []).length ? `<p>${result.kept_cash.length} invoiced cash sale(s) stay cash: ${result.kept_cash.map(cm_text).join(', ')}.</p>` : ''}
+							${(result.payments || []).length ? `<p>${result.payments.length} payment(s) moved to the organisation.</p>` : ''}`
 					});
 					let target = (result.registered || {}).customer;
 					page.customer_manager_route_key = null;
@@ -747,10 +756,10 @@ async function render_customer_detail(page, customer_name) {
 			job_cards: job_cards,
 		};
 		page.set_title(customer.customer_name || customer.name);
-		// Bill to Organisation: for cash customers (walk-ins and Cash Customer records).
+		// Convert to Invoice Customer: for cash customers (walk-ins and Cash Customer records).
 		let is_cash = is_walkin_customer_key(customer_name) || customer.custom_customer_billing_type === 'Cash Customer';
 		if (is_cash && customer_name !== 'Cash Customer' && frappe.model.can_write('Quotation')) {
-			page.add_inner_button('Bill to Organisation', function () {
+			page.add_inner_button('Convert to Invoice Customer', function () {
 				open_customer_bill_to_dialog(page, customer_name, customer);
 			});
 		}

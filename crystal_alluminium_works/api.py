@@ -1501,11 +1501,21 @@ def get_quotations_page(search=None, status=None, customer=None, from_date=None,
     # the walk-in's own name for Cash (party_name is always the shared Cash
     # Customer record so it carries no per-walk-in identity), the linked
     # Customer's name for Invoice.
-    # Cash vs Invoice by the customer's billing type: walk-ins on the shared record and the Cash
-    # Customers registered for them both count as Cash.
+    # Cash vs Invoice by the quotation's Job Card when it has one (a converted customer's invoiced
+    # cash sales stay cash), otherwise by the customer's billing type: walk-ins on the shared
+    # record and the Cash Customers registered for them both count as Cash.
     cash_parties = _cash_customer_names({row.get("party_name") for row in rows})
+    job_card_modes = {
+        jc.quotation: jc.payment_mode
+        for jc in frappe.get_all(
+            "CAW Job Card",
+            filters={"quotation": ["in", [row.name for row in rows] or [""]], "status": ["!=", "Cancelled"]},
+            fields=["quotation", "payment_mode"],
+        )
+    }
     for row in rows:
-        is_cash = row.get("party_name") in cash_parties
+        mode = job_card_modes.get(row.name)
+        is_cash = mode == "Cash Customer" if mode else row.get("party_name") in cash_parties
         row["customer_type"] = "Cash" if is_cash else "Invoice"
         # Quotations carry no tax row — VAT (16%) is added on top for display, as on the
         # printed quotation. A quotation that does have a tax row already includes it.
@@ -2166,6 +2176,14 @@ def update_customer_details(customer, customer_name, customer_billing_type, mobi
     email_id = (email_id or "").strip()
 
     doc = frappe.get_doc("Customer", customer)
+    # Fixed here for everyone: Cash → Invoice goes through Convert to Invoice Customer, which moves the
+    # Job Cards and deposits too (see customer_handler._assert_billing_type_unchanged).
+    if doc.custom_customer_billing_type and customer_billing_type != doc.custom_customer_billing_type:
+        frappe.throw(
+            "Customer Type can't be changed in Edit Customer. To bill a Cash Customer on invoice "
+            "terms, use <b>Convert to Invoice Customer</b> on their Customer Manager page.",
+            title="Customer Type can't be changed here",
+        )
     phone_changed = (doc.mobile_no or "") != mobile_no
     email_changed = (doc.email_id or "") != email_id
     if phone_changed:
@@ -2639,8 +2657,7 @@ def _add_customer_contact_note(customer, contact_name, contact_phone):
 def _register_bill_to_invoice_customer(name, pin, phone):
     """An Invoice Customer for the organisation, so its next quotation is raised to it on invoice
     terms. A Customer already holding this KRA PIN is reused: left as it is when it already bills
-    on invoice, converted when it is a Cash Customer with no Job Card still in progress (editing
-    one would otherwise be refused for its payment mode no longer matching the billing type)."""
+    on invoice, converted when it is a Cash Customer — its uninvoiced Job Cards along with it."""
     from crystal_alluminium_works.customer_handler import normalize_kra_pin
 
     existing = frappe.db.sql(
@@ -2655,21 +2672,14 @@ def _register_bill_to_invoice_customer(name, pin, phone):
         if customer.custom_customer_billing_type == "Invoice Customer":
             return {"customer": customer.name, "action": "exists",
                     "message": f"{customer.customer_name} is already an Invoice Customer."}
-        open_cards = frappe.get_all(
-            "CAW Job Card",
-            filters={"customer": customer.name, "status": ["not in", ["Completed", "Cancelled"]]},
-            pluck="name", limit_page_length=3,
-        )
-        if open_cards:
-            frappe.throw(
-                f"{frappe.bold(customer.customer_name)} (KRA PIN {pin}) is a Cash Customer with Job Cards "
-                f"still in progress ({', '.join(open_cards)}). Finish those first, then convert it in "
-                "Customer Manager. The organisation was not registered.",
-                title="Can't convert yet",
-            )
+        # Its work not yet invoiced goes to invoice terms with it; invoiced cash sales stay cash.
+        _, job_cards = _split_invoiced_job_cards(_live_cash_job_cards(customer.name))
+        _assert_job_cards_can_go_invoice(job_cards)
         doc = frappe.get_doc("Customer", customer.name)
         doc.custom_customer_billing_type = "Invoice Customer"
+        doc.flags.allow_billing_type_change = True
         doc.save()
+        _move_job_cards_to_invoice_terms(job_cards, doc.customer_name)
         return {"customer": doc.name, "action": "converted",
                 "message": f"{doc.customer_name} converted from Cash to Invoice Customer."}
 
@@ -2681,6 +2691,101 @@ def _register_bill_to_invoice_customer(name, pin, phone):
     )
     return {"customer": result["name"], "action": "registered",
             "message": f"{result['customer_name']} registered as an Invoice Customer."}
+
+
+def _live_cash_job_cards(customer):
+    """A customer's Job Cards still on cash terms (not cancelled)."""
+    return frappe.get_all(
+        "CAW Job Card",
+        filters={"customer": customer, "payment_mode": "Cash Customer", "status": ["!=", "Cancelled"]},
+        pluck="name",
+    )
+
+
+def _split_invoiced_job_cards(job_card_names):
+    """(invoiced, not invoiced) of these Job Cards. An invoiced cash sale stays a cash sale when
+    its customer is converted — its invoices stay on Cash Sales and its money stays cash — so only
+    the work not yet invoiced goes to invoice terms."""
+    invoiced, open_ = [], []
+    for name in job_card_names:
+        quotation = frappe.db.get_value("CAW Job Card", name, "quotation")
+        (invoiced if quotation and _quotation_is_invoiced(quotation) else open_).append(name)
+    return invoiced, open_
+
+
+def _assert_job_cards_can_go_invoice(job_card_names):
+    """On invoice terms a Job Card's paid amount is recomputed from the Payments allocated to it
+    (_sync_job_card_balance_from_payments). A cash card can show more paid than that: Create Job
+    Card saves the card, then records the payment in a second call, and when that call fails the
+    card reads paid with no Payments row and no Payment Entry behind it. Converting such a card
+    would wipe the payment off it, so it is refused until the payment is recorded."""
+    short = []
+    for name in job_card_names:
+        paid = _round_job_card_amount(frappe.db.get_value("CAW Job Card", name, "payment_amount"))
+        on_file = _round_job_card_amount(max(_get_job_card_allocated_payments(name), 0))
+        if paid - on_file >= PAYMENT_SETTLEMENT_TOLERANCE:
+            short.append(
+                f"{name}: shows {frappe.utils.fmt_money(paid)} paid, but only "
+                f"{frappe.utils.fmt_money(on_file)} is recorded on the Payments page"
+            )
+    if short:
+        frappe.throw(
+            "These Job Cards show money paid that was never recorded as a payment, so it would be "
+            "lost on invoice terms. Record the missing payment against each on the Payments page, "
+            "then convert again:<br>• " + "<br>• ".join(short),
+            title="Payments missing",
+        )
+
+
+def _move_job_cards_to_invoice_terms(job_card_names, organisation_name, customer=None):
+    """Put not-yet-invoiced Job Cards on invoice terms: their invoices will take the invoice series,
+    list on the Invoices page and print as Invoices, and money is taken on the Payments page, where
+    what is already paid on them now counts as an Invoice Customer's. `customer` also moves them to that
+    Customer (a walk-in's work on the shared Cash Customer). Paid amounts are recomputed from the
+    Payments on file, which _assert_job_cards_can_go_invoice has checked cover them."""
+    for name in job_card_names:
+        values = {"payment_mode": "Invoice Customer"}
+        if customer:
+            values.update(customer=customer, customer_name=organisation_name)
+        frappe.db.set_value("CAW Job Card", name, values)
+        _sync_job_card_balance_from_payments(name)
+        _write_job_card_amendment_event(
+            frappe.get_doc("CAW Job Card", name), "Converted to Invoice",
+            note=f"Customer converted to Invoice Customer {organisation_name} (Convert to Invoice Customer).",
+        )
+
+
+def _move_payment_to_customer(payment_name, customer):
+    """Re-post a walk-in's payment under the organisation's Customer, so it counts as an Invoice
+    Customer's money (Payments page, day totals, statement) instead of a cash sale's. The Payments
+    row keeps its amount, date, method, account, allocations and M-Pesa link; its Payment Entry is
+    cancelled and an identical one posted to the new party, so Cash/Bank is untouched and only
+    the Debtors party changes."""
+    doc = frappe.get_doc("Payments", payment_name)
+    if doc.is_corrected or doc.customer == customer:
+        return False
+    if _forex_tracked_deposit_account(doc.deposit_to):
+        frappe.throw(
+            f"Payment {doc.name} went to {doc.deposit_to}, a foreign-currency account whose FIFO cost "
+            "ledger cannot be re-posted, so it can't be moved to the organisation."
+        )
+    old_entry = doc.payment_entry
+    new_entry = old_entry
+    if old_entry and frappe.db.get_value("Payment Entry", old_entry, "docstatus") == 1:
+        pe = frappe.get_doc("Payment Entry", old_entry)
+        pe.flags.ignore_permissions = True
+        pe.cancel()
+        new_entry = _post_customer_payment_entry(
+            customer, doc.amount, doc.date, doc.payment_method, doc.deposit_to, doc.reference,
+            is_refund=doc.payment_type == "Refund", payments_doc_name=doc.name,
+        )
+    frappe.db.set_value("Payments", doc.name, {"customer": customer, "payment_entry": new_entry}, update_modified=False)
+    doc.add_comment(
+        "Comment",
+        f"Moved from {doc.customer} to {customer} when the walk-in was converted to an Invoice Customer"
+        + (f"; Payment Entry {old_entry} cancelled and re-posted as {new_entry}." if new_entry != old_entry else "."),
+    )
+    return True
 
 
 def _customer_manager_quotation_names(customer):
@@ -2696,18 +2801,24 @@ def _customer_manager_quotation_names(customer):
 @frappe.whitelist()
 def convert_customer_to_organisation(customer, organisation_name, kra_pin, telephone=None,
                                      contact_name=None, contact_phone=None):
-    """Customer Manager's Bill to Organisation: a cash customer becomes an organisation billed on
+    """Customer Manager's Convert to Invoice Customer: a cash customer becomes an organisation billed on
     invoice terms.
 
-    * Every past quotation (not cancelled) takes the organisation's name, with its Job Card; each
-      keeps the KRA PIN and telephone it already had, and invoices already issued are left as
-      they are. The walk-in stays the Contact.
-    * From the next quotation on, the customer is an Invoice Customer: a Cash Customer record is
-      converted in place (name, KRA PIN, telephone); a walk-in, who has no record of their own,
-      gets one registered (or the Customer already holding this KRA PIN is reused).
+    * The customer is an Invoice Customer: a Cash Customer record is converted in place (name,
+      KRA PIN, telephone); a walk-in, who has no record of their own, gets one registered (or the
+      Customer already holding this KRA PIN is reused). This is the only way a Billing Type
+      changes (customer_handler._assert_billing_type_unchanged).
+    * Work not yet invoiced goes to invoice terms: its Job Cards switch to Invoice Customer (their
+      invoices take the invoice series, list on the Invoices page and print as Invoices) and the
+      deposits and payments on them count as an Invoice Customer's, not cash sales. A walk-in's
+      uninvoiced quotations, Job Cards and payments move to the organisation's record.
+    * Cash sales already invoiced stay cash sales — on the Cash Sales page, printed as Cash Sales,
+      their money counted as cash (a walk-in's stay billed to the shared Cash Customer).
+    * Other past quotations take the organisation's name, each keeping the KRA PIN and telephone
+      it already had. The walk-in stays the Contact.
 
-    Refused while the customer has Job Cards in progress — editing one after the billing type
-    changed would be refused for its payment mode no longer matching.
+    Refused when an uninvoiced Job Card shows money paid that was never recorded as a payment
+    (_assert_job_cards_can_go_invoice).
 
     First-time customers start straight on invoice terms instead: when every live quotation is
     still a Draft with no Job Card, deposit, payment or invoice, those drafts move to the
@@ -2738,6 +2849,23 @@ def convert_customer_to_organisation(customer, organisation_name, kra_pin, telep
             customer, walkin, cash_quotations, organisation_name, kra_pin, telephone, contact_name, contact_phone,
         )
 
+    # Work already invoiced stays a cash sale: its invoices stay on Cash Sales and print as Cash
+    # Sales, and the money paid for it stays cash (for a walk-in, on the shared Cash Customer the
+    # invoice is billed to). Only work not yet invoiced goes to invoice terms.
+    walkin_records = get_walkin_records(customer) if walkin else None
+    invoiced_quotations = {q.name for q in cash_quotations if _quotation_is_invoiced(q.name)}
+    if walkin:
+        cash_job_cards = frappe.get_all(
+            "CAW Job Card",
+            filters={"name": ["in", walkin_records.job_cards or [""]], "payment_mode": "Cash Customer",
+                     "status": ["!=", "Cancelled"]},
+            pluck="name",
+        )
+    else:
+        cash_job_cards = _live_cash_job_cards(customer)
+    invoiced_job_cards, open_job_cards = _split_invoiced_job_cards(cash_job_cards)
+    _assert_job_cards_can_go_invoice(open_job_cards)
+
     # 1. The customer: an Invoice Customer from here on.
     if walkin:
         contact_name = " ".join((contact_name or "").split()) or walkin.name
@@ -2747,16 +2875,6 @@ def convert_customer_to_organisation(customer, organisation_name, kra_pin, telep
         doc = frappe.get_doc("Customer", customer)
         if doc.custom_customer_billing_type == "Invoice Customer":
             frappe.throw(f"{frappe.bold(doc.customer_name)} is already an Invoice Customer.")
-        open_cards = frappe.get_all(
-            "CAW Job Card", filters={"customer": doc.name, "status": ["not in", ["Completed", "Cancelled"]]},
-            pluck="name", limit_page_length=3,
-        )
-        if open_cards:
-            frappe.throw(
-                f"{frappe.bold(doc.customer_name)} still has Job Cards in progress ({', '.join(open_cards)}). "
-                "Finish them first, then convert.",
-                title="Can't convert yet",
-            )
         contact_name = " ".join((contact_name or "").split()) or doc.customer_name
         contact_phone = _clean_phone(contact_phone, "Contact Phone") or (doc.mobile_no or "")
         doc.customer_name = organisation_name
@@ -2765,32 +2883,62 @@ def convert_customer_to_organisation(customer, organisation_name, kra_pin, telep
         if telephone:
             doc.mobile_no = telephone
         doc.custom_customer_billing_type = "Invoice Customer"
+        doc.flags.allow_billing_type_change = True
         doc.save()
         registered = {"customer": doc.name, "action": "converted",
                       "message": f"{organisation_name} is now an Invoice Customer."}
+    target = registered["customer"]
 
     # The contact on the organisation's record, so searching the messenger's name or phone in the
     # Quotation Builder finds it (search_builder_customers looks in Customer Details).
-    _add_customer_contact_note(registered["customer"], contact_name, contact_phone)
+    _add_customer_contact_note(target, contact_name, contact_phone)
 
-    # 2. Past quotations: the organisation's name; PIN and telephone as they were.
+    # 2. Uninvoiced Job Cards on invoice terms. A walk-in's move to the organisation's record too.
+    _move_job_cards_to_invoice_terms(open_job_cards, organisation_name, customer=target if walkin else None)
+
+    # 3. A walk-in's deposits and payments for work not yet invoiced move to the organisation, so
+    # they stop counting as cash sales; a payment for an invoiced cash sale stays with it. (A Cash
+    # Customer record converted in place keeps its payments; they count as cash or invoice money
+    # by the Job Card they paid for — see _cash_payment_names.)
+    moved_payments = []
+    if walkin:
+        staying_cards = set(invoiced_job_cards)
+        for payment in walkin_records.payments:
+            row = frappe.db.get_value("Payments", payment, ["job_card", "quotation"], as_dict=True)
+            cards = set(frappe.get_all(
+                "Payment Job Card Allocation", filters={"parenttype": "Payments", "parent": str(payment)}, pluck="job_card",
+            ))
+            if row.job_card:
+                cards.add(row.job_card)
+            if cards & staying_cards or (row.quotation and row.quotation in invoiced_quotations):
+                continue
+            if _move_payment_to_customer(payment, target):
+                moved_payments.append(str(payment))
+
+    # 4. Past quotations. A walk-in's uninvoiced ones move to the organisation as invoice
+    # quotations; the rest take the organisation's name, keeping their PIN and telephone.
     renamed = []
     for quotation in cash_quotations:
         name = quotation.name
+        if walkin and name not in invoiced_quotations:
+            _move_quotation_to_invoice_customer(quotation, target, contact_name, contact_phone)
+            renamed.append(name)
+            continue
         quotation.db_set({
             "custom_bill_to_name": organisation_name,
             "custom_bill_to_pin": quotation.get("custom_bill_to_pin") or quotation.get("custom_customer_pin") or "",
             "custom_bill_to_phone": quotation.get("custom_bill_to_phone") or quotation.get("custom_customer_phone") or "",
             "custom_contact_name": quotation.get("custom_contact_name") or contact_name,
             "custom_contact_phone": quotation.get("custom_contact_phone") or contact_phone,
-            "custom_converted_to_customer": registered["customer"],
+            "custom_converted_to_customer": target,
         })
         job_card = _resolve_job_card_for_quotation(name)
         if job_card:
             frappe.db.set_value("CAW Job Card", job_card, "customer_name", organisation_name)
         renamed.append(name)
 
-    return {"mode": "bill_to", "registered": registered, "quotations": renamed}
+    return {"mode": "bill_to", "registered": registered, "quotations": renamed,
+            "job_cards": open_job_cards, "kept_cash": invoiced_job_cards, "payments": moved_payments}
 
 
 def _customer_has_only_drafts(customer, walkin, quotations):
@@ -2880,6 +3028,7 @@ def _start_as_invoice_customer(customer, walkin, quotations, organisation_name, 
             if telephone:
                 doc.mobile_no = telephone
             doc.custom_customer_billing_type = "Invoice Customer"
+            doc.flags.allow_billing_type_change = True
             doc.save()
             target = doc.name
             if organisation_name != doc.name and not frappe.db.exists("Customer", organisation_name):
@@ -2947,7 +3096,12 @@ def create_job_card_from_quotation(quotation, customer, customer_name=None, paym
     # its invoice lists on (Invoices / Cash Sales) while the Billing Type picks the invoice series
     # (sales_invoice_handler), so a mismatch puts a cash-numbered invoice on the Invoices page.
     billing_type = customer_doc.get("custom_customer_billing_type")
-    if billing_type in ("Cash Customer", "Invoice Customer") and billing_type != payment_mode:
+    # A Job Card keeps the terms it was created on: a cash sale already invoiced when its customer
+    # was converted to invoice terms stays cash (convert_customer_to_organisation), and still takes
+    # cash top-ups here.
+    existing_card = _resolve_job_card_for_quotation(quotation_doc.name)
+    keeps_own_terms = bool(existing_card) and frappe.db.get_value("CAW Job Card", existing_card, "payment_mode") == payment_mode
+    if billing_type in ("Cash Customer", "Invoice Customer") and billing_type != payment_mode and not keeps_own_terms:
         frappe.throw(
             f"{frappe.bold(customer_doc.customer_name or customer_doc.name)} is registered as a "
             f"{billing_type}, so this Job Card must use Payment Mode {frappe.bold(billing_type)}. "
@@ -6091,10 +6245,30 @@ def get_ceiling_board_item_codes():
 
 
 @frappe.whitelist()
-def is_cash_customer(customer=None):
+def is_cash_customer(customer=None, invoice=None):
     """For print templates (which can't read the Customer directly): is this a cash customer by
-    billing type — the same rule that picks the cash invoice series (sales_invoice_handler)."""
+    billing type — the same rule that picks the cash invoice series (sales_invoice_handler).
+
+    Given an invoice made from a Job Card, the Job Card's payment mode decides instead — the same
+    rule that lists it on the Invoices or Cash Sales page — so a cash sale already invoiced when its
+    customer was converted (Convert to Invoice Customer) still prints as a Cash Sale."""
+    if invoice and frappe.db.exists("Sales Invoice", invoice):
+        payment_mode = sales_invoice_job_card_payment_mode(frappe.db.get_value(
+            "Sales Invoice", invoice, ["custom_source_job_card", "custom_source_quotation"], as_dict=True
+        ))
+        if payment_mode:
+            return payment_mode == "Cash Customer"
     return bool(customer) and customer in _cash_customer_names([customer])
+
+
+def sales_invoice_job_card_payment_mode(invoice):
+    """Payment mode of the Job Card a Sales Invoice (doc or dict) was made from, or None. It decides
+    whether the invoice is a cash sale — its series, its page and its print — so a converted
+    customer's invoiced cash sales stay cash sales while their newer work bills as invoices."""
+    job_card = invoice.get("custom_source_job_card") or (
+        invoice.get("custom_source_quotation") and _resolve_job_card_for_quotation(invoice.get("custom_source_quotation"))
+    )
+    return job_card and frappe.db.get_value("CAW Job Card", job_card, "payment_mode") or None
 
 
 @frappe.whitelist()
@@ -7196,6 +7370,41 @@ def _build_payments_page_filters(payment_method, from_date, to_date, correction_
     return filters
 
 
+def _cash_payment_names(rows):
+    """Which of these Payments rows are cash-sale money: those paying for a Job Card on cash terms
+    (its own job_card link or its allocation rows), otherwise — a deposit not on any Job Card —
+    those of a cash customer. By the Job Card first so a customer converted to invoice terms keeps
+    the money for their invoiced cash sales counted as cash. Names returned as str."""
+    if not rows:
+        return set()
+    names = [str(row["name"]) for row in rows]
+    cards_by_payment = {}
+    for row in rows:
+        if row.get("job_card"):
+            cards_by_payment.setdefault(str(row["name"]), set()).add(row["job_card"])
+    for alloc in frappe.get_all(
+        "Payment Job Card Allocation",
+        filters={"parenttype": "Payments", "parent": ["in", names]},
+        fields=["parent", "job_card"],
+    ):
+        if alloc.job_card:
+            cards_by_payment.setdefault(str(alloc.parent), set()).add(alloc.job_card)
+    all_cards = {card for cards in cards_by_payment.values() for card in cards}
+    modes = dict(frappe.get_all(
+        "CAW Job Card", filters={"name": ["in", list(all_cards) or [""]]}, fields=["name", "payment_mode"], as_list=True,
+    ))
+    cash_customers = _cash_customer_names({row.get("customer") for row in rows})
+    cash = set()
+    for row in rows:
+        card_modes = {modes.get(card) for card in cards_by_payment.get(str(row["name"]), ())} - {None}
+        if card_modes:
+            if "Cash Customer" in card_modes:
+                cash.add(str(row["name"]))
+        elif row.get("customer") in cash_customers:
+            cash.add(str(row["name"]))
+    return cash
+
+
 def _build_payments_page_or_filters(search):
     """Shared search (OR) filters for the Payments page's Search box. Returns (or_filters,
     cleaned search text) — or_filters is None when search is blank.
@@ -7384,9 +7593,9 @@ def get_payments_page(search=None, payment_method=None, from_date=None, to_date=
             job_card_walkin_names[jc.name] = jc.customer_name
         job_card_walkin_phones[jc.name] = jc.phone_number or quotation_walkin_phones.get(jc.quotation)
 
-    cash_customers = _cash_customer_names({row.get("customer") for row in rows})
+    cash_payments = _cash_payment_names(rows)
     for row in rows:
-        is_cash = row.get("customer") in cash_customers
+        is_cash = str(row["name"]) in cash_payments
         row["customer_type"] = "Cash" if is_cash else "Invoice"
         if is_cash:
             row["display_name"] = (
@@ -7509,9 +7718,9 @@ def _get_payments_report_data(search, payment_method, from_date, to_date):
 
     totals_by_method = {}
     grand_total = 0
-    cash_customers = _cash_customer_names({row.get("customer") for row in rows})
+    cash_payments = _cash_payment_names(rows)
     for row in rows:
-        is_cash = row.get("customer") in cash_customers
+        is_cash = str(row["name"]) in cash_payments
         row["customer_type"] = "Cash" if is_cash else "Invoice"
         row["display_name"] = (
             (
