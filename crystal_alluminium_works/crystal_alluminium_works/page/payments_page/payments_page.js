@@ -297,11 +297,14 @@ function build_correction_display(row) {
 	// The expensive constraints — released items, JC Operations stock entries, invoices, closed
 	// periods — are far too costly to evaluate for every row, so they run on click via
 	// get_payment_correction_eligibility, the same way the Job Card cancel flow does.
-	let linkable = !row.quotation && !row.is_corrected && !row.is_voided && row.payment_type !== 'Refund';
-	let link_btn = linkable
-		? `<button class="btn btn-xs btn-default pay-link-btn" data-payment="${frappe.utils.escape_html(String(row.name))}" title="Tag this deposit to a quotation raised after it was taken">Link Quotation</button> `
-		: '';
-	if (link_btn) display.action = `<span style="white-space:nowrap;">${link_btn}</span>`;
+	// Link Quotation button hidden for now, to be revisited. The backend (link_payment_to_quotation)
+	// and the click handler / modal below are kept so it can be switched back on.
+	// let linkable = !row.quotation && !row.is_corrected && !row.is_voided && row.payment_type !== 'Refund';
+	// let link_btn = linkable
+	// 	? `<button class="btn btn-xs btn-default pay-link-btn" data-payment="${frappe.utils.escape_html(String(row.name))}" title="Tag this deposit to a quotation raised after it was taken">Link Quotation</button> `
+	// 	: '';
+	// if (link_btn) display.action = `<span style="white-space:nowrap;">${link_btn}</span>`;
+	let link_btn = '';
 	let correctable = !row.is_corrected && row.payment_type !== 'Refund'
 		&& row.correction_window_open && row.payment_entry;
 	if (correctable) {
