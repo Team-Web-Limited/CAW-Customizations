@@ -75,15 +75,12 @@ FIXED_GLASS_SHEET_SIZE = "1 x 1"
 FIXED_GLASS_SHEET_SFT = 1
 JOB_CARD_CURRENCY_PRECISION = 2
 
-# A Job Card's payment_option now holds the actual Mode of Payment the customer pays by, so
-# the deposit account is derivable from Mode of Payment Account (no separate field). The set
-# of methods is constrained by customer type per the business rules:
-#   - Cash customers pay by Cash, Mpesa/Paybill, or bank transfer (RTGS/TT, PESALINK).
-#   - Invoice customers pay by Cheque only.
-# Cash customers may pay by cheque too: Billing Type (not the payment method) decides cash vs
-# invoice, and create_job_card_from_quotation rejects a mode that contradicts it.
-CASH_CUSTOMER_PAYMENT_OPTIONS = ["Cash", "Paybill", "Cheque", "PESALINK"]
-INVOICE_CUSTOMER_PAYMENT_OPTIONS = ["Cheque"]
+# A Job Card's payment_option holds the actual Mode of Payment the customer paid by, so the
+# deposit account is derivable from Mode of Payment Account (no separate field). It is not
+# restricted by customer type: whichever method was captured when the payment was recorded is
+# what the Job Card shows. Billing Type (not the payment method) decides cash vs invoice, and
+# create_job_card_from_quotation rejects a payment mode that contradicts it.
+JOB_CARD_PAYMENT_OPTIONS = ["Cash", "Paybill", "Cheque", "PESALINK", "Bank Transfer i.e RTGS, TT"]
 
 # record_customer_payment only demands a Reference for these — Mpesa (Paybill), PESALINK,
 # Cash etc. don't leave/need a paper reference. Mirrored in caw_payment_dialog.js.
@@ -3111,11 +3108,8 @@ def create_job_card_from_quotation(quotation, customer, customer_name=None, paym
     payment_option = (payment_option or "").strip()
     if payment_option.lower() == "bank":  # legacy coarse value → real Mode of Payment
         payment_option = "Bank Transfer i.e RTGS, TT"
-    valid_payment_options = (
-        CASH_CUSTOMER_PAYMENT_OPTIONS if payment_mode == "Cash Customer" else INVOICE_CUSTOMER_PAYMENT_OPTIONS
-    )
-    if payment_option not in valid_payment_options:
-        payment_option = valid_payment_options[0]
+    if payment_option not in JOB_CARD_PAYMENT_OPTIONS:
+        payment_option = JOB_CARD_PAYMENT_OPTIONS[0]
     quotation_amount = _round_job_card_amount(quotation_amount or _get_quotation_display_total(quotation_doc) or 0)
     payment_amount = _round_job_card_amount(payment_amount)
     # Resolve across the amendment chain so an amended quotation still finds and reuses
@@ -3216,8 +3210,9 @@ def create_job_card_from_quotation(quotation, customer, customer_name=None, paym
         history_parts.append(f"{' / '.join(advance_methods)} (advance)")
     if history_parts:
         job_card.flags.history_payment_option = " + ".join(history_parts)
-    if payment_mode == "Cash Customer" and payment_amount <= 0.0001 and credit_to_apply > 0.0001:
-        job_card.payment_option = "Advance"
+    if payment_amount <= 0.0001 and credit_to_apply > 0.0001:
+        # Funded by advance alone: show the method the advance was actually paid by.
+        job_card.payment_option = advance_methods[0] if len(advance_methods) == 1 else "Advance"
 
     is_new_job_card = bool(job_card.get("__islocal"))
     _sync_quotation_bill_to_from_job_card(
@@ -8282,6 +8277,12 @@ def record_customer_payment(customer, amount, date, payment_method, deposit_to, 
         # Invoice customers' real outstanding balance lives on the job card, kept in sync from
         # Payments — this is the only place that updates for them now that invoices don't.
         for row in cleaned_allocations:
+            # The card shows the method this payment was captured with, whatever the customer
+            # type. Set before the sync so the history row it writes carries the same method.
+            if payment_method in JOB_CARD_PAYMENT_OPTIONS:
+                frappe.db.set_value(
+                    "CAW Job Card", row["job_card"], "payment_option", payment_method, update_modified=False
+                )
             _sync_job_card_balance_from_payments(row["job_card"])
 
     if use_advance_first:

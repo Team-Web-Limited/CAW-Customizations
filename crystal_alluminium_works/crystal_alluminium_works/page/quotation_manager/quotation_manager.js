@@ -1207,9 +1207,7 @@ function get_job_card_payment_option_choices(payment_mode) {
 	// These are actual Mode of Payment names — the chosen option IS the payment method, and
 	// its deposit account is derived from Mode of Payment Account. Cash customers pay by
 	// cash / mpesa / cheque / pesalink; invoice customers by cheque only.
-	return normalize_job_card_payment_mode(payment_mode) === 'cash'
-		? ['Cash', 'Paybill', 'Cheque', 'PESALINK']
-		: ['Cheque'];
+	return ['Cash', 'Paybill', 'Cheque', 'PESALINK'];
 }
 
 function get_workflow_job_card_state(sales_invoices, existing_job_card) {

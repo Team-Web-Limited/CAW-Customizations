@@ -115,9 +115,7 @@ function get_job_card_payment_mode_label(value) {
 
 function get_job_card_payment_option_choices(payment_mode) {
 	// Actual Mode of Payment names — the option IS the method, deposit derived from it.
-	return normalize_job_card_payment_mode(payment_mode) === 'cash'
-		? ['Cash', 'Paybill', 'Cheque', 'PESALINK']
-		: ['Cheque'];
+	return ['Cash', 'Paybill', 'Cheque', 'PESALINK'];
 }
 
 // The Payment Method dropdown starts on Paybill when it's offered (cash customers); staff can
