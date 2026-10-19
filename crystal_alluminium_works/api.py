@@ -8091,6 +8091,126 @@ def get_quotation_deposit_credit(quotation):
     return {"credit": credit, "payments": payments, "is_latest_revision": is_latest_revision}
 
 
+def _unlinked_deposit_candidates(customer, customer_phone=None):
+    """General Payments with no quotation and no job-card allocation yet (a deposit taken before
+    its quotation existed), for one customer. A Cash Customer walk-in shares the one
+    SHARED_CASH_CUSTOMER_NAME record, so it is narrowed to the walk-in's own phone."""
+    filters = {
+        "customer": customer,
+        "payment_type": "General Payment",
+        "is_corrected": 0,
+        "is_voided": 0,
+        "quotation": ["in", ["", None]],
+    }
+    if customer == SHARED_CASH_CUSTOMER_NAME:
+        phone = (customer_phone or "").strip()
+        if not phone:
+            return []
+        filters["customer_phone"] = phone
+    rows = frappe.get_all("Payments", filters=filters, fields=["name", "amount", "date"], order_by="creation asc")
+    if not rows:
+        return []
+    # Payments.name is an int, a child row's parent a str — compare as strings.
+    allocated = {
+        str(parent)
+        for parent in frappe.get_all(
+            "Payment Job Card Allocation",
+            filters={"parent": ["in", [str(r.name) for r in rows]], "parenttype": "Payments"},
+            pluck="parent",
+        )
+    }
+    return [r for r in rows if str(r.name) not in allocated]
+
+
+def auto_link_deposit_to_quotation(quotation_doc):
+    """When a quotation is submitted, tag the customer's untagged deposit to it if exactly one
+    unallocated General Payment matches the quotation total. Several matches are ambiguous, so
+    they are left for staff to link by hand (link_payment_to_quotation). Never raises: this
+    must not block a quotation from being submitted."""
+    try:
+        if quotation_doc.get("quotation_to") != "Customer" or not quotation_doc.get("party_name"):
+            return
+        total = _get_quotation_display_total(quotation_doc)
+        if total <= 0:
+            return
+        quotation_chain = _resolve_quotation_chain(quotation_doc.name) or [quotation_doc.name]
+        if frappe.db.exists("Payments", {"quotation": ["in", quotation_chain], "is_corrected": 0, "is_voided": 0}):
+            return
+        matches = [
+            row
+            for row in _unlinked_deposit_candidates(
+                quotation_doc.party_name, quotation_doc.get("custom_customer_phone")
+            )
+            if abs(flt(row.amount) - total) < 0.005
+        ]
+        if len(matches) == 1:
+            frappe.db.set_value("Payments", matches[0].name, "quotation", quotation_doc.name, update_modified=False)
+    except Exception:
+        frappe.log_error(title="Auto-link deposit to quotation failed")
+
+
+@frappe.whitelist()
+def get_quotations_for_payment(payment):
+    """Quotations a not-yet-linked payment could be tagged to: the same customer's open ones
+    (a walk-in's own, for the shared Cash Customer record), newest first. `matches_amount`
+    flags those whose total equals the payment so the dialog can float them to the top."""
+    pay = frappe.db.get_value("Payments", payment, ["customer", "customer_phone", "amount"], as_dict=True)
+    if not pay:
+        frappe.throw("Payment not found.")
+    filters = {"party_name": pay.customer, "docstatus": ["<", 2]}
+    if pay.customer == SHARED_CASH_CUSTOMER_NAME:
+        filters["custom_customer_phone"] = pay.customer_phone or ["in", ["", None]]
+    rows = frappe.get_all(
+        "Quotation",
+        filters=filters,
+        fields=["name", "transaction_date", "grand_total", "total_taxes_and_charges", "custom_customer_name"],
+        order_by="creation desc",
+        limit=50,
+    )
+    out = []
+    for row in rows:
+        total = _get_quotation_display_total(frappe._dict(row))
+        out.append({
+            "name": row.name,
+            "date": row.transaction_date,
+            "customer_name": row.custom_customer_name,
+            "total": total,
+            "matches_amount": abs(total - flt(pay.amount)) < 0.005,
+        })
+    out.sort(key=lambda r: not r["matches_amount"])
+    return out
+
+
+@frappe.whitelist()
+def link_payment_to_quotation(payment, quotation):
+    """Tag an untagged deposit to a quotation raised after it was taken, so it shows up as that
+    quotation's deposit credit. Only a plain, unspent General Payment of the same customer."""
+    frappe.has_permission("Payments", "write", throw=True)
+    pay = frappe.db.get_value(
+        "Payments",
+        payment,
+        ["customer", "customer_phone", "quotation", "payment_type", "is_corrected", "is_voided"],
+        as_dict=True,
+    )
+    if not pay:
+        frappe.throw("Payment not found.")
+    if pay.payment_type != "General Payment" or pay.is_corrected or pay.is_voided:
+        frappe.throw("Only an active General Payment can be linked to a quotation.")
+    if pay.quotation:
+        frappe.throw(f"This payment is already linked to {pay.quotation}.")
+    if not any(str(r.name) == str(payment) for r in _unlinked_deposit_candidates(pay.customer, pay.customer_phone)):
+        frappe.throw("This payment has already been allocated to a Job Card, so it can't be re-linked.")
+    q = frappe.db.get_value("Quotation", quotation, ["party_name", "custom_customer_phone", "docstatus"], as_dict=True)
+    if not q or q.docstatus == 2:
+        frappe.throw("Please pick a valid, uncancelled Quotation.")
+    if q.party_name != pay.customer:
+        frappe.throw("The quotation belongs to a different customer than this payment.")
+    if pay.customer == SHARED_CASH_CUSTOMER_NAME and (q.custom_customer_phone or "") != (pay.customer_phone or ""):
+        frappe.throw("The quotation belongs to a different walk-in than this payment.")
+    frappe.db.set_value("Payments", payment, "quotation", quotation, update_modified=False)
+    return {"payment": payment, "quotation": quotation}
+
+
 @frappe.whitelist()
 def get_job_card_for_quotation(quotation):
     """The live Job Card owning this quotation's amendment chain, for Quotation Manager.

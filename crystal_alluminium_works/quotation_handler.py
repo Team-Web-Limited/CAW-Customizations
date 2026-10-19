@@ -54,6 +54,10 @@ def on_validate(doc, method):
 
 
 def on_submit(doc, method):
+    # A deposit taken before this quotation existed is tagged to it when the amount matches.
+    from crystal_alluminium_works.api import auto_link_deposit_to_quotation
+    auto_link_deposit_to_quotation(doc)
+
     # When a freshly-amended Quotation is submitted, re-point its existing Job Card to
     # this revision (the Job Card keeps its stable name/number).
     if not doc.get("amended_from"):

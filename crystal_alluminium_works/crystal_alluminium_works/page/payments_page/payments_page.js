@@ -72,6 +72,7 @@ async function render_payments_page(page) {
 		.pay-download-option:hover { background: var(--subtle-fg); }
 		.pay-table-scroll { height:560px; overflow:auto; }
 		.pay-table { width: 100%; min-width: 1250px; border-collapse: separate; border-spacing:0; }
+		.pay-table th, .pay-table td { white-space: nowrap; }
 		.pay-table th { position:sticky; top:0; z-index:2; padding: 11px 14px; font-size: 12px; font-weight: 700; color: var(--text-muted); text-align: left; border-bottom: 1px solid var(--border-color); background: var(--subtle-fg); }
 		.pay-table td { padding: 12px 14px; font-size: 13px; color: var(--text-color); border-bottom: 1px solid var(--border-color); vertical-align: middle; }
 		.pay-table tbody tr:last-child td { border-bottom: 0; }
@@ -296,11 +297,17 @@ function build_correction_display(row) {
 	// The expensive constraints — released items, JC Operations stock entries, invoices, closed
 	// periods — are far too costly to evaluate for every row, so they run on click via
 	// get_payment_correction_eligibility, the same way the Job Card cancel flow does.
+	let linkable = !row.quotation && !row.is_corrected && !row.is_voided && row.payment_type !== 'Refund';
+	let link_btn = linkable
+		? `<button class="btn btn-xs btn-default pay-link-btn" data-payment="${frappe.utils.escape_html(String(row.name))}" title="Tag this deposit to a quotation raised after it was taken">Link Quotation</button> `
+		: '';
+	if (link_btn) display.action = `<span style="white-space:nowrap;">${link_btn}</span>`;
 	let correctable = !row.is_corrected && row.payment_type !== 'Refund'
 		&& row.correction_window_open && row.payment_entry;
 	if (correctable) {
 		let payment_attr = frappe.utils.escape_html(String(row.name));
 		display.action = `<span style="white-space:nowrap;">`
+			+ link_btn
 			+ `<button class="btn btn-xs btn-default pay-correct-btn" data-payment="${payment_attr}" title="Correct a mis-keyed amount, method or account">Correct</button> `
 			+ `<button class="btn btn-xs btn-default pay-void-btn" data-payment="${payment_attr}" title="Reverse a payment recorded in error — kept on file with the reason">Void</button>`
 			+ `</span>`;
@@ -419,6 +426,10 @@ function bind_payments_page_events(page, $body) {
 
 	$body.on('click.paymentsPage', '.pay-correct-btn', function() {
 		open_correct_payment_modal(page, $(this).attr('data-payment'));
+	});
+
+	$body.on('click.paymentsPage', '.pay-link-btn', function() {
+		open_link_quotation_modal(page, $(this).attr('data-payment'));
 	});
 
 	$body.on('click.paymentsPage', '.pay-void-btn', function() {
@@ -624,3 +635,44 @@ function open_correct_payment_modal(page, payment) {
 	});
 }
 
+
+function open_link_quotation_modal(page, payment) {
+	frappe.call({
+		method: 'crystal_alluminium_works.api.get_quotations_for_payment',
+		args: { payment: payment },
+		freeze: true,
+		callback: function(r) {
+			let quotations = (r && r.message) || [];
+			if (!quotations.length) {
+				frappe.msgprint(__('This customer has no quotation to link this payment to yet.'));
+				return;
+			}
+			let labels = {};
+			let options = quotations.map(q => {
+				let label = `${q.name} · ${q.customer_name || ''} · ${format_currency(q.total || 0, 'KES')}${q.matches_amount ? ' · matches amount' : ''}`;
+				labels[label] = q.name;
+				return label;
+			});
+			let d = new frappe.ui.Dialog({
+				title: __('Link Payment #{0} to a Quotation', [payment]),
+				fields: [
+					{ fieldname: 'quotation', fieldtype: 'Select', label: __('Quotation'), options: options.join('\n'), default: options[0], reqd: 1 }
+				],
+				primary_action_label: __('Link'),
+				primary_action: function(values) {
+					frappe.call({
+						method: 'crystal_alluminium_works.api.link_payment_to_quotation',
+						args: { payment: payment, quotation: labels[values.quotation] },
+						freeze: true,
+						callback: function() {
+							d.hide();
+							frappe.show_alert({ message: __('Payment linked to {0}', [labels[values.quotation]]), indicator: 'green' });
+							load_payment_records(page, 1);
+						}
+					});
+				}
+			});
+			d.show();
+		}
+	});
+}
