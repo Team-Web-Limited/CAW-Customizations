@@ -9611,25 +9611,27 @@ def get_customer_payments(customer):
     payments = frappe.get_all(
         "Payments",
         filters={"customer": customer, "is_corrected": 0},
-        fields=["name", "amount", "date", "payment_method", "deposit_to", "reference", "job_card", "creation"],
+        fields=["name", "amount", "date", "payment_method", "deposit_to", "reference", "job_card", "payment_type", "creation"],
         order_by="date desc, creation desc",
         limit_page_length=0,
     )
     if not payments:
         return []
 
+    # Payments.name is an int, a child row's parent a str: key both as str, or every payment
+    # reads as unallocated and the page falls back to the legacy single job_card field.
     allocation_rows = frappe.get_all(
         "Payment Job Card Allocation",
-        filters={"parent": ["in", [p.name for p in payments]], "parenttype": "Payments"},
+        filters={"parent": ["in", [str(p.name) for p in payments]], "parenttype": "Payments"},
         fields=["parent", "job_card", "amount"],
         limit_page_length=0,
     )
     allocations_by_payment = {}
     for row in allocation_rows:
-        allocations_by_payment.setdefault(row.parent, []).append({"job_card": row.job_card, "amount": row.amount})
+        allocations_by_payment.setdefault(str(row.parent), []).append({"job_card": row.job_card, "amount": row.amount})
 
     for payment in payments:
-        payment["allocations"] = allocations_by_payment.get(payment.name, [])
+        payment["allocations"] = allocations_by_payment.get(str(payment.name), [])
 
     return payments
 

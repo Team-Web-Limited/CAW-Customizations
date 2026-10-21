@@ -967,8 +967,10 @@ function get_customer_detail_html(customer, transactions) {
 				${get_customer_stat_html('Payments', payments.length)}
 				${get_customer_stat_html('Job Cards', job_cards.length)}
 				${get_customer_stat_html('Total Sales', format_currency(total_sales, currency))}
-				${get_customer_stat_html('Outstanding', format_currency(outstanding, currency))}
-				${get_customer_stat_html('Advance / Credit', format_currency(advance_credit, currency))}
+				${get_customer_stat_html('Outstanding', format_currency(outstanding, currency),
+					outstanding > 0.005 ? 'var(--red-600)' : null)}
+				${get_customer_stat_html('Advance / Credit', format_signed_credit(advance_credit, currency),
+					advance_credit > 0.005 ? 'var(--green-600)' : advance_credit < -0.005 ? 'var(--red-600)' : null)}
 			</div>
 
 			<div class="cm-detail-info">
@@ -1040,13 +1042,19 @@ function get_customer_manager_style_block() {
 	`;
 }
 
-function get_customer_stat_html(label, value) {
+function get_customer_stat_html(label, value, color) {
 	return `
 		<div class="cm-detail-stat">
 			<div class="cm-detail-stat-label">${cm_text(label)}</div>
-			<div class="cm-detail-stat-value">${cm_text(value)}</div>
+			<div class="cm-detail-stat-value"${color ? ` style="color:${color};"` : ''}>${cm_text(value)}</div>
 		</div>
 	`;
+}
+
+// "+" is money we hold for the customer (advance / credit); "−" means more was refunded than held.
+function format_signed_credit(amount, currency) {
+	if (Math.abs(amount) < 0.005) return format_currency(0, currency);
+	return `${amount > 0 ? '+' : '−'}${format_currency(Math.abs(amount), currency)}`;
 }
 
 function get_customer_field_html(label, value) {
