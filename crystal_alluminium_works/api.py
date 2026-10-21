@@ -3127,9 +3127,10 @@ def create_job_card_from_quotation(quotation, customer, customer_name=None, paym
     if not job_card.get("__islocal"):
         _assert_job_card_not_frozen(job_card)
 
-    # Create/Edit Job Card is the only place a Cash Customer's payment_amount/balance_amount
-    # (and Payment History) ever changes. Invoices — partial or full — only ever track
-    # released items, never payments, for either customer type, so this must stay open for
+    # Create/Edit Job Card is where a Cash Customer's payment_amount/balance_amount (and Payment
+    # History) changes, besides Payments-page allocations (_apply_cash_job_card_receipt).
+    # Invoices — partial or full — only ever track released items, never payments, for
+    # either customer type, so this must stay open for
     # further deposits even after a Sales Invoice already exists; otherwise a cash customer
     # who hadn't fully paid before their first release could never reach a zero balance.
     #
@@ -3225,7 +3226,8 @@ def create_job_card_from_quotation(quotation, customer, customer_name=None, paym
         job_card.save(ignore_permissions=True)
 
     if credit_to_apply > 0.0001:
-        _draw_advance_pool(credit_pool, job_card.name, credit_to_apply)
+        # paid_amount above already counts this draw.
+        _draw_advance_pool(credit_pool, job_card.name, credit_to_apply, apply_to_cash_cards=False)
 
     # credit_to_apply is capped at what this Job Card can absorb, so a deposit bigger than the
     # quotation leaves a remainder behind. It stays as the customer's advance (visible on
@@ -3282,7 +3284,7 @@ def _advance_methods_drawn(pool, amount_to_apply):
     return methods
 
 
-def _draw_advance_pool(pool, job_card_name, amount_to_apply):
+def _draw_advance_pool(pool, job_card_name, amount_to_apply, apply_to_cash_cards=True):
     """Allocate amount_to_apply of unallocated advance from `pool` (an oldest-first list of
     {"name", "unallocated"} Payments rows, mutated in place as it's drawn down) onto
     job_card_name — pinning it exactly as staff would by hand via Set Payment Allocations,
@@ -3297,7 +3299,10 @@ def _draw_advance_pool(pool, job_card_name, amount_to_apply):
             continue
         payment_doc = frappe.get_doc("Payments", row["name"])
         existing = [{"job_card": alloc.job_card, "amount": flt(alloc.amount)} for alloc in (payment_doc.allocations or [])]
-        set_payment_allocations(row["name"], json.dumps(existing + [{"job_card": job_card_name, "amount": take}]))
+        _set_payment_allocations(
+            row["name"], json.dumps(existing + [{"job_card": job_card_name, "amount": take}]),
+            apply_to_cash_cards=apply_to_cash_cards,
+        )
         row["unallocated"] = flt(row["unallocated"]) - take
         remaining -= take
 
@@ -3790,7 +3795,8 @@ def _release_job_card_payment_allocations(job_card_name):
                 released_total += flt(row.amount)
             else:
                 remaining.append({"job_card": row.job_card, "amount": flt(row.amount)})
-        set_payment_allocations(payment_name, json.dumps(remaining))
+        # The card is being cancelled; its own paid figure stays as the record of what it took.
+        _set_payment_allocations(payment_name, json.dumps(remaining), apply_to_cash_cards=False)
 
     # Legacy single-field payments: the whole payment was implicitly "allocated" to the one
     # job card named directly on it, with no allocation rows at all.
@@ -3806,7 +3812,7 @@ def _release_job_card_payment_allocations(job_card_name):
     )
     for payment in legacy_payments:
         released_total += flt(payment.amount)
-        set_payment_allocations(payment.name, "[]")
+        _set_payment_allocations(payment.name, "[]", apply_to_cash_cards=False)
 
     return _round_job_card_amount(released_total)
 
@@ -8404,6 +8410,10 @@ def record_customer_payment(customer, amount, date, payment_method, deposit_to, 
                     "CAW Job Card", row["job_card"], "payment_option", payment_method, update_modified=False
                 )
             _sync_job_card_balance_from_payments(row["job_card"])
+            if explicit_allocations:
+                # Payments-page money a cash card hasn't counted yet. The legacy job_card arg is
+                # Create/Edit Job Card recording money its own save already counted.
+                _apply_cash_job_card_receipt(row["job_card"], row["amount"], doc.name, payment_method)
 
     if use_advance_first:
         return {"payment": doc.name, "advance_applied": advance_applied}
@@ -8423,6 +8433,38 @@ def _apply_job_card_refund(job_card_name, amount, payment_name):
     )
 
 
+def _apply_cash_job_card_receipt(job_card_name, amount, payment_name, payment_method=None):
+    """Move a Cash Customer job card's paid figure by `amount` (negative takes money back off)
+    for Payments-page money allocated to it.
+
+    _sync_job_card_balance_from_payments refuses Cash Customer cards, because their
+    payment_amount may hold money typed straight into Create/Edit Job Card with no Payments row
+    behind it and a recompute would erase that. So a cash card has to be moved by the allocation
+    itself; before this, the allocation used the money up while the card never saw it
+    (JC-2026-00533: 25,001.01 of Payments 615). Not for Create/Edit Job Card's own receipts —
+    that save already counted them."""
+    amount = _round_job_card_amount(amount)
+    if abs(amount) <= 0.0001 or not frappe.db.exists("CAW Job Card", job_card_name):
+        return
+    job_card = frappe.get_doc("CAW Job Card", job_card_name)
+    if (job_card.payment_mode or "") == "Invoice Customer":
+        return
+
+    new_payment = _round_job_card_amount(max(flt(job_card.payment_amount) + amount, 0))
+    job_card.payment_amount = new_payment
+    job_card.balance_amount = _job_card_balance(job_card.quotation_amount, new_payment)
+    if payment_method:
+        job_card.flags.history_payment_option = payment_method
+    job_card.flags.ignore_permissions = True
+    job_card.save(ignore_permissions=True)  # a positive move writes its own "Updated" history row
+    if amount < 0:
+        # CAWJobCard.create_history_record only logs positive deltas.
+        _write_job_card_amendment_event(
+            job_card, "Payment Reallocated", amount_paid=amount,
+            note=f"Payments {payment_name} moved {frappe.utils.fmt_money(abs(amount))} off this Job Card.",
+        )
+
+
 @frappe.whitelist()
 def set_payment_allocations(payment, allocations=None):
     """Replace an existing payment's job-card allocations.
@@ -8430,13 +8472,21 @@ def set_payment_allocations(payment, allocations=None):
     This is how an advance / unallocated payment gets deliberately distributed across one or
     more job cards (e.g. a contractor funding several projects from one deposit). The customer
     statement then credits each job card's balance; anything left unallocated stays as advance."""
+    return _set_payment_allocations(payment, allocations)
+
+
+def _set_payment_allocations(payment, allocations=None, apply_to_cash_cards=True):
+    """set_payment_allocations. apply_to_cash_cards=False is for Create/Edit Job Card drawing
+    advance onto the card it is saving, whose paid figure already includes that draw."""
     if not payment or not frappe.db.exists("Payments", payment):
         frappe.throw("Please select a valid payment.")
 
     payment_doc = frappe.get_doc("Payments", payment)
-    previous_job_cards = {row.job_card for row in (payment_doc.allocations or []) if row.job_card}
-    if payment_doc.job_card:
-        previous_job_cards.add(payment_doc.job_card)
+    previous_job_cards = _payment_job_cards(payment_doc)
+    previous_contribution = {
+        job_card_name: _payment_contribution_to_job_card(payment_doc, job_card_name)
+        for job_card_name in previous_job_cards
+    }
 
     cleaned_allocations = _normalize_payment_allocations(allocations, payment_doc.customer, payment_doc.amount)
 
@@ -8450,6 +8500,10 @@ def set_payment_allocations(payment, allocations=None):
     new_job_cards = {row["job_card"] for row in cleaned_allocations}
     for job_card_name in previous_job_cards | new_job_cards:
         _sync_job_card_balance_from_payments(job_card_name)
+        if apply_to_cash_cards and not payment_doc.is_corrected:
+            delta = (_payment_contribution_to_job_card(payment_doc, job_card_name)
+                     - previous_contribution.get(job_card_name, 0))
+            _apply_cash_job_card_receipt(job_card_name, delta, payment_doc.name, payment_doc.payment_method)
 
     return payment_doc.name
 
@@ -8529,8 +8583,8 @@ def _sync_job_card_balance_from_payments(job_card_name, exclude_payment=None):
     only ever track released items, never payments. Call this whenever a Payment touching
     this job card is recorded, edited, deleted, or its allocations change.
 
-    No-op for Cash Customers: their payment_amount/balance_amount is driven solely by
-    Create/Edit Job Card."""
+    No-op for Cash Customers: their payment_amount/balance_amount is driven by Create/Edit
+    Job Card, plus _apply_cash_job_card_receipt for Payments-page allocations."""
     if not job_card_name or not frappe.db.exists("CAW Job Card", job_card_name):
         return
 
