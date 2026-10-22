@@ -19,7 +19,7 @@ statement is actually downloaded or emailed.
 import frappe
 from frappe.utils import flt, getdate
 
-# Charges age from the day the job card was opened; job cards carry no due date.
+# Days past the due date each account term gives an invoice (credit_control.due_date_for).
 AGEING_BUCKETS = ((1, 30, "range1"), (31, 60, "range2"), (61, 90, "range3"))
 
 
@@ -41,7 +41,7 @@ def _get_job_cards(customer, walkin=None):
 	return frappe.get_all(
 		"CAW Job Card",
 		filters=filters,
-		fields=["name", "quotation", "quotation_amount", "payment_amount", "payment_mode", "creation", "modified"],
+		fields=["name", "quotation", "quotation_amount", "payment_amount", "payment_mode", "account_term", "creation", "modified"],
 	)
 
 
@@ -187,6 +187,7 @@ def _gather_events(customer, job_cards, walkin=None):
 			"outstanding_amount",
 			"total_taxes_and_charges",
 			"custom_source_quotation",
+			"due_date",
 		],
 	):
 		if inv.custom_source_quotation and inv.custom_source_quotation in accounted_quotations:
@@ -200,6 +201,7 @@ def _gather_events(customer, job_cards, walkin=None):
 				voucher_no=inv.name,
 				debit=charge,
 				credit=0.0,
+				due_date=inv.due_date,
 			)
 		)
 		if settled > 0:
@@ -252,13 +254,26 @@ def _build_rows(events, from_date, to_date, currency):
 	return rows
 
 
-def _build_ageing(job_cards, events, to_date, ageing_based_on):
-	"""Bucket each job card's unpaid balance by how long ago the job card was opened.
+def _age_into(totals, amount, days_past_due):
+	if days_past_due <= 0:
+		totals.current += amount
+		return
+	for lower, upper, key in AGEING_BUCKETS:
+		if lower <= days_past_due <= upper:
+			totals[key] += amount
+			return
+	totals.range4 += amount
 
-	Job cards carry no due date, so a card opened today is 'current' and everything
-	else is counted as past due from its creation date.
+
+def _build_ageing(job_cards, events, to_date, ageing_based_on):
+	"""Bucket what the customer owes by how far past its due date it is.
+
+	A job card's released, unpaid goods are due by the invoice's due date, which follows the
+	account term (credit_control.job_card_due_portions); the rest of its balance hasn't gone out
+	yet, so it is current. A standalone invoice is due on its own due date.
 	"""
 	from crystal_alluminium_works.api import _job_card_balance
+	from crystal_alluminium_works.credit_control import job_card_due_portions
 
 	totals = frappe._dict(current=0.0, range1=0.0, range2=0.0, range3=0.0, range4=0.0)
 
@@ -266,21 +281,16 @@ def _build_ageing(job_cards, events, to_date, ageing_based_on):
 		outstanding = _job_card_balance(jc.quotation_amount, jc.payment_amount)
 		if outstanding <= 0:
 			continue
-		age = (to_date - getdate(jc.creation)).days
-		if age <= 0:
-			totals.current += outstanding
-			continue
-		for lower, upper, key in AGEING_BUCKETS:
-			if lower <= age <= upper:
-				totals[key] += outstanding
-				break
-		else:
-			totals.range4 += outstanding
+		card = frappe._dict(jc, paid=flt(jc.payment_amount), balance=outstanding)
+		due = 0.0
+		for _invoice, amount, days_past_due in job_card_due_portions(card, to_date):
+			_age_into(totals, amount, days_past_due)
+			due += amount
+		totals.current += max(outstanding - due, 0)
 
-	# Standalone invoices (no owning job card) age from their own posting date. Job
-	# cards are aged above from their own creation date instead — a job-card-derived
-	# event may now also display voucher_type "Sales Invoice" (see _gather_events), so
-	# exclude those explicitly rather than relying on voucher_type alone.
+	# Standalone invoices (no owning job card) age from their own due date. A job-card-derived
+	# event may also display voucher_type "Sales Invoice" (see _gather_events), so exclude
+	# those explicitly rather than relying on voucher_type alone.
 	for e in events:
 		if e.voucher_type != "Sales Invoice" or e.get("_is_job_card_charge"):
 			continue
@@ -289,16 +299,7 @@ def _build_ageing(job_cards, events, to_date, ageing_based_on):
 		)
 		if outstanding <= 0:
 			continue
-		age = (to_date - e.posting_date).days
-		if age <= 0:
-			totals.current += outstanding
-			continue
-		for lower, upper, key in AGEING_BUCKETS:
-			if lower <= age <= upper:
-				totals[key] += outstanding
-				break
-		else:
-			totals.range4 += outstanding
+		_age_into(totals, outstanding, (to_date - getdate(e.get("due_date") or e.posting_date)).days)
 
 	totals.total_due = totals.current + totals.range1 + totals.range2 + totals.range3 + totals.range4
 	totals.ageing_based_on = ageing_based_on

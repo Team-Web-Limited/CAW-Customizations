@@ -105,6 +105,10 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
     <img src="/assets/crystal_alluminium_works/images/crystal-alluminium-works-letterhead.jpeg" style="display: block; width: 100%; height: auto;" alt="Crystal Aluminium Works">
 </div>
 <hr style="border-top: 2px solid #ecf0f1; margin-bottom: 20px;">
+{{# A cash customer's invoice prints as a Cash Sale, with a Sale No (its Job Card's payment
+   mode, else the billing type — see api.is_cash_customer). Credit notes and invoice
+   customers are unchanged. #}}
+{{% set is_cash_sale = doc.doctype == 'Sales Invoice' and not doc.get('is_return') and frappe.call('crystal_alluminium_works.api.is_cash_customer', customer=doc.customer, invoice=doc.name) %}}
 <div class="row" style="margin-bottom: 10px;">
     <div class="col-xs-8">
         <!-- Cash quotations all share the one walk-in Customer record, so customer_name/
@@ -132,6 +136,18 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
             Date: {{{{ frappe.utils.formatdate(doc.posting_date) }}}}
         </div>
         {{% endif %}}
+        {{# The customer's account term (credit_control.py) and, on an invoice given time to pay,
+           the date it falls due. Not on cash sales or credit notes. #}}
+        {{% if doc.get('custom_account_term') and not doc.get('is_return') and not is_cash_sale %}}
+        <div style="margin-top: 6px; font-size: 14px; font-weight: bold; color: #000; text-transform: uppercase; white-space: nowrap;">
+            Terms: {{{{ doc.custom_account_term }}}}
+        </div>
+        {{% if doc.doctype == 'Sales Invoice' and doc.due_date and doc.due_date != doc.posting_date %}}
+        <div style="margin-top: 6px; font-size: 14px; font-weight: bold; color: #e74c3c; text-transform: uppercase; white-space: nowrap;">
+            Due Date: {{{{ frappe.utils.formatdate(doc.due_date) }}}}
+        </div>
+        {{% endif %}}
+        {{% endif %}}
     </div>
     <div class="col-xs-4 text-right">
         {{% if doc.doctype != 'Sales Invoice' %}}
@@ -144,10 +160,6 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
             Due Date: {{{{ frappe.utils.formatdate(doc.due_date) }}}}
         </div>
         {{% endif %}}
-        {{# A cash customer's invoice prints as a Cash Sale, with a Sale No (its Job Card's payment
-           mode, else the billing type — see api.is_cash_customer). Credit notes and invoice
-           customers are unchanged. #}}
-        {{% set is_cash_sale = doc.doctype == 'Sales Invoice' and not doc.get('is_return') and frappe.call('crystal_alluminium_works.api.is_cash_customer', customer=doc.customer, invoice=doc.name) %}}
         {{% if doc.doctype == 'Quotation' %}}
         {{% set quote_name_parts = doc.name.split('-') %}}
         <div style="margin-top: 10px; font-size: 14px; font-weight: bold; color: #000; text-transform: uppercase; white-space: nowrap;">
@@ -954,6 +966,10 @@ def build_crystal_job_card_print_format_html():
                     <div style="font-size: 16px; font-weight: bold; margin-top: 4px;">{{ frappe.utils.formatdate(job_card.creation) }}</div>
                     <div style="color: #7f8c8d; font-size: 12px; text-transform: uppercase; margin-top: 12px;">Job Card No</div>
                     <div style="font-size: 14px; font-weight: 600; margin-top: 4px;">{{ job_card.name }}</div>
+                    {% if job_card.get('account_term') %}
+                    <div style="color: #7f8c8d; font-size: 12px; text-transform: uppercase; margin-top: 12px;">Account Term</div>
+                    <div style="font-size: 14px; font-weight: 600; margin-top: 4px;">{{ job_card.account_term }}</div>
+                    {% endif %}
                 </div>
             </div>
         </div>

@@ -272,14 +272,24 @@ def _job_card_quotation_amendment_pending(job_card):
     return frappe.db.get_value("Quotation", chain[-1], "docstatus") != 1
 
 
-def _job_card_invoice_amendment_pending(job_card):
-    """True while a job-card Sales Invoice has been cancelled and has no active
-    (submitted) replacement amendment yet.
+def _is_release_reversed(invoice_name):
+    """True when this cancelled invoice's release was undone (undo_partial_release): the goods
+    never left, so there is nothing to amend. Guarded so the freeze check keeps working on a
+    site that hasn't migrated the custom field yet."""
+    if not invoice_name or not frappe.get_meta("Sales Invoice").has_field("custom_release_reversed"):
+        return False
+    return bool(frappe.db.get_value("Sales Invoice", invoice_name, "custom_release_reversed"))
+
+
+def _job_card_invoices_awaiting_amendment(job_card):
+    """This Job Card's cancelled Sales Invoices that have no active (submitted) replacement
+    amendment yet. Invoices whose release was undone are a finished reversal, not a pending
+    amendment, so they never count.
 
     Only this Job Card's own invoices count: a cancelled invoice left behind by an earlier,
     since-cancelled Job Card on the same quotation chain must not freeze its replacement."""
     if not job_card:
-        return False
+        return []
     chain = _resolve_quotation_chain(job_card.quotation) or [job_card.quotation]
     cancelled = frappe.get_all(
         "Sales Invoice",
@@ -290,13 +300,22 @@ def _job_card_invoice_amendment_pending(job_card):
         ],
         pluck="name",
     )
+    pending = []
     for name in cancelled:
+        if _is_release_reversed(name):
+            continue
         successor = frappe.db.get_value(
             "Sales Invoice", {"amended_from": name}, ["name", "docstatus"], as_dict=True
         )
         if not successor or successor.docstatus != 1:
-            return True
-    return False
+            pending.append(name)
+    return pending
+
+
+def _job_card_invoice_amendment_pending(job_card):
+    """True while a job-card Sales Invoice has been cancelled and has no active
+    (submitted) replacement amendment yet."""
+    return bool(_job_card_invoices_awaiting_amendment(job_card))
 
 
 def _job_card_frozen_reason(job_card):
@@ -312,10 +331,14 @@ def _job_card_frozen_reason(job_card):
             "This Job Card has a pending Quotation amendment. Submit or discard the amended "
             "Quotation before recording further payments, invoices or releases."
         )
-    if _job_card_invoice_amendment_pending(job_card):
+    awaiting = _job_card_invoices_awaiting_amendment(job_card)
+    if awaiting:
+        invoices = ", ".join(awaiting)
         return (
-            "This Job Card has a cancelled Sales Invoice awaiting amendment. Submit the amended "
-            "invoice before recording further payments, invoices or releases."
+            f"This Job Card has a cancelled Sales Invoice ({invoices}) awaiting amendment. If the "
+            "goods were delivered, amend and submit the invoice. If the release was a mistake and "
+            f"nothing left the yard, use Undo Release on {invoices} in the Sales Invoice Manager. "
+            "Payments, invoices and releases are paused until then."
         )
     return None
 
@@ -362,7 +385,9 @@ def _write_job_card_amendment_event(job_card, change_type, amount_paid=0, note=N
 
 
 @frappe.whitelist()
-def get_mode_of_payment_account_info(payment_method, company=None):
+def get_mode_of_payment_account_info(payment_method, company=None, payment_type=None):
+    """The account a payment by this method lands in (see _mode_of_payment_deposit_account): a
+    received cheque goes to Cheques in Hand, a cheque refund still comes off the bank."""
     if not payment_method or not frappe.db.exists("Mode of Payment", payment_method):
         return {}
 
@@ -377,6 +402,10 @@ def get_mode_of_payment_account_info(payment_method, company=None):
             "default_account",
         )
 
+    from crystal_alluminium_works.cheque_register import get_cheques_in_hand_account, is_cheque_receipt
+
+    if is_cheque_receipt(payment_method, payment_type == "Refund"):
+        default_account = get_cheques_in_hand_account(company)
     account_type = frappe.db.get_value("Account", default_account, "account_type") if default_account else None
 
     return {
@@ -386,14 +415,27 @@ def get_mode_of_payment_account_info(payment_method, company=None):
     }
 
 
-def _mode_of_payment_deposit_account(payment_method):
-    """The account a payment by `payment_method` lands in: its Mode of Payment Account.
+def _mode_of_payment_deposit_account(payment_method, is_refund=False):
+    """The account a payment by `payment_method` lands in: its Mode of Payment Account — except a
+    received cheque, which sits in Cheques in Hand until it clears (cheque_register.py).
 
     Deposit To is read-only in every payment form and only ever meant to be this, so the value
     a form sends is never trusted. Create Job Card looked it up again on every method change
     without discarding stale answers, and Cash payments posted to I & M or Paybill while the
     Job Card itself read Cash (1-8 Oct 2026)."""
-    account = get_mode_of_payment_account_info(payment_method).get("default_account")
+    from crystal_alluminium_works.cheque_register import get_cheques_in_hand_account, is_cheque_receipt
+
+    if is_cheque_receipt(payment_method, is_refund):
+        return get_cheques_in_hand_account()
+    return _mode_of_payment_account(payment_method)
+
+
+def _mode_of_payment_account(payment_method):
+    """The Mode of Payment Account itself — for a cheque, the bank it is paid into."""
+    company = _get_default_company()
+    account = company and frappe.db.get_value(
+        "Mode of Payment Account", {"parent": payment_method, "company": company}, "default_account"
+    )
     if not account:
         frappe.throw(
             f"No deposit account is configured for {payment_method}. "
@@ -1788,8 +1830,11 @@ def _parse_walkin_customer_key(key):
 
 
 @frappe.whitelist()
-def get_customer_manager_customers(search=None, customer_type="all", page=1, page_length=30):
+def get_customer_manager_customers(search=None, customer_type="all", page=1, page_length=30,
+                                   account_status=None, introduced_by=None):
     search = (search or "").strip()
+    account_status = (account_status or "").strip()
+    introduced_by = (introduced_by or "").strip()
     customer_type = (customer_type or "all").strip().lower()
     page = max(frappe.utils.cint(page or 1), 1)
     page_length = min(max(frappe.utils.cint(page_length or 30), 1), 100)
@@ -1818,7 +1863,14 @@ def get_customer_manager_customers(search=None, customer_type="all", page=1, pag
         customer_conditions.append("custom_customer_billing_type = 'Invoice Customer'")
     elif customer_type == "cash":
         customer_conditions.append("custom_customer_billing_type = 'Cash Customer'")
-    include_walkins = customer_type in ("cash", "all")
+    # Account status and introducing sales person live on Customer records; walk-ins have neither.
+    if account_status:
+        customer_conditions.append("IFNULL(custom_account_status, 'Active') = %(account_status)s")
+        params["account_status"] = account_status
+    if introduced_by:
+        customer_conditions.append("custom_introduced_by = %(introduced_by)s")
+        params["introduced_by"] = introduced_by
+    include_walkins = customer_type in ("cash", "all") and not account_status and not introduced_by
 
     customer_where = f"WHERE {' AND '.join(customer_conditions)}" if customer_conditions else ""
     union_sql = f"""
@@ -1828,6 +1880,9 @@ def get_customer_manager_customers(search=None, customer_type="all", page=1, pag
             tax_id,
             COALESCE(NULLIF(TRIM(mobile_no), ''), '') AS phone_number,
             custom_customer_billing_type AS customer_type,
+            custom_account_term AS account_term,
+            IFNULL(custom_account_status, 'Active') AS account_status,
+            custom_introduced_by AS introduced_by,
             creation,
             0 AS is_walkin
         FROM `tabCustomer`
@@ -1843,6 +1898,9 @@ def get_customer_manager_customers(search=None, customer_type="all", page=1, pag
             SUBSTRING_INDEX(GROUP_CONCAT(NULLIF(TRIM(custom_customer_pin), '') ORDER BY creation DESC SEPARATOR '\\n'), '\\n', 1) AS tax_id,
             IFNULL(TRIM(custom_customer_phone), '') AS phone_number,
             'Cash Customer' AS customer_type,
+            'Payment must clear' AS account_term,
+            'Active' AS account_status,
+            NULL AS introduced_by,
             MAX(creation) AS creation,
             1 AS is_walkin
         FROM `tabQuotation`
@@ -2242,6 +2300,7 @@ def register_customer(
     pincode=None,
     country=None,
     customer_details=None,
+    introduced_by=None,
 ):
     if not frappe.has_permission("Customer", "create"):
         frappe.throw("You do not have permission to create Customers.", frappe.PermissionError)
@@ -2312,6 +2371,12 @@ def register_customer(
             "customer_details": (customer_details or "").strip(),
         }
     )
+    # The sales person who brought the business in (credit_control.py), set when the account opens.
+    introduced_by = (introduced_by or "").strip()
+    if introduced_by:
+        if not frappe.db.exists("Sales Person", introduced_by):
+            frappe.throw(f"Sales Person {frappe.bold(introduced_by)} not found.")
+        doc.custom_introduced_by = introduced_by
     doc.insert()
 
     return {
@@ -3216,6 +3281,31 @@ def create_job_card_from_quotation(quotation, customer, customer_name=None, paym
         job_card.payment_option = advance_methods[0] if len(advance_methods) == 1 else "Advance"
 
     is_new_job_card = bool(job_card.get("__islocal"))
+
+    # Account controls (credit_control.py): an account on hold takes no new work, and an On account
+    # customer's new or enlarged job card must fit within the account limit. Only the increase
+    # counts — the card's existing balance is already part of what the customer owes.
+    from crystal_alluminium_works.credit_control import (
+        CHECKPOINT_JOB_CARD,
+        PAYMENT_MUST_CLEAR,
+        assert_credit_ok,
+        get_customer_term,
+    )
+
+    previous_amount = 0 if is_new_job_card else _round_job_card_amount(
+        frappe.db.get_value("CAW Job Card", job_card.name, "quotation_amount")
+    )
+    if is_new_job_card or quotation_amount > previous_amount:
+        assert_credit_ok(
+            customer_doc.name,
+            CHECKPOINT_JOB_CARD,
+            extra_amount=quotation_amount - previous_amount,
+            quotation=quotation_doc.name,
+            job_card=None if is_new_job_card else job_card.name,
+        )
+    if is_new_job_card or not job_card.get("account_term"):
+        job_card.account_term = get_customer_term(customer_doc.name) if payment_mode == "Invoice Customer" else PAYMENT_MUST_CLEAR
+
     _sync_quotation_bill_to_from_job_card(
         quotation_doc, customer_doc, payment_mode, job_card, previous_customer_name, previous_customer_pin
     )
@@ -3674,6 +3764,9 @@ def get_job_card_detail(name):
             "creation": job_card.creation,
             "modified": job_card.modified,
             "custom_sheet_consumption_json": job_card.custom_sheet_consumption_json,
+            # Account term the job runs on, and why Accounts changed it for this job (credit_control.py).
+            "account_term": job_card.account_term,
+            "term_override_reason": job_card.term_override_reason,
             # Rows the Partial Invoice dialog must hold at 0 until JC Operations is done.
             "jc_operations_pending_rows": [row.name for row in pending_jc_rows],
         },
@@ -3712,6 +3805,7 @@ def get_job_card_detail(name):
         "stock_deductions": stock_deductions,
         "quotation_amendment_pending": _job_card_quotation_amendment_pending(job_card),
         "invoice_amendment_pending": _job_card_invoice_amendment_pending(job_card),
+        "invoices_awaiting_amendment": _job_card_invoices_awaiting_amendment(job_card),
     }
 
 
@@ -4611,12 +4705,17 @@ def _validate_glass_consumption(job_card, row_names=None):
         )
 
 @frappe.whitelist()
-def make_sales_invoice_from_job_card(job_card_name):
+def make_sales_invoice_from_job_card(job_card_name, collector=None):
+    from crystal_alluminium_works.credit_control import resolve_collector, stamp_collector
+
     if not job_card_name or not frappe.db.exists("CAW Job Card", job_card_name):
         frappe.throw("Please select a valid Job Card.")
 
     job_card = frappe.get_doc("CAW Job Card", job_card_name)
     _assert_job_card_not_frozen(job_card)
+    # Fully paid before release (below), so only the hold applies here.
+    _assert_release_not_on_hold(job_card)
+    collector = resolve_collector(job_card.customer, collector)
     _validate_glass_consumption(job_card)
 
     if not job_card.quotation or not frappe.db.exists("Quotation", job_card.quotation):
@@ -4679,6 +4778,7 @@ def make_sales_invoice_from_job_card(job_card_name):
     # Generic per-item release log across every category — the invoice has been created
     # and submitted successfully by this point.
     _record_job_card_item_releases(job_card, paid_invoice, rows_by_name, invoice_releases, is_partial=False, quotation_items=quotation.items)
+    stamp_collector(paid_invoice.name, collector)
 
     return paid_invoice.name
 
@@ -4910,33 +5010,77 @@ def _released_invoice_value(job_card):
     )[0][0])
 
 
-def _assert_cash_release_within_paid(job_card, invoice):
-    """A Cash Customer takes home only what they have paid for: goods released so far plus
-    this invoice may not exceed the Job Card's paid amount (deposits and advance included).
-    Invoice Customers are on credit and release freely. Checked on the draft, before
-    submit, so a refusal rolls the whole request back."""
-    if job_card.payment_mode != "Cash Customer":
-        return
-
+def _release_shortfall(job_card, invoice):
+    """(short, paid, released, this_release): how far goods released so far plus this invoice run
+    past what has been paid on the Job Card (deposits and advance included)."""
     paid = _round_job_card_amount(frappe.db.get_value("CAW Job Card", job_card.name, "payment_amount"))
     released = _released_invoice_value(job_card)
     this_release = _round_job_card_amount(invoice.grand_total)
-    short = _round_job_card_amount(released + this_release - paid)
+    return _round_job_card_amount(released + this_release - paid), paid, released, this_release
+
+
+def _assert_release_allowed(job_card, invoice):
+    """The account term decides what may leave the yard (credit_control.py). Checked on the draft,
+    before submit, so a refusal rolls the whole request back.
+
+    - Cash customers, and invoice customers on Payment must clear / cheque terms, take home only
+      what they have paid for.
+    - On account: goods not yet paid for go out on credit, so the account must be within its limit
+      with nothing overdue (or Accounts has approved this release once)."""
+    from crystal_alluminium_works.credit_control import (
+        CHECKPOINT_RELEASE,
+        assert_credit_ok,
+        get_customer_term,
+        is_on_account,
+        parse_term,
+    )
+
+    short, paid, released, this_release = _release_shortfall(job_card, invoice)
+    term = get_customer_term(job_card.customer, job_card.name)
+    on_account = job_card.payment_mode != "Cash Customer" and is_on_account(term)
+    if on_account:
+        if short >= PAYMENT_SETTLEMENT_TOLERANCE:
+            assert_credit_ok(
+                job_card.customer, CHECKPOINT_RELEASE, quotation=job_card.quotation, job_card=job_card.name, used_for=invoice.name
+            )
+        return
+    # Payment must clear: a cheque only counts once it has cleared (cheque_register.py). Cheque
+    # terms release on a cheque received and recorded, so theirs count straight away.
+    uncleared = 0
+    if parse_term(term)["group"] == "cash":
+        from crystal_alluminium_works.cheque_register import uncleared_on_job_card
+
+        uncleared = _round_job_card_amount(uncleared_on_job_card(job_card.name))
+        short = _round_job_card_amount(short + uncleared)
+        paid = _round_job_card_amount(paid - uncleared)
     if short < PAYMENT_SETTLEMENT_TOLERANCE:
         return
 
     fmt = lambda value: frappe.utils.fmt_money(value, currency=invoice.currency)
+    where = "on the Job Card" if job_card.payment_mode == "Cash Customer" else "on the Payments page"
+    if uncleared:
+        where += f" (a cheque of {fmt(uncleared)} has not cleared yet and doesn't count until it does)"
     frappe.throw(
         f"This release is worth {fmt(this_release)}, but the customer has paid {fmt(paid)}"
         + (f" and already taken {fmt(released)}" if released else "")
-        + f". Collect {fmt(short)} more on the Job Card, or release less "
+        + f". Collect {fmt(short)} more {where}, or release less "
         f"(up to {fmt(max(paid - released, 0))} this time).",
         title="Payment needed before release",
     )
 
 
+def _assert_release_not_on_hold(job_card):
+    from crystal_alluminium_works.credit_control import CHECKPOINT_RELEASE, assert_credit_ok
+
+    assert_credit_ok(
+        job_card.customer, CHECKPOINT_RELEASE, quotation=job_card.quotation, job_card=job_card.name, check_limit=False
+    )
+
+
 @frappe.whitelist()
-def make_partial_sales_invoice_from_job_card(job_card_name, releases=None):
+def make_partial_sales_invoice_from_job_card(job_card_name, releases=None, collector=None):
+    from crystal_alluminium_works.credit_control import resolve_collector, stamp_collector
+
     if not job_card_name or not frappe.db.exists("CAW Job Card", job_card_name):
         frappe.throw("Please select a valid Job Card.")
 
@@ -4945,6 +5089,8 @@ def make_partial_sales_invoice_from_job_card(job_card_name, releases=None):
     if not job_card.quotation or not frappe.db.exists("Quotation", job_card.quotation):
         frappe.throw("The selected Job Card is not linked to a valid Quotation.")
     _assert_job_card_not_frozen(job_card)
+    _assert_release_not_on_hold(job_card)
+    collector = resolve_collector(job_card.customer, collector)
 
     releases = _parse_releases(releases)
 
@@ -4975,7 +5121,7 @@ def make_partial_sales_invoice_from_job_card(job_card_name, releases=None):
         invoice.custom_source_job_card = job_card.name
         invoice.save(ignore_permissions=True)
 
-    _assert_cash_release_within_paid(job_card, invoice)
+    _assert_release_allowed(job_card, invoice)
 
     # Partial invoices never embed a payment / touch GL — the Job Card is the single
     # source of truth for what's been paid and what's outstanding, for every customer.
@@ -4999,8 +5145,9 @@ def make_partial_sales_invoice_from_job_card(job_card_name, releases=None):
     # for either customer type. Cash Customers' money is driven solely by Create/Edit Job
     # Card; Invoice Customers' money is driven solely by the Payments page (see
     # _sync_job_card_balance_from_payments). A Cash Customer's release is already capped
-    # at what they have paid (_assert_cash_release_within_paid, above).
+    # at what they have paid (_assert_release_allowed, above).
     _record_job_card_item_releases(job_card, paid_invoice, rows_by_name, capped, is_partial=True, quotation_items=quotation.items)
+    stamp_collector(paid_invoice.name, collector)
 
     return paid_invoice.name
 
@@ -5120,6 +5267,11 @@ def make_sales_invoice_from_sales_order(source_name):
 def submit_sales_invoice(name):
     ensure_glass_service_items()
     invoice = frappe.get_doc("Sales Invoice", name)
+    if _is_release_reversed(invoice.get("amended_from")):
+        frappe.throw(
+            f"{invoice.amended_from}'s release was undone (nothing left the yard). Delete this "
+            "draft and release the goods afresh from the Job Card."
+        )
     source_job_card_name = invoice.get("custom_source_job_card")
     if source_job_card_name and frappe.db.exists("CAW Job Card", source_job_card_name):
         job_card = frappe.get_doc("CAW Job Card", source_job_card_name)
@@ -5163,6 +5315,184 @@ def cancel_sales_invoice(name):
     return invoice.name
 
 
+# ── Undo Release ─────────────────────────────────────────────────────────────────
+# Cancel is an accounting correction: the goods left, so stock, collected qty and release
+# rows stay and the Job Card waits for an amendment. Undo Release is for a release made by
+# mistake where nothing left the yard: it unwinds the release completely, flags the invoice
+# custom_release_reversed so the Job Card is not frozen, and the invoice can never be amended.
+
+def _release_reversal_blockers(invoice):
+    reasons = []
+    if invoice.docstatus not in (1, 2):
+        reasons.append("Only a submitted or cancelled invoice can have its release undone.")
+    if invoice.get("is_return"):
+        reasons.append("Credit notes and returns have no release to undo.")
+    if not invoice.get("custom_is_partial"):
+        reasons.append("Undo Release is only available for partial release invoices.")
+    if invoice.get("amended_from"):
+        reasons.append(f"This invoice is an amendment of {invoice.amended_from}; its release cannot be undone here.")
+    if _is_release_reversed(invoice.name):
+        reasons.append("This release has already been undone.")
+
+    job_card = _get_invoice_job_card(invoice)
+    if not job_card:
+        reasons.append("This invoice is not linked to a Job Card.")
+    elif job_card.status == "Cancelled":
+        reasons.append(f"Job Card {job_card.name} is cancelled.")
+
+    # Cut-size / laminated glass is deducted at JC Operations time with sheet-consumption
+    # data this does not unwind — the same block the Cancel button applies.
+    if any(
+        item.get("custom_product_category") == "Glass"
+        and (item.get("custom_glass_sale_mode") == "Resized" or item.get("custom_glass_type") == "Laminated")
+        for item in invoice.items
+    ):
+        reasons.append("Cut Size / Laminated glass releases cannot be undone here.")
+
+    if not frappe.db.exists("CAW Job Card Release", {"sales_invoice": invoice.name}):
+        reasons.append("No release record was found for this invoice, so the collected quantities cannot be restored.")
+
+    successor = frappe.db.get_value(
+        "Sales Invoice", {"amended_from": invoice.name}, ["name", "docstatus"], as_dict=True
+    )
+    if successor and successor.docstatus == 1:
+        reasons.append(f"This invoice has already been amended as {successor.name}.")
+
+    if frappe.db.exists("Sales Invoice", {"return_against": invoice.name, "docstatus": 1}):
+        reasons.append("A credit note has been issued against this invoice.")
+    payment_entries = frappe.get_all(
+        "Payment Entry Reference",
+        filters={"reference_doctype": "Sales Invoice", "reference_name": invoice.name, "docstatus": 1},
+        pluck="parent",
+    )
+    journal_entries = frappe.get_all(
+        "Journal Entry Account",
+        filters={"reference_type": "Sales Invoice", "reference_name": invoice.name, "docstatus": 1},
+        pluck="parent",
+    )
+    if payment_entries or journal_entries:
+        reasons.append(
+            "Payments are allocated to this invoice (" + ", ".join(sorted(set(payment_entries + journal_entries)))
+            + "). Cancel them first."
+        )
+    return reasons
+
+
+@frappe.whitelist()
+def get_release_reversal_eligibility(name):
+    if not name or not frappe.db.exists("Sales Invoice", name):
+        return {"can_undo": False, "reasons": ["Sales Invoice not found."]}
+    invoice = frappe.get_doc("Sales Invoice", name)
+    reasons = _release_reversal_blockers(invoice)
+    stock_entries = frappe.get_all(
+        "Stock Entry", filters={"custom_sales_invoice": name, "docstatus": 1}, pluck="name"
+    )
+    releases = frappe.get_all(
+        "CAW Job Card Release",
+        filters={"sales_invoice": name},
+        fields=["item_code", "item_name", "qty_released", "uom"],
+    )
+    return {"can_undo": not reasons, "reasons": reasons, "stock_entries": stock_entries, "releases": releases}
+
+
+@frappe.whitelist()
+def undo_partial_release(name, reason=None):
+    frappe.only_for(["System Manager"])
+    reason = (reason or "").strip()
+    if not reason:
+        frappe.throw("Give a reason for undoing this release.")
+    if not frappe.db.exists("Sales Invoice", name):
+        frappe.throw("Please select a valid Sales Invoice.")
+
+    invoice = frappe.get_doc("Sales Invoice", name)
+    reasons = _release_reversal_blockers(invoice)
+    if reasons:
+        frappe.throw("<br>".join(reasons), title="Cannot Undo Release")
+    job_card = _get_invoice_job_card(invoice)
+    was_cancelled = invoice.docstatus == 2
+
+    # A draft amendment would bill the goods again; it posts nothing, so it just goes.
+    draft_amendments = frappe.get_all(
+        "Sales Invoice", filters={"amended_from": name, "docstatus": 0}, pluck="name"
+    )
+    for draft in draft_amendments:
+        frappe.delete_doc("Sales Invoice", draft, ignore_permissions=True)
+
+    # Put the goods back: cancel every Material Issue/Receipt this invoice's release and
+    # item edits posted, newest first.
+    stock_entries = frappe.get_all(
+        "Stock Entry",
+        filters={"custom_sales_invoice": name, "docstatus": 1},
+        pluck="name",
+        order_by="creation desc",
+    )
+    for se_name in stock_entries:
+        entry = frappe.get_doc("Stock Entry", se_name)
+        entry.flags.ignore_permissions = True
+        entry.cancel()
+
+    if not was_cancelled:
+        # Not cancel_sales_invoice: the customer's money is untouched by an undone release,
+        # so the Job Card's paid amount must not be reduced.
+        invoice.flags.ignore_permissions = True
+        invoice.cancel()
+    elif (job_card.payment_mode or "") == "Invoice Customer":
+        # A plain Cancel may have taken this invoice's amount off the paid amount; an invoice
+        # customer's real paid amount comes from the Payments page, so just recompute it.
+        _sync_job_card_balance_from_payments(job_card.name)
+    else:
+        # A plain Cancel already took this invoice's amount off the Job Card's paid amount
+        # (_reverse_partial_invoice_payment), expecting an amendment to put it back. No
+        # amendment is coming, so give back exactly what that cancel removed.
+        removed = frappe.get_all(
+            "CAW Job Card History",
+            filters={"job_card": job_card.name, "change_type": "Invoice Cancelled", "note": f"Cancelled {name}"},
+            pluck="amount_paid",
+        )
+        restore = _round_job_card_amount(-sum(flt(a) for a in removed))
+        if restore > 0:
+            job_card.reload()
+            quotation_amount = _round_job_card_amount(job_card.quotation_amount)
+            new_payment = _round_job_card_amount(flt(job_card.payment_amount) + restore)
+            if quotation_amount > 0:
+                new_payment = min(new_payment, quotation_amount)
+            job_card.payment_amount = new_payment
+            job_card.balance_amount = _job_card_balance(quotation_amount, new_payment)
+            job_card.flags.ignore_permissions = True
+            job_card.save(ignore_permissions=True)
+
+    frappe.db.set_value("Sales Invoice", name, "custom_release_reversed", 1, update_modified=False)
+
+    # Hand the quantities back to the quotation rows and drop the release records.
+    released = []
+    for rel in frappe.get_all(
+        "CAW Job Card Release",
+        filters={"sales_invoice": name},
+        fields=["name", "quotation_item", "item_code", "qty_released", "uom"],
+    ):
+        if rel.quotation_item and frappe.db.exists("Quotation Item", rel.quotation_item):
+            collected = flt(frappe.db.get_value("Quotation Item", rel.quotation_item, "custom_collected_qty"))
+            frappe.db.set_value(
+                "Quotation Item", rel.quotation_item, "custom_collected_qty",
+                max(collected - flt(rel.qty_released), 0), update_modified=False,
+            )
+        released.append(f"{flt(rel.qty_released):g} {rel.uom or ''} {rel.item_code}".replace("  ", " "))
+        frappe.delete_doc("CAW Job Card Release", rel.name, ignore_permissions=True, force=True)
+    for ceiling in frappe.get_all("CAW Ceiling Release", filters={"sales_invoice": name}, pluck="name"):
+        frappe.delete_doc("CAW Ceiling Release", ceiling, ignore_permissions=True, force=True)
+
+    note = f"Release undone on {name}: {', '.join(released)} returned to stock"
+    if stock_entries:
+        note += f" (cancelled {', '.join(stock_entries)})"
+    if draft_amendments:
+        note += f"; deleted draft amendment {', '.join(draft_amendments)}"
+    note += f". Reason: {reason}"
+    _write_job_card_amendment_event(job_card, "Release Reversed", note=note)
+    frappe.get_doc("Sales Invoice", name).add_comment("Comment", note)
+
+    return {"name": name, "job_card": job_card.name, "stock_entries": stock_entries, "deleted_drafts": draft_amendments}
+
+
 # ── Amendment lifecycle ──────────────────────────────────────────────────────────
 
 def _get_invoice_job_card(invoice):
@@ -5199,6 +5529,8 @@ def _quotation_chain_has_live_invoice(chain):
         filters={"custom_source_quotation": ["in", chain]},
         fields=["docstatus", "custom_source_job_card"],
     ):
+        if invoice.docstatus == 2 and _is_release_reversed(invoice.name):
+            continue
         if invoice.docstatus != 2 or not invoice.custom_source_job_card:
             return True
         if frappe.db.get_value("CAW Job Card", invoice.custom_source_job_card, "status") != "Cancelled":
@@ -5331,6 +5663,8 @@ def get_invoice_amendment_eligibility(name):
         reasons.append("Credit notes and returns are not amended here.")
     if frappe.db.exists("Sales Invoice", {"amended_from": name}):
         reasons.append("This invoice has already been amended.")
+    if _is_release_reversed(name):
+        reasons.append("This release was undone (nothing left the yard), so there is nothing to amend.")
     return {"can_amend": not reasons, "reasons": reasons}
 
 
@@ -5343,6 +5677,8 @@ def amend_sales_invoice(name):
         frappe.throw("Cancel the Sales Invoice before amending it.")
     if frappe.db.exists("Sales Invoice", {"amended_from": name}):
         frappe.throw("This invoice has already been amended.")
+    if _is_release_reversed(name):
+        frappe.throw("This release was undone (nothing left the yard), so there is nothing to amend.")
 
     amended = frappe.copy_doc(invoice)
     amended.amended_from = name
@@ -8231,7 +8567,7 @@ def get_job_card_for_quotation(quotation):
     if not name:
         return None
     return frappe.db.get_value(
-        "CAW Job Card", name, ["name", "payment_amount", "balance_amount"], as_dict=True
+        "CAW Job Card", name, ["name", "payment_amount", "balance_amount", "account_term"], as_dict=True
     )
 
 
@@ -8279,7 +8615,7 @@ def _post_customer_payment_entry(customer, amount, date, payment_method, deposit
 
 
 @frappe.whitelist()
-def record_customer_payment(customer, amount, date, payment_method, deposit_to, reference=None, job_card=None, allocations=None, payment_type="General Payment", quotation=None, customer_phone=None):
+def record_customer_payment(customer, amount, date, payment_method, deposit_to, reference=None, job_card=None, allocations=None, payment_type="General Payment", quotation=None, customer_phone=None, cheque_date=None, cheque_bank=None):
     # Every Cash Customer walk-in shares the one SHARED_CASH_CUSTOMER_NAME Customer record, so
     # `customer` alone can't tell two unrelated walk-ins apart for advance/credit purposes — see
     # _get_customer_credit_payments. Callers that know which walk-in is in scope should pass
@@ -8299,9 +8635,9 @@ def record_customer_payment(customer, amount, date, payment_method, deposit_to, 
         frappe.throw("Date is required.")
     if not payment_method:
         frappe.throw("Payment Method is required.")
-    deposit_to = _mode_of_payment_deposit_account(payment_method)
-
     payment_type = payment_type or "General Payment"
+    deposit_to = _mode_of_payment_deposit_account(payment_method, is_refund=payment_type == "Refund")
+
     # Existing advance/credit this customer already has on file — folded into the allocation
     # cap check below so the Job Card Allocations table can ask for more than `amount` alone
     # covers, and drawn down first (see _apply_customer_advance) before any of `amount` is
@@ -8392,6 +8728,11 @@ def record_customer_payment(customer, amount, date, payment_method, deposit_to, 
         is_refund=(payment_type == "Refund"), payments_doc_name=doc.name,
     )
     frappe.db.set_value("Payments", doc.name, "payment_entry", payment_entry_name, update_modified=False)
+
+    from crystal_alluminium_works.cheque_register import create_cheque, is_cheque_receipt
+
+    if is_cheque_receipt(payment_method, payment_type == "Refund"):
+        create_cheque(doc, cheque_date=cheque_date, cheque_bank=cheque_bank)
 
     if payment_type == "Refund":
         # Refunds adjust the Job Card's paid/balance amounts directly for every customer
@@ -8649,6 +8990,12 @@ def on_payments_trash(doc, method=None):
             "be deleted on its own."
         )
 
+    from crystal_alluminium_works.cheque_register import cancel_cheque_for_payment, payment_block_reasons
+
+    blocked = payment_block_reasons(doc.name)
+    if blocked:
+        frappe.throw(" ".join(blocked))
+
     if doc.payment_entry and frappe.db.exists("Payment Entry", doc.payment_entry):
         pe = frappe.get_doc("Payment Entry", doc.payment_entry)
         if pe.docstatus == 1:
@@ -8656,6 +9003,7 @@ def on_payments_trash(doc, method=None):
             pe.cancel()
 
     _give_back_payment_to_job_cards(doc, "Payment Deleted", "deleted", exclude_payment=doc.name)
+    cancel_cheque_for_payment(doc.name)
 
 
 def _give_back_payment_to_job_cards(doc, change_type, verb, exclude_payment=None):
@@ -8838,6 +9186,10 @@ def get_payment_correction_eligibility(payment, action="correct"):
             )
 
     reasons.extend(_payment_period_closed_reasons(doc))
+
+    from crystal_alluminium_works.cheque_register import payment_block_reasons
+
+    reasons.extend(payment_block_reasons(doc.name))
 
     if _forex_tracked_deposit_account(doc.deposit_to):
         reasons.append(
@@ -9091,7 +9443,7 @@ def correct_payment(payment, amount, payment_method, deposit_to, reason, referen
     # Derived, not taken from the dialog — see _mode_of_payment_deposit_account. This is also what
     # lets a payment that posted to the wrong account be corrected without changing anything
     # else: the derived account differs from the original's, so it is not "unchanged".
-    deposit_to = _mode_of_payment_deposit_account(payment_method)
+    deposit_to = _mode_of_payment_deposit_account(payment_method, is_refund=original.payment_type == "Refund")
     if not frappe.db.exists("Account", deposit_to):
         frappe.throw(f"{deposit_to} is not a valid Deposit To account.")
     if _forex_tracked_deposit_account(deposit_to):
@@ -9178,6 +9530,10 @@ def correct_payment(payment, amount, payment_method, deposit_to, reason, referen
         }, update_modified=False)
 
         _apply_correction_to_job_cards(old_by_job_card, new_by_job_card, original, replacement, reason, changes)
+
+        from crystal_alluminium_works.cheque_register import move_cheque_to_payment
+
+        move_cheque_to_payment(original, replacement)
     except Exception:
         frappe.db.rollback(save_point=savepoint)
         raise
@@ -9227,6 +9583,10 @@ def void_payment(payment, reason):
     }, update_modified=False)
 
     _give_back_payment_to_job_cards(doc, "Payment Voided", "voided")
+
+    from crystal_alluminium_works.cheque_register import cancel_cheque_for_payment
+
+    cancel_cheque_for_payment(doc.name)
 
     doc.add_comment("Comment", f"Voided by {frappe.session.user}: {reason}. Payment Entry {pe.name} cancelled.")
     return {"voided": doc.name, "payment_entry": pe.name}
@@ -9333,32 +9693,22 @@ def get_job_card_statement_balance(job_card):
     }
 
 
-@frappe.whitelist()
-def get_customer_outstanding(customer):
-    """Current amount the customer owes, computed the same way as the customer statement:
-    Σ over non-cancelled job cards of their balance (a sub-shilling shortfall counts as
-    settled — see PAYMENT_SETTLEMENT_TOLERANCE), plus the outstanding on
-    any Sales Invoices not owned by one of those job cards. Used to nudge the user when a
-    payment is recorded without allocating it against an outstanding job card."""
-    default_currency = frappe.defaults.get_global_default("currency") or "KES"
-    if not customer:
-        return {"outstanding": 0, "currency": default_currency}
-
-    job_cards = frappe.get_all(
-        "CAW Job Card",
-        filters={"customer": customer, "status": ["!=", "Cancelled"]},
-        fields=["name", "quotation", "payment_mode", "quotation_amount", "payment_amount"],
+def _get_customer_paid_by_job_card(customer):
+    """Net amount the customer's Payments have put on each of their job cards: allocation rows,
+    plus legacy single-field payments with no allocation rows. Receipts add and refunds subtract,
+    and corrected or voided payments are left out — the same rules as
+    _get_job_card_allocated_payments, batched for every job card of one customer."""
+    payments = frappe.get_all(
+        "Payments",
+        filters={"customer": customer, "is_corrected": 0},
+        fields=["name", "amount", "job_card", "payment_type"],
     )
-
-    # Sum payment allocations per job card (invoice customers settle via Payments, not the JC).
-    # is_corrected: a corrected original or a voided payment no longer counts (see correct_payment).
-    payments = frappe.get_all("Payments", filters={"customer": customer, "is_corrected": 0}, fields=["name", "amount", "job_card"])
-    payment_names = [p.name for p in payments]
+    sign_by_payment = {str(p.name): (-1 if p.payment_type == "Refund" else 1) for p in payments}
     allocation_rows = frappe.get_all(
         "Payment Job Card Allocation",
-        filters={"parent": ["in", payment_names], "parenttype": "Payments"},
+        filters={"parent": ["in", list(sign_by_payment)], "parenttype": "Payments"},
         fields=["parent", "job_card", "amount"],
-    ) if payment_names else []
+    ) if payments else []
 
     # Payments.autoname is "autoincrement", so frappe.get_all returns Payments.name as an int
     # while a child table's `parent` column is always a string — normalize both to str before
@@ -9367,31 +9717,54 @@ def get_customer_outstanding(customer):
     paid_by_job_card = {}
     parents_with_allocations = set()
     for row in allocation_rows:
-        parents_with_allocations.add(str(row.parent))
+        parent = str(row.parent)
+        parents_with_allocations.add(parent)
         if row.job_card:
-            paid_by_job_card[row.job_card] = paid_by_job_card.get(row.job_card, 0) + flt(row.amount)
+            paid_by_job_card[row.job_card] = paid_by_job_card.get(row.job_card, 0) + sign_by_payment[parent] * flt(row.amount)
     # Legacy single-field payments (no allocation rows) count the whole amount on that job card.
     for payment in payments:
-        if str(payment.name) not in parents_with_allocations and payment.job_card:
-            paid_by_job_card[payment.job_card] = paid_by_job_card.get(payment.job_card, 0) + flt(payment.amount)
+        name = str(payment.name)
+        if name not in parents_with_allocations and payment.job_card:
+            paid_by_job_card[payment.job_card] = paid_by_job_card.get(payment.job_card, 0) + sign_by_payment[name] * flt(payment.amount)
+    return paid_by_job_card
+
+
+def _get_customer_balances(customer):
+    """What the customer owes, job card by job card, plus Sales Invoices no job card owns.
+
+    Every non-cancelled job card comes back with what has been paid on it and its balance (a
+    sub-shilling shortfall counts as settled — see PAYMENT_SETTLEMENT_TOLERANCE). A cash card's
+    paid amount is the one Create/Edit Job Card keeps; an invoice card's comes from its Payments.
+    Standalone invoices count their own outstanding, visual VAT included. Shared by
+    get_customer_outstanding and credit_control.get_exposure so the Customer Manager and the
+    credit limit read the same figure."""
+    default_currency = frappe.defaults.get_global_default("currency") or "KES"
+    job_cards = frappe.get_all(
+        "CAW Job Card",
+        filters={"customer": customer, "status": ["!=", "Cancelled"]},
+        fields=["name", "quotation", "payment_mode", "quotation_amount", "payment_amount", "account_term", "creation"],
+        order_by="creation asc",
+    )
+    paid_by_job_card = _get_customer_paid_by_job_card(customer)
 
     accounted_quotations = set()
-    job_card_outstanding = 0
     for job_card in job_cards:
         if job_card.quotation:
             accounted_quotations.add(job_card.quotation)
         if (job_card.payment_mode or "") == "Cash Customer":
             paid = flt(job_card.payment_amount)
         else:
-            paid = flt(paid_by_job_card.get(job_card.name, 0))
-        job_card_outstanding += _job_card_balance(job_card.quotation_amount, paid)
+            paid = max(flt(paid_by_job_card.get(job_card.name, 0)), 0)
+        job_card.paid = _round_job_card_amount(paid)
+        job_card.balance = _job_card_balance(job_card.quotation_amount, paid)
 
     invoices = frappe.get_all(
         "Sales Invoice",
-        filters={"customer": customer, "docstatus": ["!=", 2]},
-        fields=["outstanding_amount", "total_taxes_and_charges", "custom_source_quotation", "currency"],
+        filters={"customer": customer, "docstatus": 1},
+        fields=["name", "outstanding_amount", "total_taxes_and_charges", "custom_source_quotation",
+                "currency", "posting_date", "due_date"],
     )
-    invoice_outstanding = 0
+    standalone_invoices = []
     currency = None
     for invoice in invoices:
         if invoice.custom_source_quotation in accounted_quotations:
@@ -9399,12 +9772,34 @@ def get_customer_outstanding(customer):
         amount = flt(invoice.outstanding_amount)
         if flt(invoice.total_taxes_and_charges) == 0:
             amount = amount * (1 + VAT_RATE)  # visual VAT invoices store tax outside grand_total
-        invoice_outstanding += amount
+        invoice.outstanding = _round_job_card_amount(amount)
+        standalone_invoices.append(invoice)
         currency = currency or invoice.currency
 
     return {
-        "outstanding": _round_job_card_amount(job_card_outstanding + invoice_outstanding),
+        "job_cards": job_cards,
+        "invoices": standalone_invoices,
         "currency": currency or default_currency,
+    }
+
+
+@frappe.whitelist()
+def get_customer_outstanding(customer):
+    """Current amount the customer owes, computed the same way as the customer statement:
+    Σ over non-cancelled job cards of their balance, plus the outstanding on any Sales Invoices
+    not owned by one of those job cards (see _get_customer_balances). Used to nudge the user
+    when a payment is recorded without allocating it against an outstanding job card."""
+    default_currency = frappe.defaults.get_global_default("currency") or "KES"
+    if not customer:
+        return {"outstanding": 0, "currency": default_currency}
+
+    balances = _get_customer_balances(customer)
+    outstanding = sum(flt(row.balance) for row in balances["job_cards"]) + sum(
+        flt(row.outstanding) for row in balances["invoices"]
+    )
+    return {
+        "outstanding": _round_job_card_amount(outstanding),
+        "currency": balances["currency"],
     }
 
 
@@ -9553,29 +9948,7 @@ def get_customer_outstanding_job_cards(customer, customer_name=None):
         order_by="creation asc",
     )
 
-    # Build paid_by_job_card using the same logic as get_customer_outstanding
-    # is_corrected: a corrected original or a voided payment no longer counts (see correct_payment).
-    payments = frappe.get_all("Payments", filters={"customer": customer, "is_corrected": 0}, fields=["name", "amount", "job_card"])
-    payment_names = [p.name for p in payments]
-    allocation_rows = frappe.get_all(
-        "Payment Job Card Allocation",
-        filters={"parent": ["in", payment_names], "parenttype": "Payments"},
-        fields=["parent", "job_card", "amount"],
-    ) if payment_names else []
-
-    # Payments.autoname is "autoincrement", so frappe.get_all returns Payments.name as an int
-    # while a child table's `parent` column is always a string — normalize both to str before
-    # comparing, or an already-allocated payment silently fails the exclude check below and
-    # gets counted twice (once via its allocation row, once again as "legacy").
-    paid_by_job_card = {}
-    parents_with_allocations = set()
-    for row in allocation_rows:
-        parents_with_allocations.add(str(row.parent))
-        if row.job_card:
-            paid_by_job_card[row.job_card] = paid_by_job_card.get(row.job_card, 0) + flt(row.amount)
-    for payment in payments:
-        if str(payment.name) not in parents_with_allocations and payment.job_card:
-            paid_by_job_card[payment.job_card] = paid_by_job_card.get(payment.job_card, 0) + flt(payment.amount)
+    paid_by_job_card = _get_customer_paid_by_job_card(customer)
 
     result = []
     for jc in job_cards:

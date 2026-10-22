@@ -1,0 +1,85 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-10-14 09:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "new_invoice_customer_term",
+  "admin_approval_threshold",
+  "documents_section",
+  "document_deadline_days",
+  "reference_required_above"
+ ],
+ "fields": [
+  {
+   "default": "Payment must clear",
+   "description": "New invoice customers start on this term until Accounts assigns one.",
+   "fieldname": "new_invoice_customer_term",
+   "fieldtype": "Select",
+   "label": "Term for New Invoice Customers",
+   "options": "Payment must clear\nCurrent cheque\nPD cheque 7 days\nPD cheque 15 days\nPD cheque 30 days\nPD cheque 45 days\nOn account 5 days\nOn account 7 days\nOn account 10 days\nOn account 14 days\nOn account 20 days\nOn account 25 days\nOn account 30 days\nOn account 35 days\nOn account 45 days\nOn account 60 days\nOn account 75 days"
+  },
+  {
+   "description": "One-time approvals over the limit (plus overdue) above this amount need a System Manager. Leave 0 to let Accounts Managers approve any amount.",
+   "fieldname": "admin_approval_threshold",
+   "fieldtype": "Currency",
+   "label": "Admin Approval Above"
+  },
+  {
+   "fieldname": "documents_section",
+   "fieldtype": "Section Break",
+   "label": "Company Documents"
+  },
+  {
+   "default": "7",
+   "description": "Days Sales has to upload a credit applicant's documents.",
+   "fieldname": "document_deadline_days",
+   "fieldtype": "Int",
+   "label": "Document Deadline (Days)"
+  },
+  {
+   "description": "A bank or trade reference is required when the requested limit is above this. Leave 0 to never require one.",
+   "fieldname": "reference_required_above",
+   "fieldtype": "Currency",
+   "label": "Reference Required Above Limit"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 0,
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-10-14 14:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Crystal Alluminium Works",
+ "name": "CAW Credit Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}

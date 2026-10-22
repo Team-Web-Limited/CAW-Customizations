@@ -74,7 +74,8 @@ function load_single_job_card_detail(page, job_card_name) {
 				message.sales_invoices || [],
 				{
 					quotation_amendment_pending: !!message.quotation_amendment_pending,
-					invoice_amendment_pending: !!message.invoice_amendment_pending
+					invoice_amendment_pending: !!message.invoice_amendment_pending,
+					invoices_awaiting_amendment: message.invoices_awaiting_amendment || []
 				},
 				message.released_items || [],
 				message.stock_deductions || []
@@ -1385,7 +1386,8 @@ function open_job_card_refund_modal(page, job_card, refund_amount) {
 					}
 					frappe.call({
 						method: 'crystal_alluminium_works.api.get_mode_of_payment_account_info',
-						args: { payment_method: payment_method },
+						// A refund is paid out of the bank, never Cheques in Hand.
+						args: { payment_method: payment_method, payment_type: 'Refund' },
 						callback: function(r) {
 							let info = (r && r.message) || {};
 							d._mode_of_payment_type = info.mode_of_payment_type || null;
@@ -2007,11 +2009,15 @@ async function create_partial_invoice_from_job_card(job_card, dialog) {
 		return;
 	}
 
+	let collector = await jc_choose_collector(job_card);
+	if (collector === false) return;
+
 	let response = await frappe.call({
 		method: 'crystal_alluminium_works.api.make_partial_sales_invoice_from_job_card',
 		args: {
 			job_card_name: job_card.name,
-			releases: JSON.stringify(releases)
+			releases: JSON.stringify(releases),
+			collector: collector ? JSON.stringify(collector) : null
 		},
 		freeze: true,
 		freeze_message: 'Creating partial Sales Invoice...'
@@ -2119,13 +2125,20 @@ function bind_single_job_card_detail_events(page, $body, job_card, quotation, hi
 		window.open(export_url, '_blank');
 	});
 
+	$body.on('click.job-card-detail', '[data-action="override-job-term"]', function(e) {
+		e.preventDefault();
+		open_override_job_term_dialog(page, job_card);
+	});
+
 	$body.on('click.job-card-detail', '[data-action="create-sales-invoice"]', function() {
 		frappe.confirm(
 			'<b>Create Sales Invoice?</b><br><br>This will create, submit, and mark the Sales Invoice as paid from the fully paid Job Card.',
-			() => {
+			async () => {
+				let collector = await jc_choose_collector(job_card);
+				if (collector === false) return;
 				frappe.call({
 					method: 'crystal_alluminium_works.api.make_sales_invoice_from_job_card',
-					args: { job_card_name: job_card.name },
+					args: { job_card_name: job_card.name, collector: collector ? JSON.stringify(collector) : null },
 					freeze: true,
 					freeze_message: 'Creating paid Sales Invoice...',
 					callback: function(r) {
@@ -2964,7 +2977,7 @@ function render_single_job_card_detail(job_card, quotation, history, sales_invoi
 			<div style="margin-bottom:18px; padding:12px 16px; border-radius:8px; background:#fff7e6; border:1px solid #ffe1a8; color:#8a5a00; font-size:13px;">
 				<strong>Amendment in progress.</strong>
 				${flags.quotation_amendment_pending ? 'A Quotation amendment is pending — submit or discard the amended Quotation in the Quotation Manager. ' : ''}
-				${flags.invoice_amendment_pending ? 'A cancelled Sales Invoice is awaiting its amendment — submit the amended invoice in the Sales Invoice Manager. ' : ''}
+				${flags.invoice_amendment_pending ? `A cancelled Sales Invoice${(flags.invoices_awaiting_amendment || []).length ? ' (' + frappe.utils.escape_html(flags.invoices_awaiting_amendment.join(', ')) + ')' : ''} is awaiting its amendment. If the goods were delivered, amend and submit it in the Sales Invoice Manager; if the release was a mistake and nothing left the yard, use Undo Release there instead. ` : ''}
 				Payments, invoices and releases are paused until it is resolved.
 			</div>
 		` : ''}
@@ -2984,6 +2997,10 @@ function render_single_job_card_detail(job_card, quotation, history, sales_invoi
 						${render_job_card_detail_field('Customer', job_card.customer_name || job_card.customer)}
 						${render_job_card_detail_field('Payment Mode', job_card.payment_mode)}
 						${render_job_card_detail_field('Payment Option', job_card.payment_option)}
+						<div class="jc-detail-field">
+							<span>Account Term</span>
+							<strong>${frappe.utils.escape_html(job_card.account_term || '-')}${job_card.term_override_reason ? ` <span style="font-weight:400;color:var(--text-muted);">(changed for this job: ${frappe.utils.escape_html(job_card.term_override_reason)})</span>` : ''}${job_card.payment_mode === 'Invoice Customer' && frappe.user.has_role(['Accounts Manager', 'System Manager']) ? ' <a href="#" data-action="override-job-term" style="font-weight:400;">Change for this job</a>' : ''}</strong>
+						</div>
 						${render_job_card_detail_field('PIN', job_card.customer_pin)}
 						${render_job_card_detail_field('Phone Number', job_card.phone_number)}
 						${render_job_card_detail_field('Quotation', job_card.quotation)}
@@ -3033,4 +3050,73 @@ function render_job_card_detail_field(label, value) {
 			<strong>${frappe.utils.escape_html(value || '-')}</strong>
 		</div>
 	`;
+}
+
+// Only an authorised collector may take goods for a customer that has any (credit_control.py):
+// pick who is collecting; the yard checks their ID against the one shown. Resolves to the chosen
+// collector, null when the customer has none to choose from, or false when cancelled.
+async function jc_choose_collector(job_card) {
+	let r = await frappe.call({
+		method: 'crystal_alluminium_works.credit_control.get_authorised_collectors',
+		args: { customer: job_card.customer },
+	});
+	let collectors = r.message || [];
+	if (!collectors.length) return null;
+
+	return new Promise(resolve => {
+		let labels = {};
+		collectors.forEach(c => {
+			labels[`${c.full_name} — ID ${c.custom_id_number || '?'}`] = c.name;
+		});
+		let chosen = false;
+		let dialog = new frappe.ui.Dialog({
+			title: 'Who is collecting?',
+			fields: [
+				{
+					fieldtype: 'HTML',
+					options: '<p class="text-muted">Only these authorised collectors may collect goods for this customer. Check their ID before release.</p>'
+				},
+				{ fieldtype: 'Select', fieldname: 'collector', label: 'Authorised Collector', options: Object.keys(labels).join('\n'), reqd: 1 }
+			],
+			primary_action_label: 'Release',
+			primary_action(values) {
+				chosen = { contact: labels[values.collector] };
+				dialog.hide();
+			}
+		});
+		dialog.onhide = () => {
+			resolve(chosen);
+			dialog.$wrapper.remove();
+		};
+		dialog.show();
+	});
+}
+
+async function open_override_job_term_dialog(page, job_card) {
+	let r = await frappe.call({ method: 'crystal_alluminium_works.credit_control.get_account_options' });
+	let options = r.message || {};
+	let dialog = new frappe.ui.Dialog({
+		title: 'Change Term for This Job',
+		fields: [
+			{
+				fieldtype: 'HTML',
+				options: '<p class="text-muted">Only this job card changes; the customer keeps their own term. The reason is kept on the account history.</p>'
+			},
+			{ fieldtype: 'Select', fieldname: 'term', label: 'Account Term', options: (options.terms || []).join('\n'), default: job_card.account_term, reqd: 1 },
+			{ fieldtype: 'Small Text', fieldname: 'reason', label: 'Reason', reqd: 1 }
+		],
+		primary_action_label: 'Save',
+		primary_action(values) {
+			frappe.call({
+				method: 'crystal_alluminium_works.credit_control.override_job_term',
+				args: { job_card: job_card.name, term: values.term, reason: values.reason },
+				freeze: true,
+				callback: () => {
+					dialog.hide();
+					load_single_job_card_detail(page, job_card.name);
+				}
+			});
+		}
+	});
+	dialog.show();
 }

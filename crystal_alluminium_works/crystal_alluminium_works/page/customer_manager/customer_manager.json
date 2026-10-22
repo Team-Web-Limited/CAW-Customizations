@@ -4,7 +4,7 @@
  "docstatus": 0,
  "doctype": "Page",
  "idx": 0,
- "modified": "2026-09-15 14:17:45.192795",
+ "modified": "2026-10-14 09:00:00.000000",
  "modified_by": "Administrator",
  "module": "Crystal Alluminium Works",
  "name": "customer-manager",
@@ -16,6 +16,9 @@
   },
   {
    "role": "Sales User"
+  },
+  {
+   "role": "Accounts Manager"
   }
  ],
  "script": null,

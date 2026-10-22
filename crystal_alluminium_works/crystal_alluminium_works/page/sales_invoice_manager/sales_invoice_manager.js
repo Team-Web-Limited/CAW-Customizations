@@ -937,6 +937,14 @@ function get_sales_invoice_action_buttons(doc, quotation_name) {
 		// Job Card's payment) — restricted to System Manager / Administrator so the sales
 		// team, who'd use this only rarely, don't see it as a routine action.
 		if (frappe.user.has_role('System Manager')) {
+			// Undo Release: a partial release made by mistake (nothing left the yard).
+			if (is_job_card_invoice && cint(doc.custom_is_partial) && !doc.amended_from && !has_cutsize_glass_items) {
+				buttons += `
+					<button class="btn btn-default" id="btn-undo-release" title="The release was a mistake and nothing left the yard: cancel the invoice, return the goods to stock and give the quantities back to the quotation.">
+						<i class="fa fa-undo" style="margin-right:6px;"></i>Undo Release
+					</button>
+				`;
+			}
 			if (has_cutsize_glass_items) {
 				buttons += `
 					<button class="btn btn-danger" id="btn-cancel-blocked-cutsize" title="This invoice has Cut Size / Laminated glass items with sheet-consumption data (JC Operations) — it cannot be cancelled from here." style="margin-left: auto;">
@@ -959,12 +967,26 @@ function get_sales_invoice_action_buttons(doc, quotation_name) {
 				`;
 			}
 		}
+	} else if (doc.docstatus === 2 && cint(doc.custom_release_reversed)) {
+		buttons += `
+			<span class="text-muted" style="align-self:center;">
+				<i class="fa fa-undo" style="margin-right:6px;"></i>Release undone — nothing to amend
+			</span>
+		`;
 	} else if (doc.docstatus === 2) {
 		buttons += `
 			<button class="btn btn-primary" id="btn-amend-invoice">
 				<i class="fa fa-pencil-square-o" style="margin-right:6px;"></i>Amend Invoice
 			</button>
 		`;
+		// Cancelled by mistake instead of undone: the goods never left, so no amendment.
+		if (frappe.user.has_role('System Manager') && doc.custom_source_job_card && cint(doc.custom_is_partial) && !doc.amended_from) {
+			buttons += `
+				<button class="btn btn-default" id="btn-undo-release" title="Nothing left the yard: return the goods to stock and unfreeze the Job Card instead of amending.">
+					<i class="fa fa-undo" style="margin-right:6px;"></i>Undo Release
+				</button>
+			`;
+		}
 	}
 
 	return buttons;
@@ -1015,6 +1037,67 @@ function bind_sales_invoice_action_events(page, doc) {
 					}
 				},
 			});
+		});
+	});
+
+	$body.find('#btn-undo-release').on('click', () => {
+		frappe.call({
+			method: 'crystal_alluminium_works.api.get_release_reversal_eligibility',
+			args: { name: doc.name },
+			freeze: true,
+			callback: function(r) {
+				if (r.exc) return;
+				const elig = r.message || {};
+				if (!elig.can_undo) {
+					frappe.msgprint({
+						title: 'Cannot Undo Release',
+						indicator: 'red',
+						message: '<ul><li>' + (elig.reasons || ['Not eligible.']).join('</li><li>') + '</li></ul>',
+					});
+					return;
+				}
+				const items = (elig.releases || []).map(rel =>
+					`<li>${frappe.utils.escape_html(rel.item_code)} — ${frappe.utils.escape_html(rel.item_name || '')}: ${flt(rel.qty_released)} ${frappe.utils.escape_html(rel.uom || '')}</li>`
+				).join('');
+				const entries = (elig.stock_entries || []).join(', ');
+				const d = new frappe.ui.Dialog({
+					title: `Undo Release — ${doc.name}`,
+					fields: [
+						{
+							fieldtype: 'HTML',
+							options: `
+								<p>Use this only if the release was a mistake and <b>nothing left the yard</b>.
+								If the goods were delivered, cancel and amend the invoice instead.</p>
+								<p>This will:</p>
+								<ul>
+									${doc.docstatus === 1 ? '<li>Cancel this invoice (the customer\'s payments are not touched)</li>' : ''}
+									<li>Return to stock:<ul>${items}</ul></li>
+									${entries ? `<li>Cancel stock entries ${frappe.utils.escape_html(entries)}</li>` : ''}
+									<li>Give the quantities back to the quotation so they can be released again</li>
+									<li>Delete any draft amendment and unfreeze the Job Card</li>
+								</ul>
+							`,
+						},
+						{ fieldtype: 'Small Text', fieldname: 'reason', label: 'Reason', reqd: 1 },
+					],
+					primary_action_label: 'Undo Release',
+					primary_action(values) {
+						d.hide();
+						frappe.call({
+							method: 'crystal_alluminium_works.api.undo_partial_release',
+							args: { name: doc.name, reason: values.reason },
+							freeze: true,
+							freeze_message: 'Undoing release...',
+							callback: function(res) {
+								if (res.exc) return;
+								frappe.show_alert({ message: `Release on ${doc.name} undone`, indicator: 'green' });
+								render_sales_invoice_dashboard(page, doc.name);
+							},
+						});
+					},
+				});
+				d.show();
+			},
 		});
 	});
 

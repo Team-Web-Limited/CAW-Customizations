@@ -52,6 +52,12 @@ def on_validate(doc, method):
     # they were before this hook ran instead of reflecting the rate it just set.
     doc.calculate_taxes_and_totals()
 
+    # The customer's account term, shown on the quotation so the customer sees how they will pay.
+    if doc.quotation_to == "Customer" and doc.party_name and doc.docstatus == 0:
+        from crystal_alluminium_works.credit_control import get_customer_term
+
+        doc.custom_account_term = get_customer_term(doc.party_name)
+
 
 def on_submit(doc, method):
     # A deposit taken before this quotation existed is tagged to it when the amount matches.

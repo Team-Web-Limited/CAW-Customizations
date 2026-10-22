@@ -1785,6 +1785,15 @@ async function open_job_card_modal(page, doc) {
 				}
 			},
 			{
+				// The customer's account term (credit_control.py): how and when they pay, and
+				// when goods may be released. Set by Accounts in Customer Manager.
+				fieldtype: 'Data',
+				fieldname: 'account_term',
+				label: 'Account Term',
+				read_only: 1,
+				default: (existing_job_card && existing_job_card.account_term) || doc.custom_account_term || ''
+			},
+			{
 				fieldtype: 'Select',
 				fieldname: 'payment_option',
 				label: 'Payment Method',
