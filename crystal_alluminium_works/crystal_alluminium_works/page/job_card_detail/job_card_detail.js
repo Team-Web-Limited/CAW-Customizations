@@ -631,21 +631,42 @@ function open_jc_operations_modal(page, job_card, quotation) {
 					return;
 				}
 				d.get_primary_btn().prop('disabled', true);
-				frappe.call({
-					method: 'crystal_alluminium_works.api.save_jc_operations_consumption',
-					args: {
-						job_card_name: job_card.name,
-						consumption_json: JSON.stringify(consumption)
-					},
-					callback: function() {
-						d.hide();
-						frappe.show_alert({message: 'Saved successfully', indicator: 'green'});
-						load_single_job_card_detail(page, job_card.name);
-					},
-					error: function() {
-						d.get_primary_btn().prop('disabled', false);
-					}
-				});
+				// Raw glass short in the store is a warning: the first call saves nothing and
+				// returns the shortfalls; confirming saves anyway, noted on the Job Card.
+				let save = function(confirm_shortage) {
+					frappe.call({
+						method: 'crystal_alluminium_works.api.save_jc_operations_consumption',
+						args: {
+							job_card_name: job_card.name,
+							consumption_json: JSON.stringify(consumption),
+							confirm_shortage: confirm_shortage ? 1 : 0
+						},
+						callback: function(r) {
+							let shortfalls = (r.message || {}).shortfalls || [];
+							if (shortfalls.length) {
+								let lines = shortfalls.map(s =>
+									`<li><b>${frappe.utils.escape_html(s.item)}</b>: needs ${flt(s.needed, 2)} sft, the system shows ${flt(s.available, 2)} sft</li>`
+								).join('');
+								frappe.confirm(
+									`<p>There is not enough raw glass in ${frappe.utils.escape_html(r.message.warehouse || 'the store')} on the system:</p>
+									<ul>${lines}</ul>
+									<p>Save anyway? The glass will be deducted (stock goes negative) and a note will be added to this Job Card.
+									Ask for the missing delivery to be entered as a Purchase Receipt.</p>`,
+									() => save(true),
+									() => d.get_primary_btn().prop('disabled', false)
+								);
+								return;
+							}
+							d.hide();
+							frappe.show_alert({message: 'Saved successfully', indicator: 'green'});
+							load_single_job_card_detail(page, job_card.name);
+						},
+						error: function() {
+							d.get_primary_btn().prop('disabled', false);
+						}
+					});
+				};
+				save(false);
 			}
 		});
 

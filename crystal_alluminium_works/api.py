@@ -10458,9 +10458,13 @@ def get_jc_operations_locked_items(job_card_name):
 
 
 @frappe.whitelist()
-def save_jc_operations_consumption(job_card_name, consumption_json):
+def save_jc_operations_consumption(job_card_name, consumption_json, confirm_shortage=0):
     """Save the sheet consumption JSON on the Job Card and automatically trigger
     repacks in the background for any Laminated Glass rows that haven't been repacked yet.
+
+    Raw glass short in the store is a warning, not a block: the first call saves nothing and
+    returns {"shortfalls": [...]}; called again with confirm_shortage=1 it posts anyway (negative
+    stock is allowed) and leaves a comment on the Job Card naming who confirmed which shortage.
     """
     import json
 
@@ -10469,16 +10473,18 @@ def save_jc_operations_consumption(job_card_name, consumption_json):
 
     consumption = _normalize_cutoff_sheets(json.loads(consumption_json or "{}"))
     consumption_json = json.dumps(consumption)
-    frappe.db.set_value("CAW Job Card", job_card_name, "custom_sheet_consumption_json", consumption_json)
 
     if not job_card.quotation:
-        return
+        frappe.db.set_value("CAW Job Card", job_card_name, "custom_sheet_consumption_json", consumption_json)
+        return {"saved": True}
 
     quotation_doc = frappe.get_doc("Quotation", job_card.quotation)
     
     company = _get_default_stock_company()
     warehouse = _get_default_receiving_warehouse(company)
-    
+    configs = get_glass_sheet_configs()
+
+    cutoff_rows, pending = [], []
     for row in quotation_doc.items:
         if getattr(row, "custom_auto_generated", 0):
             continue
@@ -10497,9 +10503,9 @@ def save_jc_operations_consumption(job_card_name, consumption_json):
             continue
 
         if is_laminated and not _laminated_code_has_sheets(quotation_doc, row.item_code, consumption):
-            _create_cutoff_laminated_receipt(job_card.name, quotation_doc, row, consumption, warehouse, company)
+            cutoff_rows.append(row)
             continue
-            
+
         # Check if we already created a repack or deduction for this row
         if is_laminated:
             se_exists = frappe.db.exists(
@@ -10521,7 +10527,6 @@ def save_jc_operations_consumption(job_card_name, consumption_json):
             continue
             
         sft_qty = 0
-        configs = get_glass_sheet_configs()
         for sheet in row_consumption:
             size = sheet.get("size")
             pcs = frappe.utils.flt(sheet.get("pcs"))
@@ -10530,32 +10535,20 @@ def save_jc_operations_consumption(job_card_name, consumption_json):
             
         if sft_qty <= 0.0001:
             continue
-            
-        # Check raw component stock sufficiency
-        shortfalls = []
-        for sheet in row_consumption:
-            if _is_cutoff_sheet(sheet):
-                continue
-            comp_item = sheet.get("item_consumed")
-            size = sheet.get("size")
-            pcs = frappe.utils.flt(sheet.get("pcs"))
-            sft_per_sheet = next((frappe.utils.flt(c.get("sft")) for c in configs if c.get("size") == size), 0)
-            needed = round(sft_per_sheet * pcs, 4)
-            
-            available = frappe.utils.flt(frappe.db.get_value(
-                "Bin", {"item_code": comp_item, "warehouse": warehouse}, "actual_qty"
-            ) or 0)
-            if available + 0.0001 < needed:
-                shortfalls.append({
-                    "item": comp_item,
-                    "needed": needed,
-                    "available": available
-                })
-                
-        if shortfalls:
-            details = "; ".join(f"{s['item']} (need {s['needed']}, have {s['available']})" for s in shortfalls)
-            frappe.throw(f"Insufficient stock in {warehouse} to produce/deduct {row.item_code}: {details}")
-            
+
+        pending.append((row, is_laminated, row_consumption))
+
+    # Raw component stock sufficiency, summed per item over everything this save deducts.
+    shortfalls = _jc_operations_shortfalls(pending, configs, warehouse)
+    if shortfalls and not frappe.utils.cint(confirm_shortage):
+        return {"shortfalls": shortfalls, "warehouse": warehouse}
+
+    frappe.db.set_value("CAW Job Card", job_card_name, "custom_sheet_consumption_json", consumption_json)
+
+    for row in cutoff_rows:
+        _create_cutoff_laminated_receipt(job_card.name, quotation_doc, row, consumption, warehouse, company)
+
+    for row, is_laminated, row_consumption in pending:
         total_sft = frappe.utils.flt(row.custom_area_sqft) * frappe.utils.flt(row.qty)
         
         if is_laminated:
@@ -10597,6 +10590,42 @@ def save_jc_operations_consumption(job_card_name, consumption_json):
                     _create_glass_deduction_stock_entry_for_row(
                         itm, itm_sft_release_qty, warehouse, company, job_card.name, row.name, json.dumps(itm_sheets), total_sft
                     )
+
+    if shortfalls:
+        details = "; ".join(
+            f"{s['item']}: needed {s['needed']} sft, had {s['available']} sft" for s in shortfalls
+        )
+        job_card.add_comment(
+            "Comment",
+            f"JC Operations saved with a raw glass shortage in {warehouse}, confirmed by "
+            f"{frappe.session.user}. {details}.",
+        )
+    return {"saved": True}
+
+
+def _jc_operations_shortfalls(pending, configs, warehouse):
+    """Raw glass items the pending JC Operations rows would take below zero, as
+    [{"item", "needed", "available"}]. Cutoffs deduct nothing and are left out."""
+    needed = {}
+    for row, _is_laminated, row_consumption in pending:
+        for sheet in row_consumption:
+            if _is_cutoff_sheet(sheet):
+                continue
+            sft_per_sheet = next(
+                (frappe.utils.flt(c.get("sft")) for c in configs if c.get("size") == sheet.get("size")), 0
+            )
+            # Same fallback as the deduction: a Resized sheet with no item is the row's own glass.
+            item = sheet.get("item_consumed") or row.item_code
+            needed[item] = needed.get(item, 0) + sft_per_sheet * frappe.utils.flt(sheet.get("pcs"))
+
+    shortfalls = []
+    for item, qty in needed.items():
+        available = frappe.utils.flt(
+            frappe.db.get_value("Bin", {"item_code": item, "warehouse": warehouse}, "actual_qty") or 0
+        )
+        if available + 0.0001 < qty:
+            shortfalls.append({"item": item, "needed": round(qty, 4), "available": available})
+    return shortfalls
 
 def _laminated_rows_covered_by(quotation_doc, primary_row, consumption):
     """The other rows of primary_row's laminated code whose JC Operations entry is only the
