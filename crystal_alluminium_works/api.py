@@ -10592,14 +10592,11 @@ def save_jc_operations_consumption(job_card_name, consumption_json, confirm_shor
                     )
 
     if shortfalls:
+        sft = lambda value: f"{flt(value):,.2f}".rstrip("0").rstrip(".")
         details = "; ".join(
-            f"{s['item']}: needed {s['needed']} sft, had {s['available']} sft" for s in shortfalls
+            f"{s['item']} needed {sft(s['needed'])} sft, had {sft(s['available'])} sft" for s in shortfalls
         )
-        job_card.add_comment(
-            "Comment",
-            f"JC Operations saved with a raw glass shortage in {warehouse}, confirmed by "
-            f"{frappe.session.user}. {details}.",
-        )
+        job_card.add_comment("Comment", f"Saved with low stock, confirmed by {frappe.session.user}: {details}.")
     return {"saved": True}
 
 

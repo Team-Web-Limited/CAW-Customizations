@@ -644,17 +644,15 @@ function open_jc_operations_modal(page, job_card, quotation) {
 						callback: function(r) {
 							let shortfalls = (r.message || {}).shortfalls || [];
 							if (shortfalls.length) {
+								let sft = v => flt(v, 2).toLocaleString('en-US', { maximumFractionDigits: 2 });
 								let lines = shortfalls.map(s =>
-									`<li><b>${frappe.utils.escape_html(s.item)}</b>: needs ${flt(s.needed, 2)} sft, the system shows ${flt(s.available, 2)} sft</li>`
+									`<li><b>${frappe.utils.escape_html(s.item)}</b>: needs ${sft(s.needed)} sft, has ${sft(s.available)} sft</li>`
 								).join('');
 								frappe.confirm(
-									`<p>There is not enough raw glass in ${frappe.utils.escape_html(r.message.warehouse || 'the store')} on the system:</p>
-									<ul>${lines}</ul>
-									<p>Save anyway? The glass will be deducted (stock goes negative) and a note will be added to this Job Card.
-									Ask for the missing delivery to be entered as a Purchase Receipt.</p>`,
+									`<ul>${lines}</ul>Save anyway? A note will be added to this Job Card.`,
 									() => save(true),
 									() => d.get_primary_btn().prop('disabled', false)
-								);
+								).set_title(__('Low stock on the system'));
 								return;
 							}
 							d.hide();
