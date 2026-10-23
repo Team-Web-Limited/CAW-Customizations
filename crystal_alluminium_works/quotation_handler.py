@@ -29,6 +29,10 @@ def on_validate(doc, method):
     # 2. Process each remaining item
     for idx, item in enumerate(doc.items):
         item_group = frappe.get_cached_value("Item", item.item_code, "item_group")
+        # A Services row (e.g. Glass Polishing on its own) is in the Glass item group but is
+        # priced as typed in the Builder, never as a piece of glass.
+        if item.get("custom_product_category") == "Services":
+            continue
 
         if item_group == "Glass":
             auto_rows = process_glass_item(item, idx + 1)
@@ -51,12 +55,6 @@ def on_validate(doc, method):
     # exactly those rows, leaving doc.grand_total/base_rate/base_amount stuck at whatever
     # they were before this hook ran instead of reflecting the rate it just set.
     doc.calculate_taxes_and_totals()
-
-    # The customer's account term, shown on the quotation so the customer sees how they will pay.
-    if doc.quotation_to == "Customer" and doc.party_name and doc.docstatus == 0:
-        from crystal_alluminium_works.credit_control import get_customer_term
-
-        doc.custom_account_term = get_customer_term(doc.party_name)
 
 
 def on_submit(doc, method):

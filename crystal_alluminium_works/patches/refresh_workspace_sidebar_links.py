@@ -23,12 +23,9 @@ def _build_sidebar_items():
         {"label": "Job Cards", "type": "Link", "link_type": "Page", "link_to": "job-cards", "icon": "clipboard", "child": 1, "idx": 18},
         {"label": "Customers", "type": "Section Break", "keep_closed": 1, "idx": 19},
         {"label": "Customer Manager", "type": "Link", "link_type": "Page", "link_to": "customer-manager", "icon": "users", "child": 1, "idx": 20},
-        {"label": "Account Approvals", "type": "Link", "link_type": "Page", "link_to": "account-approvals", "icon": "shield", "child": 1, "idx": 21},
-        {"label": "Sales Portfolio", "type": "Link", "link_type": "Page", "link_to": "sales-portfolio", "icon": "briefcase", "child": 1, "idx": 22},
-        {"label": "Payments", "type": "Section Break", "keep_closed": 1, "idx": 23},
-        {"label": "Payments Page", "type": "Link", "link_type": "Page", "link_to": "payments-page", "icon": "credit-card", "child": 1, "idx": 24},
-        {"label": "M-Pesa Transactions", "type": "Link", "link_type": "Page", "link_to": "mpesa-transactions", "icon": "smartphone", "child": 1, "idx": 25},
-        {"label": "Cheque Register", "type": "Link", "link_type": "Page", "link_to": "cheque-register", "icon": "wallet", "child": 1, "idx": 26},
+        {"label": "Payments", "type": "Section Break", "keep_closed": 1, "idx": 21},
+        {"label": "Payments Page", "type": "Link", "link_type": "Page", "link_to": "payments-page", "icon": "credit-card", "child": 1, "idx": 22},
+        {"label": "M-Pesa Transactions", "type": "Link", "link_type": "Page", "link_to": "mpesa-transactions", "icon": "smartphone", "child": 1, "idx": 23},
     ]
 
 

@@ -63,9 +63,6 @@ app_include_js = [
 	# Shared "Create Payment" dialog (moved out of the Payments page), used by Quotation
 	# Manager's Record/Refund Deposit actions so they open in place instead of navigating away.
 	"/assets/crystal_alluminium_works/js/caw_payment_dialog.js",
-	# Account controls: the dialog shown when an account limit, overdue balance or hold stops a
-	# job card, release or invoice (credit_control.CreditControlBlock), on every page.
-	"/assets/crystal_alluminium_works/js/caw_credit_control.js",
 	# Adds a Customer Billing Type filter to the standard Customer Ledger Summary report.
 	"/assets/crystal_alluminium_works/js/customer_ledger_summary_filter.js",
 	# Bank Reconciliation Statement: Payment Document links open their own document again.
@@ -210,8 +207,7 @@ doc_events = {
 	# One Customer per KRA PIN — re-registering an existing customer under another name
 	# split its quotations/invoices across two records. Same names are fine.
 	"Customer": {
-		"validate": "crystal_alluminium_works.customer_handler.validate",
-		"after_insert": "crystal_alluminium_works.credit_control.log_new_customer"
+		"validate": "crystal_alluminium_works.customer_handler.validate"
 	},
 	"Quotation": {
 		"before_insert": "crystal_alluminium_works.quotation_handler.before_insert",
@@ -280,15 +276,6 @@ doc_events = {
 
 # Scheduled Tasks
 # ---------------
-
-# Each morning, remind Accounts of cheques that have reached their banking date, credit
-# applications whose documents are late, and company documents about to expire.
-scheduler_events = {
-	"daily": [
-		"crystal_alluminium_works.cheque_register.send_banking_reminders",
-		"crystal_alluminium_works.customer_documents.send_document_reminders"
-	],
-}
 
 # scheduler_events = {
 # 	"all": [

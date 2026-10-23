@@ -171,6 +171,10 @@ def on_validate(doc, method):
     # ── 2. Process each remaining item through the pricing engine ─────
     for idx, item in enumerate(doc.items):
         item_group = frappe.get_cached_value("Item", item.item_code, "item_group")
+        # A Services row (e.g. Glass Polishing on its own) is in the Glass item group but is
+        # priced as typed in the Builder, never as a piece of glass.
+        if item.get("custom_product_category") == "Services":
+            continue
 
         if item_group == "Glass":
             auto_rows = process_glass_item(item, idx + 1)
@@ -200,37 +204,6 @@ def on_validate(doc, method):
     # ── 4. Recalculate totals since we added new items ────────────────
     if new_items or rates_adjusted:
         doc.calculate_taxes_and_totals()
-
-    _apply_account_term(doc)
-
-
-def _apply_account_term(doc):
-    """The invoice carries the account term of the work it bills and is due by it (see
-    credit_control.due_date_for). Job-card invoices are already checked at release; an invoice
-    made without a job card (e.g. from a Sales Order) is the Invoice checkpoint itself."""
-    from crystal_alluminium_works.api import VAT_RATE, _resolve_job_card_for_quotation
-    from crystal_alluminium_works.credit_control import (
-        CHECKPOINT_INVOICE,
-        assert_credit_ok,
-        due_date_for,
-        get_customer_term,
-    )
-
-    quotation = doc.get("custom_source_quotation")
-    job_card = doc.get("custom_source_job_card") or (quotation and _resolve_job_card_for_quotation(quotation))
-    term = get_customer_term(doc.customer, job_card)
-    doc.custom_account_term = term
-    due_date = due_date_for(term, doc.posting_date, job_card=job_card)
-    if not doc.get("payment_terms_template"):
-        doc.due_date = due_date
-        if len(doc.get("payment_schedule") or []) == 1:
-            doc.payment_schedule[0].due_date = due_date
-
-    if doc.is_new() and not job_card and not quotation:
-        total = frappe.utils.flt(doc.grand_total)
-        if not frappe.utils.flt(doc.total_taxes_and_charges):
-            total *= 1 + VAT_RATE
-        assert_credit_ok(doc.customer, CHECKPOINT_INVOICE, total)
 
 
 class _QuotedRates:

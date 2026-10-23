@@ -3,7 +3,7 @@ import json
 import frappe
 from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 
-PRODUCT_CATEGORY_OPTIONS = "\nAluminium\nGlass\nFittings\nCeiling\nRubber\nSilicone\nMiscellaneous"
+PRODUCT_CATEGORY_OPTIONS = "\nAluminium\nGlass\nFittings\nCeiling\nRubber\nSilicone\nMiscellaneous\nServices"
 GLASS_SALE_MODE_OPTIONS = "Resized\nFull Sheet\nSheet"
 ITEM_GLASS_TYPE_OPTIONS = "Ordinary\nLaminated\nReady Laminated\nToughened"
 GLASS_POLISH_TYPE_OPTIONS = "\n4-6\n8-10\n14-35"
@@ -564,163 +564,6 @@ def _get_price_adjustment_fields():
     ]
 
 
-def get_account_control_fields():
-    """Account terms, limit, status and introducing sales person on the Customer; contact roles on
-    Contact; the term shown on Quotations and Sales Invoices (see credit_control.py). Only Accounts
-    may change the Customer's account fields — enforced in credit_control.validate_customer."""
-    from crystal_alluminium_works.credit_control import (
-        ACCOUNT_STATUS_OPTIONS,
-        ACCOUNT_TERM_OPTIONS,
-        CONTACT_ROLE_OPTIONS,
-    )
-
-    module = "Crystal Alluminium Works"
-    return {
-        "Customer": [
-            {
-                "fieldname": "custom_account_term",
-                "label": "Account Term",
-                "fieldtype": "Select",
-                "options": ACCOUNT_TERM_OPTIONS,
-                "insert_after": "custom_customer_billing_type",
-                "in_standard_filter": 1,
-                "description": "How and when this customer pays. Set by Accounts.",
-                "module": module,
-            },
-            {
-                "fieldname": "custom_account_limit",
-                "label": "Account Limit",
-                "fieldtype": "Currency",
-                "insert_after": "custom_account_term",
-                "description": "Most an invoice customer may owe. Blank = not set yet.",
-                "module": module,
-            },
-            {
-                "fieldname": "custom_account_status",
-                "label": "Account Status",
-                "fieldtype": "Select",
-                "options": ACCOUNT_STATUS_OPTIONS,
-                "default": "Active",
-                "insert_after": "custom_account_limit",
-                "in_standard_filter": 1,
-                "module": module,
-            },
-            {
-                "fieldname": "custom_hold_reason",
-                "label": "Hold Reason",
-                "fieldtype": "Small Text",
-                "insert_after": "custom_account_status",
-                "depends_on": "eval:doc.custom_account_status=='On hold'",
-                "module": module,
-            },
-            {
-                "fieldname": "custom_introduced_by",
-                "label": "Introduced By (Sales Person)",
-                "fieldtype": "Link",
-                "options": "Sales Person",
-                "insert_after": "custom_hold_reason",
-                "in_standard_filter": 1,
-                "module": module,
-            },
-            # Credit application (customer_documents.py): documents due by, what was asked for,
-            # and who opened it (reminded if the documents are late).
-            {
-                "fieldname": "custom_documents_due_on",
-                "label": "Credit Documents Due On",
-                "fieldtype": "Date",
-                "read_only": 1,
-                "insert_after": "custom_introduced_by",
-                "depends_on": "eval:doc.custom_account_status=='Pending documents'",
-                "module": module,
-            },
-            {
-                "fieldname": "custom_requested_term",
-                "label": "Requested Term",
-                "fieldtype": "Select",
-                "options": ACCOUNT_TERM_OPTIONS,
-                "read_only": 1,
-                "insert_after": "custom_documents_due_on",
-                "depends_on": "eval:doc.custom_account_status=='Pending documents'",
-                "module": module,
-            },
-            {
-                "fieldname": "custom_requested_limit",
-                "label": "Requested Limit",
-                "fieldtype": "Currency",
-                "read_only": 1,
-                "insert_after": "custom_requested_term",
-                "depends_on": "eval:doc.custom_account_status=='Pending documents'",
-                "module": module,
-            },
-            {
-                "fieldname": "custom_application_started_by",
-                "label": "Application Opened By",
-                "fieldtype": "Link",
-                "options": "User",
-                "read_only": 1,
-                "hidden": 1,
-                "insert_after": "custom_requested_limit",
-                "module": module,
-            },
-        ],
-        "Contact": [
-            {
-                "fieldname": "custom_account_role",
-                "label": "Account Role",
-                "fieldtype": "Select",
-                "options": CONTACT_ROLE_OPTIONS,
-                "insert_after": "designation",
-                "in_standard_filter": 1,
-                "module": module,
-            },
-            {
-                "fieldname": "custom_id_number",
-                "label": "ID Number",
-                "fieldtype": "Data",
-                "insert_after": "custom_account_role",
-                "description": "Checked by the yard when an authorised collector collects goods.",
-                "module": module,
-            },
-            {
-                "fieldname": "custom_receives_statements",
-                "label": "Receives Statements",
-                "fieldtype": "Check",
-                "insert_after": "custom_id_number",
-                "module": module,
-            },
-            {
-                "fieldname": "custom_contact_active",
-                "label": "Active",
-                "fieldtype": "Check",
-                "default": "1",
-                "insert_after": "custom_receives_statements",
-                "module": module,
-            },
-        ],
-        "Quotation": [
-            {
-                "fieldname": "custom_account_term",
-                "label": "Account Term",
-                "fieldtype": "Data",
-                "read_only": 1,
-                "insert_after": "custom_converted_to_customer",
-                "module": module,
-            },
-        ],
-        "Sales Invoice": [
-            {
-                "fieldname": "custom_account_term",
-                "label": "Account Term",
-                "fieldtype": "Data",
-                "read_only": 1,
-                "no_copy": 1,
-                "insert_after": "due_date",
-                "module": module,
-            },
-        ],
-    }
-
-
 def add_custom_fields():
     custom_fields = {
         "Customer": [
@@ -1160,7 +1003,6 @@ def add_custom_fields():
     }
 
     create_custom_fields(custom_fields)
-    create_custom_fields(get_account_control_fields(), update=True)
     reorder_procurement_standard_fields()
     print("Custom fields added to Customer, Quotation Item, Sales Order Item, Sales Invoice Item, and Sales Invoice")
 

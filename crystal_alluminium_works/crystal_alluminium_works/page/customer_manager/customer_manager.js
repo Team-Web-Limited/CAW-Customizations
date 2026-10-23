@@ -52,8 +52,6 @@ function get_customer_manager_list_columns() {
 		{ key: 'customer_name', label: 'Customer Name' },
 		{ key: 'tax_id', label: 'PIN (Tax ID)' },
 		{ key: 'phone_number', label: 'Phone Number' },
-		{ key: 'account_term', label: 'Account Term' },
-		{ key: 'account_status', label: 'Status' },
 	];
 }
 
@@ -154,15 +152,7 @@ async function open_new_customer_dialog(page) {
 				// Shown for every customer type; only Invoice Customers must have one.
 				mandatory_depends_on: "eval:doc.customer_billing_type=='Invoice Customer'"
 			},
-			{ fieldtype: 'Data', fieldname: 'email_id', label: 'Email Address (optional)', options: 'Email' },
-			{
-				fieldtype: 'Link',
-				fieldname: 'introduced_by',
-				label: 'Introduced By (Sales Person)',
-				options: 'Sales Person',
-				get_query: () => ({ filters: { is_group: 0, enabled: 1 } }),
-				description: 'The sales person who brought this customer in. Only an Admin can change it later.'
-			}
+			{ fieldtype: 'Data', fieldname: 'email_id', label: 'Email Address (optional)', options: 'Email' }
 		],
 		primary_action_label: 'Register Customer',
 		primary_action: async function (values) {
@@ -181,8 +171,7 @@ async function open_new_customer_dialog(page) {
 						customer_name: (values.customer_name || '').trim(),
 						mobile_no: mobile_no,
 						tax_id: (values.tax_id || '').trim(),
-						email_id: (values.email_id || '').trim(),
-						introduced_by: values.introduced_by || ''
+						email_id: (values.email_id || '').trim()
 					},
 					freeze: true,
 					freeze_message: 'Registering customer...'
@@ -316,16 +305,7 @@ function render_customer_list(page) {
 		has_more: false,
 	};
 	render_customer_manager_list_loading($(page.body), 'Loading customers...');
-	load_sales_person_filter(page);
 	load_customers(page, 1);
-}
-
-function load_sales_person_filter(page) {
-	frappe.db.get_list('Sales Person', { filters: { is_group: 0, enabled: 1 }, fields: ['name'], order_by: 'name asc', limit: 0 })
-		.then(rows => {
-			let $select = $(page.body).find('[data-filter="introduced_by"]');
-			(rows || []).forEach(row => $select.append(`<option value="${cm_attr(row.name)}">${cm_text(row.name)}</option>`));
-		});
 }
 
 function get_customer_manager_html() {
@@ -403,21 +383,6 @@ function get_customer_manager_html() {
 						<option value="cash">Cash Customers</option>
 					</select>
 				</div>
-				<div class="cm-list-toolbar-group cm-list-toolbar-group--type">
-					<label class="form-label">Account Status</label>
-					<select class="form-control" data-filter="account_status">
-						<option value="">All</option>
-						<option value="Active">Active</option>
-						<option value="On hold">On hold</option>
-						<option value="Pending documents">Pending documents</option>
-					</select>
-				</div>
-				<div class="cm-list-toolbar-group cm-list-toolbar-group--type">
-					<label class="form-label">Introduced By</label>
-					<select class="form-control" data-filter="introduced_by">
-						<option value="">Any sales person</option>
-					</select>
-				</div>
 				<div class="cm-list-toolbar-actions">
 					<button class="btn btn-danger cm-bulk-delete" style="display:none;">Delete Selected</button>
 					<button class="btn btn-default cm-list-clear">Clear</button>
@@ -457,15 +422,13 @@ function bind_customer_manager_events(page) {
 		}
 	});
 
-	$(wrapper).on('change', '[data-filter="customer_type"], [data-filter="account_status"], [data-filter="introduced_by"]', function () {
+	$(wrapper).on('change', '[data-filter="customer_type"]', function () {
 		load_customers(page, 1);
 	});
 
 	$(wrapper).on('click', '.cm-list-clear', function () {
 		$(wrapper).find('[data-filter="search"]').val('');
 		$(wrapper).find('[data-filter="customer_type"]').val('invoice');
-		$(wrapper).find('[data-filter="account_status"]').val('');
-		$(wrapper).find('[data-filter="introduced_by"]').val('');
 		load_customers(page, 1);
 	});
 
@@ -534,6 +497,15 @@ function bind_customer_manager_events(page) {
 		}
 	});
 
+	$(wrapper).on('click', '.cm-payment-allocate', function (e) {
+		e.preventDefault();
+		e.stopPropagation();
+		let payment_name = $(this).attr('data-payment');
+		if (payment_name) {
+			open_allocate_payment_modal(page, payment_name);
+		}
+	});
+
 	$(wrapper).on('click', '.cm-job-card-row', function () {
 		let name = $(this).attr('data-name');
 		if (name) {
@@ -552,75 +524,6 @@ function bind_customer_manager_events(page) {
 			return;
 		}
 		render_customer_selected_transaction_table(page);
-	});
-
-	$(wrapper).on('click', '.cm-acct-edit', function () {
-		open_account_controls_dialog(page, page.customer_manager_current_customer);
-	});
-
-	$(wrapper).on('click', '.cm-acct-owner', function () {
-		open_introduced_by_dialog(page, page.customer_manager_current_customer);
-	});
-
-	$(wrapper).on('click', '.cm-acct-history', function () {
-		open_account_history_dialog(page.customer_manager_current_customer);
-	});
-
-	$(wrapper).on('click', '.cm-acct-approvals', function (e) {
-		e.preventDefault();
-		frappe.set_route('account-approvals');
-	});
-
-	$(wrapper).on('click', '.cm-contact-add', function () {
-		open_account_contact_dialog(page, page.customer_manager_current_customer, null);
-	});
-
-	$(wrapper).on('click', '.cm-contact-edit', function () {
-		let contact = (page.customer_manager_contacts || []).find(row => row.name === $(this).attr('data-name'));
-		open_account_contact_dialog(page, page.customer_manager_current_customer, contact);
-	});
-
-	$(wrapper).on('click', '.cm-contact-toggle', function () {
-		let name = $(this).attr('data-name');
-		let active = cint($(this).attr('data-active'));
-		let go = () => frappe.call({
-			method: 'crystal_alluminium_works.credit_control.set_contact_active',
-			args: { contact: name, active: active },
-			freeze: true,
-		}).then(() => load_customer_contacts_panel(page, page.customer_manager_current_customer));
-		if (active) {
-			go();
-		} else {
-			frappe.confirm('Deactivate this contact? They stay on record for history but no longer receive statements or collect goods.', go);
-		}
-	});
-
-	$(wrapper).on('click', '.cm-doc-apply', function () {
-		open_credit_application_dialog(page, page.customer_manager_current_customer);
-	});
-
-	$(wrapper).on('click', '.cm-doc-upload', function () {
-		open_customer_document_upload_dialog(page, page.customer_manager_current_customer, $(this).attr('data-type'));
-	});
-
-	$(wrapper).on('click', '.cm-doc-review', function () {
-		open_customer_document_review_dialog(page, $(this).attr('data-name'), cint($(this).attr('data-approve')));
-	});
-
-	$(wrapper).on('change', '.cm-doc-original', function () {
-		frappe.call({
-			method: 'crystal_alluminium_works.customer_documents.set_original_received',
-			args: { name: $(this).attr('data-name'), received: $(this).prop('checked') ? 1 : 0 },
-		}).then(() => load_customer_documents_panel(page, page.customer_manager_current_customer));
-	});
-
-	$(wrapper).on('click', '.cm-doc-approve-account', function () {
-		open_approve_credit_account_dialog(page, page.customer_manager_current_customer);
-	});
-
-	$(wrapper).on('change', '.cm-contacts-show-inactive', function () {
-		page.customer_manager_show_inactive_contacts = $(this).prop('checked');
-		load_customer_contacts_panel(page, page.customer_manager_current_customer);
 	});
 
 	$(wrapper).on('click', '.btn-paging', function () {
@@ -862,13 +765,6 @@ async function render_customer_detail(page, customer_name) {
 		}
 		$(page.body).html(get_customer_detail_html(customer, page.customer_manager_transactions));
 		render_customer_selected_transaction_table(page);
-		if (cm_has_account(customer_name) && !customer.is_walkin) {
-			load_customer_account_panel(page, customer.name);
-			load_customer_contacts_panel(page, customer.name);
-			if (customer.custom_customer_billing_type === 'Invoice Customer') {
-				load_customer_documents_panel(page, customer.name);
-			}
-		}
 	} catch (error) {
 		console.error(error);
 		$(page.body).html(`
@@ -1044,7 +940,7 @@ function get_customer_detail_html(customer, transactions) {
 	let outstanding = standalone_invoices.reduce((sum, invoice) => sum + get_customer_manager_invoice_outstanding(invoice), 0) + job_card_outstanding;
 
 	// "Account for every penny": money not owed against anything becomes a visible credit
-	// pool, allocated from the Payments page — it is NOT netted
+	// pool the user allocates deliberately (Allocate action on a payment) — it is NOT netted
 	// into Outstanding. Two sources: payments with no job card (general / advance deposits),
 	// and overpayment beyond a job card's quotation amount. An unallocated Refund (a direct
 	// cash-out of credit, e.g. an unconfirmed quotation deposit given back) subtracts from
@@ -1088,12 +984,6 @@ function get_customer_detail_html(customer, transactions) {
 					${get_customer_field_html('Phone', customer.phone)}
 				</div>
 			</div>
-
-			${cm_has_account(customer.name) && !customer.is_walkin ? `
-				<div class="cm-account-panel"></div>
-				<div class="cm-documents-panel"></div>
-				<div class="cm-contacts-panel"></div>
-			` : ''}
 
 			${get_customer_transactions_section_html()}
 		</div>
@@ -1286,6 +1176,88 @@ function get_customer_quotation_row_html(quotation) {
 	`;
 }
 
+function open_allocate_payment_modal(page, payment_name) {
+	let customer_name = page.customer_manager_current_customer;
+	let transactions = page.customer_manager_transactions || {};
+	let payment = (transactions.payments || []).find(p => String(p.name) === String(payment_name)) || {};
+	let existing = get_payment_allocations(payment);
+
+	let d = new frappe.ui.Dialog({
+		title: __('Allocate Payment'),
+		fields: [
+			{
+				fieldtype: 'HTML',
+				fieldname: 'summary',
+				options: `<div style="margin-bottom:10px; color:var(--text-muted);">Payment amount: <b>${format_currency(payment.amount || 0, 'KES')}</b>. Split it across one or more job cards — anything left unallocated stays as the customer’s advance / credit.</div>`
+			},
+			{
+				fieldtype: 'Table',
+				fieldname: 'allocations',
+				label: 'Job Card Allocations',
+				cannot_add_rows: false,
+				in_place_edit: false,
+				data: existing.map(a => ({ job_card: a.job_card, amount: a.amount })),
+				fields: [
+					{
+						fieldtype: 'Link',
+						fieldname: 'job_card',
+						label: 'Job Card',
+						options: 'CAW Job Card',
+						in_list_view: 1,
+						reqd: 1,
+						columns: 7,
+						get_query: function() {
+							return {
+								filters: {
+									customer: customer_name || '',
+									status: ['!=', 'Cancelled']
+								}
+							};
+						}
+					},
+					{
+						fieldtype: 'Currency',
+						fieldname: 'amount',
+						label: 'Amount',
+						in_list_view: 1,
+						reqd: 1,
+						columns: 3
+					}
+				]
+			}
+		],
+		primary_action_label: __('Save Allocation'),
+		primary_action: function(values) {
+			let allocations = (values.allocations || [])
+				.filter(row => row.job_card)
+				.map(row => ({ job_card: row.job_card, amount: flt(row.amount || 0) }));
+			if (allocations.some(row => row.amount <= 0)) {
+				frappe.msgprint(__('Each allocation must have an amount greater than zero.'));
+				return;
+			}
+			let allocated_total = allocations.reduce((sum, row) => sum + flt(row.amount || 0), 0);
+			if (allocated_total - flt(payment.amount || 0) > 0.0001) {
+				frappe.msgprint(__('Allocated amount cannot exceed the payment amount.'));
+				return;
+			}
+			frappe.call({
+				method: 'crystal_alluminium_works.api.set_payment_allocations',
+				args: { payment: payment_name, allocations: JSON.stringify(allocations) },
+				freeze: true,
+				freeze_message: __('Saving allocation...'),
+				callback: function(r) {
+					if (!r.exc) {
+						d.hide();
+						frappe.show_alert({ message: __('Allocation saved.'), indicator: 'green' });
+						render_customer_detail(page, customer_name);
+					}
+				}
+			});
+		}
+	});
+	d.show();
+}
+
 function get_customer_payment_row_html(payment) {
 	let allocations = get_payment_allocations(payment);
 	let unallocated = get_payment_unallocated(payment);
@@ -1296,9 +1268,10 @@ function get_customer_payment_row_html(payment) {
 			`<a href="#" class="cm-payment-jobcard-link" data-job-card="${cm_attr(a.job_card)}" style="color:var(--primary); font-weight:600;">${cm_text(a.job_card)}</a>`
 			+ ` <span style="color:var(--text-muted); font-size:12px;">(${format_currency(a.amount || 0, 'KES')})</span>`
 		).join('<br>');
-		job_card_cell = links;
+		let edit_btn = `<button type="button" class="btn btn-xs btn-default cm-payment-allocate" data-payment="${cm_attr(payment.name)}" style="margin-top:4px;">Edit</button>`;
+		job_card_cell = `${links}<div>${edit_btn}</div>`;
 	} else {
-		job_card_cell = '<span style="color:var(--text-muted);">-</span>';
+		job_card_cell = `<button type="button" class="btn btn-xs btn-default cm-payment-allocate" data-payment="${cm_attr(payment.name)}">Allocate</button>`;
 	}
 
 	let unallocated_cell = unallocated > 0.0001
@@ -1308,7 +1281,8 @@ function get_customer_payment_row_html(payment) {
 	return `
 		<tr class="cm-transaction-row cm-payment-row" data-name="${cm_attr(payment.name)}">
 			<td>
-				<div style="font-weight:600; color:var(--primary);">${cm_text(payment.reference || 'None')}</div>
+				<div style="font-weight:600; color:var(--primary);">${cm_text(payment.name)}</div>
+				<div style="font-size:12px; color:var(--text-muted);">${cm_text(payment.reference || 'No reference')}</div>
 			</td>
 			<td>${payment.date ? cm_text(frappe.datetime.str_to_user(payment.date)) : '-'}</td>
 			<td style="text-align:right; font-weight:600;">${format_currency(payment.amount || 0, 'KES')}</td>
@@ -1507,8 +1481,6 @@ function load_customers(page, page_no) {
 	let tbody = $(wrapper).find('.cm-list-body');
 	let search = ($(wrapper).find('[data-filter="search"]').val() || '').trim();
 	let customer_type = ($(wrapper).find('[data-filter="customer_type"]').val() || 'invoice').trim().toLowerCase();
-	let account_status = $(wrapper).find('[data-filter="account_status"]').val() || '';
-	let introduced_by = $(wrapper).find('[data-filter="introduced_by"]').val() || '';
 	let columns = get_customer_manager_list_columns();
 	render_customer_manager_list_loading($(wrapper), 'Loading customers...');
 
@@ -1517,8 +1489,6 @@ function load_customers(page, page_no) {
 		args: {
 			search: search,
 			customer_type: customer_type,
-			account_status: account_status,
-			introduced_by: introduced_by,
 			page: page_no,
 			page_length: state.page_length
 		},
@@ -1542,8 +1512,6 @@ function load_customers(page, page_no) {
 					`<td style="font-weight: 600;">${frappe.utils.escape_html(d.customer_name || d.name || '')}</td>`,
 					`<td>${frappe.utils.escape_html(d.tax_id || '-')}</td>`,
 					`<td>${frappe.utils.escape_html(d.phone_number || '-')}</td>`,
-					`<td>${cm_text(d.account_term)}</td>`,
-					`<td>${get_account_status_pill_html(d.account_status)}</td>`,
 				];
 				if (cm_can_delete()) {
 					let deletable = cm_row_is_deletable(d);
@@ -1588,547 +1556,4 @@ function render_customer_manager_pagination(page) {
 			</div>
 		</div>
 	`);
-}
-
-// ── Account controls (credit_control.py) ─────────────────────────────────────────────────────
-// Term, limit, status and the introducing sales person live on the Customer record; walk-ins and
-// the shared Cash Customer have none of their own.
-function cm_has_account(customer_name) {
-	return !is_walkin_customer_key(customer_name) && customer_name !== 'Cash Customer';
-}
-
-const CM_ACCOUNT_STATUS_COLORS = {
-	'Active': '#2ecc71',
-	'On hold': '#e74c3c',
-	'Pending documents': '#f39c12',
-};
-
-function get_account_status_pill_html(status) {
-	status = status || 'Active';
-	let color = CM_ACCOUNT_STATUS_COLORS[status] || '#7f8c8d';
-	return `<span class="cm-status-pill" style="background:${color}1a;color:${color};">${cm_text(status)}</span>`;
-}
-
-let cm_account_options = null;
-async function get_cm_account_options() {
-	if (!cm_account_options) {
-		let r = await frappe.call({ method: 'crystal_alluminium_works.credit_control.get_account_options' });
-		cm_account_options = r.message || {};
-	}
-	return cm_account_options;
-}
-
-async function load_customer_account_panel(page, customer_name) {
-	let $panel = $(page.body).find('.cm-account-panel');
-	$panel.html(`<div class="cm-detail-info" style="color:var(--text-muted);">Loading account...</div>`);
-	let r = await frappe.call({
-		method: 'crystal_alluminium_works.credit_control.get_account_summary',
-		args: { customer: customer_name },
-	});
-	if (page.customer_manager_current_customer !== customer_name) return;
-	page.customer_manager_account = r.message || {};
-	$panel.html(get_account_panel_html(page.customer_manager_account));
-}
-
-function get_account_panel_html(a) {
-	let fmt = value => format_currency(value || 0, a.currency);
-	let is_invoice = a.billing_type === 'Invoice Customer';
-	let used_parts = [`open job cards ${fmt(a.open_job_cards)}`];
-	if (flt(a.open_invoices)) used_parts.push(`other invoices ${fmt(a.open_invoices)}`);
-	if (flt(a.uncleared_cheques)) used_parts.push(`cheques not yet cleared ${fmt(a.uncleared_cheques)}`);
-	if (flt(a.unallocated_credit)) used_parts.push(`less advances ${fmt(a.unallocated_credit)}`);
-
-	let limit_html = a.limit_set
-		? fmt(a.limit)
-		: (is_invoice && (a.term || '').indexOf('On account') === 0
-			? '<span style="color:var(--orange-600);font-weight:600;">Limit not set</span> <span style="color:var(--text-muted);font-weight:400;">— nothing is checked until Accounts sets one</span>'
-			: '<span style="color:var(--text-muted);font-weight:400;">Not used on this term</span>');
-	let available_html = a.limit_set
-		? `<span style="color:${a.available < 0 ? 'var(--red-600)' : 'inherit'};">${fmt(a.available)}</span>`
-		: '-';
-	let buckets = Object.entries(a.ageing || {}).filter(([, amount]) => flt(amount)).map(([label, amount]) => `${fmt(amount)} at ${label} days`);
-	let overdue_html = flt(a.overdue)
-		? `<span style="color:var(--red-600);font-weight:700;">${fmt(a.overdue)}</span> <span style="font-weight:400;">(${cm_text(buckets.join(', '))})</span> — <span style="color:var(--red-600);">follow up</span>`
-		: 'Nothing overdue';
-	let status_html = get_account_status_pill_html(a.status)
-		+ (a.status === 'On hold' && a.hold_reason ? ` <span style="font-weight:400;color:var(--text-muted);">${cm_text(a.hold_reason)}</span>` : '');
-	let approvals_html = a.pending_approvals
-		? `<a href="#" class="cm-acct-approvals">${a.pending_approvals} approval request${a.pending_approvals === 1 ? '' : 's'} waiting</a>`
-		: '';
-
-	let row = (label, value) => `
-		<div>
-			<div class="cm-detail-field-label">${cm_text(label)}</div>
-			<div class="cm-detail-field-value">${value}</div>
-		</div>`;
-
-	let buttons = [];
-	if (a.can_edit_controls) buttons.push('<button class="btn btn-xs btn-primary cm-acct-edit">Edit Account Controls</button>');
-	if (a.can_change_introduced_by) buttons.push(`<button class="btn btn-xs btn-default cm-acct-owner">${a.introduced_by ? 'Change Sales Person' : 'Set Sales Person'}</button>`);
-	buttons.push('<button class="btn btn-xs btn-default cm-acct-history">History</button>');
-
-	return `
-		<div class="cm-detail-section">
-			<div class="cm-detail-section-title">
-				<h3>Account</h3>
-				<div class="cm-detail-actions">${buttons.join('')}</div>
-			</div>
-			<div class="cm-detail-info">
-				<div class="cm-detail-info-grid">
-					${row('Account Term', cm_text(a.term))}
-					${row('Account Limit', limit_html)}
-					${row('Used', `${fmt(a.used)} <div style="font-weight:400;font-size:12px;color:var(--text-muted);">${cm_text(used_parts.join(' + '))}</div>`)}
-					${row('Available', available_html)}
-					${row('Overdue', overdue_html)}
-					${row('Status', status_html)}
-					${row('Introduced By', cm_text(a.introduced_by))}
-					${approvals_html ? row('Approvals', approvals_html) : ''}
-				</div>
-			</div>
-		</div>`;
-}
-
-async function open_account_controls_dialog(page, customer_name) {
-	let a = page.customer_manager_account || {};
-	let options = await get_cm_account_options();
-	let is_invoice = a.billing_type === 'Invoice Customer';
-	let dialog = new frappe.ui.Dialog({
-		title: 'Edit Account Controls',
-		fields: [
-			{
-				fieldtype: 'Select',
-				fieldname: 'term',
-				label: 'Account Term',
-				options: (options.terms || []).join('\n'),
-				default: a.term,
-				reqd: 1,
-				read_only: is_invoice ? 0 : 1,
-				description: is_invoice ? 'Drives invoice due dates and when goods may be released.' : 'Cash customers always pay on Payment must clear.'
-			},
-			{
-				fieldtype: 'Currency',
-				fieldname: 'limit',
-				label: 'Account Limit',
-				default: a.limit || 0,
-				depends_on: "eval:(doc.term || '').indexOf('On account') === 0",
-				description: 'Most this customer may owe. 0 = not set (nothing is checked).'
-			},
-			{ fieldtype: 'Select', fieldname: 'status', label: 'Account Status', options: (options.statuses || []).join('\n'), default: a.status, reqd: 1 },
-			{
-				fieldtype: 'Small Text',
-				fieldname: 'hold_reason',
-				label: 'Hold Reason',
-				default: a.hold_reason || '',
-				depends_on: "eval:doc.status === 'On hold'",
-				mandatory_depends_on: "eval:doc.status === 'On hold'"
-			},
-			{ fieldtype: 'Small Text', fieldname: 'reason', label: 'Reason for the change', reqd: 1, description: 'Kept on the account history.' }
-		],
-		primary_action_label: 'Save',
-		primary_action: async function (values) {
-			dialog.disable_primary_action();
-			try {
-				let r = await frappe.call({
-					method: 'crystal_alluminium_works.credit_control.update_account_controls',
-					args: {
-						customer: customer_name,
-						term: values.term,
-						limit: values.limit || 0,
-						status: values.status,
-						hold_reason: values.hold_reason || '',
-						reason: values.reason
-					},
-					freeze: true,
-				});
-				dialog.hide();
-				page.customer_manager_account = r.message || {};
-				$(page.body).find('.cm-account-panel').html(get_account_panel_html(page.customer_manager_account));
-				frappe.show_alert({ message: 'Account controls updated', indicator: 'green' });
-			} finally {
-				dialog.enable_primary_action();
-			}
-		}
-	});
-	dialog.show();
-}
-
-function open_introduced_by_dialog(page, customer_name) {
-	let a = page.customer_manager_account || {};
-	let dialog = new frappe.ui.Dialog({
-		title: a.introduced_by ? 'Change Sales Person' : 'Set Sales Person',
-		fields: [
-			{
-				fieldtype: 'Link',
-				fieldname: 'sales_person',
-				label: 'Introduced By (Sales Person)',
-				options: 'Sales Person',
-				default: a.introduced_by || '',
-				reqd: 1,
-				get_query: () => ({ filters: { is_group: 0, enabled: 1 } })
-			},
-			{
-				fieldtype: 'Small Text',
-				fieldname: 'reason',
-				label: 'Reason (e.g. handover)',
-				reqd: a.introduced_by ? 1 : 0,
-				description: 'Kept on the account history, which shows who held the account and when.'
-			}
-		],
-		primary_action_label: 'Save',
-		primary_action: async function (values) {
-			let r = await frappe.call({
-				method: 'crystal_alluminium_works.credit_control.set_introduced_by',
-				args: { customer: customer_name, sales_person: values.sales_person, reason: values.reason || '' },
-				freeze: true,
-			});
-			dialog.hide();
-			page.customer_manager_account = r.message || {};
-			$(page.body).find('.cm-account-panel').html(get_account_panel_html(page.customer_manager_account));
-		}
-	});
-	dialog.show();
-}
-
-async function open_account_history_dialog(customer_name) {
-	let r = await frappe.call({
-		method: 'crystal_alluminium_works.credit_control.get_account_history',
-		args: { customer: customer_name },
-	});
-	let rows = r.message || [];
-	let body = rows.length
-		? rows.map(row => `
-			<tr>
-				<td>${cm_text(frappe.datetime.str_to_user(row.changed_on))}</td>
-				<td>${cm_text(row.field_changed)}${row.job_card ? `<div style="font-size:12px;color:var(--text-muted);">${cm_text(row.job_card)}</div>` : ''}</td>
-				<td>${cm_text(row.old_value)} → <b>${cm_text(row.new_value)}</b></td>
-				<td>${cm_text(row.reason)}</td>
-				<td>${cm_text(row.changed_by)}</td>
-			</tr>`).join('')
-		: '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:16px;">No changes recorded yet.</td></tr>';
-	let dialog = new frappe.ui.Dialog({ title: 'Account History', size: 'extra-large', fields: [{ fieldtype: 'HTML', fieldname: 'body' }] });
-	dialog.fields_dict.body.$wrapper.html(`
-		<div style="overflow-x:auto;">
-			<table class="table table-bordered" style="margin:0;">
-				<thead><tr><th>When</th><th>Change</th><th>From → To</th><th>Reason</th><th>By</th></tr></thead>
-				<tbody>${body}</tbody>
-			</table>
-		</div>`);
-	dialog.show();
-}
-
-async function load_customer_contacts_panel(page, customer_name) {
-	let $panel = $(page.body).find('.cm-contacts-panel');
-	let r = await frappe.call({
-		method: 'crystal_alluminium_works.credit_control.get_account_contacts',
-		args: { customer: customer_name, include_inactive: page.customer_manager_show_inactive_contacts ? 1 : 0 },
-	});
-	if (page.customer_manager_current_customer !== customer_name) return;
-	page.customer_manager_contacts = r.message || [];
-	$panel.html(get_contacts_panel_html(page.customer_manager_contacts, !!page.customer_manager_show_inactive_contacts));
-}
-
-function get_contacts_panel_html(contacts, show_inactive) {
-	let can_edit = frappe.model.can_write('Contact');
-	let rows = contacts.length
-		? contacts.map(c => {
-			let flags = [];
-			if (c.is_primary) flags.push('Primary');
-			if (c.custom_receives_statements) flags.push('Receives statements');
-			if (!c.custom_contact_active) flags.push('Inactive');
-			let actions = can_edit ? `
-				<button class="btn btn-xs btn-default cm-contact-edit" data-name="${cm_attr(c.name)}">Edit</button>
-				<button class="btn btn-xs btn-default cm-contact-toggle" data-name="${cm_attr(c.name)}" data-active="${c.custom_contact_active ? 0 : 1}">${c.custom_contact_active ? 'Deactivate' : 'Reactivate'}</button>` : '';
-			return `
-				<tr style="${c.custom_contact_active ? '' : 'opacity:0.55;'}">
-					<td style="font-weight:600;">${cm_text(c.full_name)}</td>
-					<td>${cm_text(c.custom_account_role)}</td>
-					<td>${cm_text(c.mobile_no || c.phone)}</td>
-					<td>${cm_text(c.email_id)}</td>
-					<td>${cm_text(c.custom_id_number)}</td>
-					<td>${cm_text(flags.join(' · '))}</td>
-					<td style="text-align:right;white-space:nowrap;">${actions}</td>
-				</tr>`;
-		}).join('')
-		: '<tr><td colspan="7" style="padding:18px;text-align:center;color:var(--text-muted);">No contacts yet. Add the people who order, pay and collect for this account.</td></tr>';
-	return `
-		<div class="cm-detail-section">
-			<div class="cm-detail-section-title">
-				<h3>Contacts</h3>
-				<div class="cm-detail-actions" style="align-items:center;">
-					<label style="margin:0;font-size:13px;font-weight:400;"><input type="checkbox" class="cm-contacts-show-inactive" ${show_inactive ? 'checked' : ''}> Show inactive</label>
-					${can_edit ? '<button class="btn btn-xs btn-primary cm-contact-add">Add Contact</button>' : ''}
-				</div>
-			</div>
-			<div class="cm-detail-table-wrap">
-				<div class="cm-detail-table-scroller">
-					<table class="cm-detail-table">
-						<thead><tr><th>Name</th><th>Role</th><th>Phone</th><th>Email</th><th>ID Number</th><th></th><th></th></tr></thead>
-						<tbody>${rows}</tbody>
-					</table>
-				</div>
-			</div>
-		</div>`;
-}
-
-async function open_account_contact_dialog(page, customer_name, contact) {
-	let options = await get_cm_account_options();
-	contact = contact || {};
-	let dialog = new frappe.ui.Dialog({
-		title: contact.name ? 'Edit Contact' : 'Add Contact',
-		fields: [
-			{ fieldtype: 'Data', fieldname: 'full_name', label: 'Full Name', reqd: 1, default: contact.full_name || '' },
-			{
-				fieldtype: 'Select',
-				fieldname: 'role',
-				label: 'Role',
-				options: (options.contact_roles || []).join('\n'),
-				reqd: 1,
-				default: contact.custom_account_role || ''
-			},
-			{ fieldtype: 'Data', fieldname: 'mobile_no', label: 'Mobile Number', default: contact.mobile_no || '' },
-			{ fieldtype: 'Data', fieldname: 'email_id', label: 'Email', options: 'Email', default: contact.email_id || '' },
-			{
-				fieldtype: 'Data',
-				fieldname: 'id_number',
-				label: 'ID Number',
-				default: contact.custom_id_number || '',
-				mandatory_depends_on: "eval:doc.role === 'Authorised collector'",
-				description: 'Required for authorised collectors; the yard checks it at release.'
-			},
-			{
-				fieldtype: 'Check',
-				fieldname: 'receives_statements',
-				label: 'Receives statements, invoices and payment reminders',
-				default: contact.name ? contact.custom_receives_statements : 0
-			}
-		],
-		primary_action_label: 'Save',
-		primary_action: async function (values) {
-			dialog.disable_primary_action();
-			try {
-				await frappe.call({
-					method: 'crystal_alluminium_works.credit_control.save_account_contact',
-					args: {
-						customer: customer_name,
-						contact: contact.name || null,
-						full_name: values.full_name,
-						role: values.role,
-						mobile_no: values.mobile_no || '',
-						email_id: values.email_id || '',
-						id_number: values.id_number || '',
-						receives_statements: values.receives_statements ? 1 : 0
-					},
-					freeze: true,
-				});
-				dialog.hide();
-				load_customer_contacts_panel(page, customer_name);
-			} finally {
-				dialog.enable_primary_action();
-			}
-		}
-	});
-	dialog.show();
-}
-
-// ── Company documents (customer_documents.py) ────────────────────────────────────────────────
-// A credit application: Sales uploads the checklist within the deadline, Accounts checks each
-// document, an Admin approves the account and sets its term and limit.
-const CM_DOCUMENT_STATUS_COLORS = {
-	'Pending review': '#f39c12',
-	'Checked': '#3498db',
-	'Rejected': '#e74c3c',
-	'Approved': '#2ecc71',
-};
-
-async function load_customer_documents_panel(page, customer_name) {
-	let $panel = $(page.body).find('.cm-documents-panel');
-	if (!$panel.length) return;
-	let r = await frappe.call({
-		method: 'crystal_alluminium_works.customer_documents.get_customer_documents',
-		args: { customer: customer_name },
-	});
-	if (page.customer_manager_current_customer !== customer_name) return;
-	page.customer_manager_documents = r.message || {};
-	$panel.html(get_documents_panel_html(page.customer_manager_documents));
-}
-
-function get_documents_panel_html(d) {
-	let fmt_date = value => value ? frappe.datetime.str_to_user(value) : '-';
-	let summary = '';
-	if (d.pending) {
-		summary = `
-			<div class="cm-detail-info" style="border-left:4px solid ${d.overdue ? 'var(--red-500)' : 'var(--orange-500)'};">
-				<b>Credit application open.</b> Documents due ${cm_text(fmt_date(d.due_on))}${d.overdue ? ' — <span style="color:var(--red-600);font-weight:600;">overdue</span>' : ''}.
-				Requested: ${cm_text(d.requested_term)}${flt(d.requested_limit) ? `, limit ${format_currency(d.requested_limit)}` : ''}.
-				The account trades on Payment must clear until an Admin approves it.
-				${d.missing.length ? `<div style="margin-top:6px;color:var(--text-muted);">Still needed: ${cm_text(d.missing.join(', '))}</div>` : '<div style="margin-top:6px;color:var(--green-600);">All required documents are checked — ready for Admin approval.</div>'}
-			</div>`;
-	}
-	let rows = (d.checklist || []).map(row => {
-		let doc = row.document;
-		let status = doc ? doc.status : 'Not uploaded';
-		let color = CM_DOCUMENT_STATUS_COLORS[status] || '#7f8c8d';
-		let actions = [];
-		if (d.can_upload) {
-			actions.push(`<button class="btn btn-xs btn-default cm-doc-upload" data-type="${cm_attr(row.document_type)}">${doc ? 'Replace' : 'Upload'}</button>`);
-		}
-		if (doc && d.can_check && doc.status === 'Pending review') {
-			actions.push(`<button class="btn btn-xs btn-primary cm-doc-review" data-name="${cm_attr(doc.name)}" data-approve="1">Check OK</button>`);
-			actions.push(`<button class="btn btn-xs btn-default cm-doc-review" data-name="${cm_attr(doc.name)}" data-approve="0">Reject</button>`);
-		}
-		let details = [];
-		if (doc && doc.pin_on_document) details.push(`PIN ${cm_text(doc.pin_on_document)}`);
-		if (doc && doc.rejection_reason) details.push(`<span style="color:var(--red-600);">Rejected: ${cm_text(doc.rejection_reason)}</span>`);
-		if (doc && doc.uploaded_by) details.push(`Uploaded by ${cm_text(doc.uploaded_by)} ${cm_text(frappe.datetime.str_to_user(doc.uploaded_on))}`);
-		if (doc && doc.checked_by) details.push(`Checked by ${cm_text(doc.checked_by)}`);
-		if (doc && doc.approved_by) details.push(`Approved by ${cm_text(doc.approved_by)}`);
-		return `
-			<tr>
-				<td style="font-weight:600;">${cm_text(row.document_type)}${row.note ? `<div style="font-weight:400;font-size:12px;color:var(--text-muted);">${cm_text(row.note)}</div>` : ''}</td>
-				<td>${row.required ? '<b>Required</b>' : cm_text(row.requirement)}</td>
-				<td><span class="cm-status-pill" style="background:${color}1a;color:${color};">${cm_text(status)}</span>
-					<div style="font-size:12px;color:var(--text-muted);margin-top:4px;">${details.join('<br>')}</div></td>
-				<td>${doc && doc.file ? `<a href="${cm_attr(doc.file)}" target="_blank">View</a>` : '-'}</td>
-				<td>${cm_text(doc ? fmt_date(doc.expiry_date) : '')}</td>
-				<td>${doc ? `<label style="margin:0;font-weight:400;"><input type="checkbox" class="cm-doc-original" data-name="${cm_attr(doc.name)}" ${doc.original_received ? 'checked' : ''} ${d.can_upload ? '' : 'disabled'}> ${doc.original_received ? cm_text(fmt_date(doc.original_received_on)) : 'No'}</label>` : '-'}</td>
-				<td style="text-align:right;white-space:nowrap;">${actions.join(' ')}</td>
-			</tr>`;
-	}).join('');
-	let buttons = [];
-	if (!d.pending && d.can_upload) buttons.push('<button class="btn btn-xs btn-default cm-doc-apply">Apply for Credit Account</button>');
-	if (d.pending && d.can_approve) {
-		buttons.push(`<button class="btn btn-xs btn-primary cm-doc-approve-account" ${d.complete ? '' : 'disabled title="Every required document must be checked by Accounts first"'}>Approve Credit Account</button>`);
-	}
-	return `
-		<div class="cm-detail-section">
-			<div class="cm-detail-section-title">
-				<h3>Company Documents</h3>
-				<div class="cm-detail-actions">${buttons.join('')}</div>
-			</div>
-			${summary}
-			<div class="cm-detail-table-wrap">
-				<div class="cm-detail-table-scroller">
-					<table class="cm-detail-table">
-						<thead><tr><th>Document</th><th>Required</th><th>Status</th><th>File</th><th>Expiry</th><th>Original in Office</th><th></th></tr></thead>
-						<tbody>${rows}</tbody>
-					</table>
-				</div>
-			</div>
-		</div>`;
-}
-
-function open_credit_application_dialog(page, customer_name) {
-	let d = page.customer_manager_documents || {};
-	let a = page.customer_manager_account || {};
-	let dialog = new frappe.ui.Dialog({
-		title: 'Apply for Credit Account',
-		fields: [
-			{
-				fieldtype: 'HTML',
-				options: `<p class="text-muted">The account moves to <b>Pending documents</b> and trades on <b>Payment must clear</b>${a.term && a.term !== 'Payment must clear' ? ` (instead of ${frappe.utils.escape_html(a.term)})` : ''} until an Admin approves it. Documents are due within ${cint(d.deadline_days) || 7} days.</p>`
-			},
-			{ fieldtype: 'Select', fieldname: 'requested_term', label: 'Requested Term', options: [''].concat(d.terms || []).join('\n'), reqd: 1 },
-			{ fieldtype: 'Currency', fieldname: 'requested_limit', label: 'Requested Limit', reqd: 1 }
-		],
-		primary_action_label: 'Open Application',
-		primary_action(values) {
-			frappe.call({
-				method: 'crystal_alluminium_works.customer_documents.start_credit_application',
-				args: { customer: customer_name, requested_term: values.requested_term, requested_limit: values.requested_limit },
-				freeze: true,
-				callback: () => {
-					dialog.hide();
-					load_customer_account_panel(page, customer_name);
-					load_customer_documents_panel(page, customer_name);
-				}
-			});
-		}
-	});
-	dialog.show();
-}
-
-function open_customer_document_upload_dialog(page, customer_name, document_type) {
-	let is_pin = document_type === 'KRA PIN certificate';
-	let dialog = new frappe.ui.Dialog({
-		title: `Upload: ${document_type}`,
-		fields: [
-			{ fieldtype: 'Attach', fieldname: 'file', label: 'File', reqd: 1 },
-			{
-				fieldtype: 'Data',
-				fieldname: 'pin_on_document',
-				label: 'PIN on the Certificate',
-				reqd: is_pin ? 1 : 0,
-				hidden: is_pin ? 0 : 1,
-				description: 'Must match the PIN on the account.'
-			},
-			{ fieldtype: 'Date', fieldname: 'expiry_date', label: 'Expiry Date (if any)', description: 'A renewal reminder is sent before it lapses.' },
-			{ fieldtype: 'Small Text', fieldname: 'notes', label: 'Notes' }
-		],
-		primary_action_label: 'Upload',
-		primary_action(values) {
-			frappe.call({
-				method: 'crystal_alluminium_works.customer_documents.upload_customer_document',
-				args: {
-					customer: customer_name,
-					document_type: document_type,
-					file: values.file,
-					expiry_date: values.expiry_date || null,
-					pin_on_document: values.pin_on_document || '',
-					notes: values.notes || ''
-				},
-				freeze: true,
-				callback: () => {
-					dialog.hide();
-					load_customer_documents_panel(page, customer_name);
-				}
-			});
-		}
-	});
-	dialog.show();
-}
-
-function open_customer_document_review_dialog(page, name, approve) {
-	let go = (reason) => frappe.call({
-		method: 'crystal_alluminium_works.customer_documents.review_customer_document',
-		args: { name: name, approve: approve, reason: reason || '' },
-		freeze: true,
-	}).then(() => load_customer_documents_panel(page, page.customer_manager_current_customer));
-	if (approve) {
-		go();
-		return;
-	}
-	frappe.prompt(
-		{ fieldtype: 'Small Text', fieldname: 'reason', label: 'Why is it rejected? (Sales will see this)', reqd: 1 },
-		(values) => go(values.reason),
-		'Reject Document',
-		'Reject'
-	);
-}
-
-function open_approve_credit_account_dialog(page, customer_name) {
-	let d = page.customer_manager_documents || {};
-	let dialog = new frappe.ui.Dialog({
-		title: 'Approve Credit Account',
-		fields: [
-			{ fieldtype: 'HTML', options: '<p class="text-muted">Every required document has been checked by Accounts. Set the term and limit the account opens on.</p>' },
-			{ fieldtype: 'Select', fieldname: 'term', label: 'Account Term', options: (d.terms || []).join('\n'), default: d.requested_term || '', reqd: 1 },
-			{ fieldtype: 'Currency', fieldname: 'limit', label: 'Account Limit', default: d.requested_limit || 0, reqd: 1 },
-			{ fieldtype: 'Small Text', fieldname: 'reason', label: 'Note for the account history' }
-		],
-		primary_action_label: 'Approve',
-		primary_action(values) {
-			frappe.call({
-				method: 'crystal_alluminium_works.customer_documents.approve_credit_account',
-				args: { customer: customer_name, term: values.term, limit: values.limit, reason: values.reason || '' },
-				freeze: true,
-				callback: () => {
-					dialog.hide();
-					frappe.show_alert({ message: 'Credit account approved', indicator: 'green' });
-					load_customer_account_panel(page, customer_name);
-					load_customer_documents_panel(page, customer_name);
-				}
-			});
-		}
-	});
-	dialog.show();
 }

@@ -87,6 +87,12 @@ const QB_VAT_RATE = 0.16;
 // Mirrors MISCELLANEOUS_ITEM_CODE / MISCELLANEOUS_ITEM_GROUP in api.py.
 const QB_MISCELLANEOUS_ITEM_CODE = 'A58';
 const QB_MISCELLANEOUS_CATEGORY = 'Miscellaneous';
+// + Services: work sold without material — A58 (saved as Miscellaneous) or Polishing, priced
+// per running foot from the Manage Items polish rates. Mirrors SERVICES_CATEGORY /
+// POLISHING_SERVICE_ITEM_CODE in api.py.
+const QB_SERVICES_CATEGORY = 'Services';
+const QB_POLISHING_ITEM_CODE = 'Glass Polishing';
+const QB_POLISH_TYPES = ['4-6', '8-10', '14-35'];
 
 function qb_user_can_edit_rate() {
 	return frappe.user.has_role('System Manager') || frappe.session.user === 'Administrator';
@@ -422,8 +428,8 @@ function bind_events(page) {
 			open_ceiling_add_choice(page);
 			return;
 		}
-		if (category === QB_MISCELLANEOUS_CATEGORY) {
-			open_miscellaneous_item_dialog(page, null);
+		if (category === QB_SERVICES_CATEGORY) {
+			open_services_add_choice(page);
 			return;
 		}
 		add_item_row(page, category);
@@ -442,6 +448,11 @@ function bind_events(page) {
 
 function get_item_display_qty(item) {
 	if (item.category === 'Glass' && item.sale_mode === 'Sheet') {
+		return flt(item.pcs || 0);
+	}
+
+	// Polishing's qty is running feet (the UOM Qty column); Pieces is what was polished.
+	if (item.category === QB_SERVICES_CATEGORY) {
 		return flt(item.pcs || 0);
 	}
 
@@ -2343,9 +2354,155 @@ function open_miscellaneous_item_dialog(page, item) {
 	refresh_amount();
 }
 
+function open_services_add_choice(page) {
+	let d = new frappe.ui.Dialog({
+		title: 'Add Service',
+		fields: [
+			{
+				fieldtype: 'Select',
+				fieldname: 'service',
+				label: 'Service',
+				options: 'Polishing\nA58',
+				default: 'Polishing',
+				reqd: 1,
+				description: 'Polishing: polish glass the customer brings in. A58: anything else, with your own description and price.'
+			}
+		],
+		primary_action_label: 'Continue',
+		primary_action: function (values) {
+			d.hide();
+			if (values.service === 'A58') {
+				open_miscellaneous_item_dialog(page, null);
+			} else {
+				open_polishing_service_dialog(page, null);
+			}
+		}
+	});
+	d.show();
+}
+
+// Polishing sold on its own (no glass): priced per running foot. The rate comes from the polish
+// type's rate in Manage Items → Global Glass Service Rates, but can be changed for this row.
+// Running feet can be typed in, or worked out from pieces and sizes the way glass polishing is
+// (each polished side's length in mm / 305, times pieces).
+function open_polishing_service_dialog(page, item) {
+	let is_new = !item;
+	let rates = {};
+	let d = new frappe.ui.Dialog({
+		title: is_new ? 'Add Polishing' : 'Edit Polishing',
+		fields: [
+			{ fieldtype: 'Select', fieldname: 'polish_type', label: 'Polish Type (glass thickness, mm)', options: QB_POLISH_TYPES.join('\n'), reqd: 1, default: item ? item.polish_type : QB_POLISH_TYPES[0] },
+			{ fieldtype: 'Column Break' },
+			{ fieldtype: 'Currency', fieldname: 'rate', label: 'Rate per Rft (VAT inclusive)', reqd: 1, default: item ? item.rate : 0, description: 'From Manage Items; change it here for this customer if needed.' },
+			{ fieldtype: 'Section Break', label: 'Work out running feet (optional)', collapsible: 1, collapsible_depends_on: 'eval:doc.pieces' },
+			{ fieldtype: 'Int', fieldname: 'pieces', label: 'Pieces', default: item ? item.pcs : 0 },
+			{ fieldtype: 'Float', fieldname: 'width_mm', label: 'Width (mm)', default: item ? item.width_mm : 0 },
+			{ fieldtype: 'Float', fieldname: 'height_mm', label: 'Height (mm)', default: item ? item.height_mm : 0 },
+			{ fieldtype: 'Column Break' },
+			{ fieldtype: 'Select', fieldname: 'width_sides', label: 'Width sides polished', options: '0\n1\n2', default: item ? String(item.polish_width_sides || 0) : '2' },
+			{ fieldtype: 'Select', fieldname: 'height_sides', label: 'Height sides polished', options: '0\n1\n2', default: item ? String(item.polish_height_sides || 0) : '2' },
+			{ fieldtype: 'Section Break' },
+			{ fieldtype: 'Float', fieldname: 'qty', label: 'Running Feet (Rft)', reqd: 1, default: item ? item.qty : 0 },
+			{ fieldtype: 'Column Break' },
+			{ fieldtype: 'Small Text', fieldname: 'description', label: 'Description (prints on the quotation)', reqd: 1, default: item ? item.description : '' },
+			{ fieldtype: 'Section Break' },
+			{ fieldtype: 'HTML', fieldname: 'amount_html' }
+		],
+		primary_action_label: is_new ? 'Add Item' : 'Save',
+		primary_action: function (values) {
+			let description = (values.description || '').trim();
+			if (!description || flt(values.qty) <= 0 || flt(values.rate) <= 0) {
+				frappe.msgprint(__('Enter the running feet, a rate and a description.'));
+				return;
+			}
+			let target = item || {
+				id: frappe.utils.get_random(8),
+				category: QB_SERVICES_CATEGORY,
+				price_list: 'Retail'
+			};
+			Object.assign(target, {
+				item_code: QB_POLISHING_ITEM_CODE,
+				item_name: description,
+				description: description,
+				uom: 'Rft',
+				polish_type: values.polish_type,
+				qty: flt(values.qty),
+				pcs: cint(values.pieces),
+				width_mm: flt(values.width_mm),
+				height_mm: flt(values.height_mm),
+				polish_width_sides: cint(values.width_sides),
+				polish_height_sides: cint(values.height_sides),
+				rate: flt(values.rate)
+			});
+			target.amount = calculate_item_amount(target);
+			if (is_new) window.qb_state.items.push(target);
+			d.hide();
+			render_items_table(page);
+		}
+	});
+
+	// The description follows the inputs until someone types their own.
+	let description_edited = !is_new;
+	let auto_description = function () {
+		let parts = [`Glass Polishing ${d.get_value('polish_type')}mm`];
+		let pieces = cint(d.get_value('pieces'));
+		let width = flt(d.get_value('width_mm'));
+		let height = flt(d.get_value('height_mm'));
+		if (pieces && width && height) {
+			parts.push(`${pieces} pcs ${width} x ${height} mm`);
+		}
+		return parts.join(' - ');
+	};
+	let refresh = function (recalc_rft) {
+		if (recalc_rft) {
+			let pieces = cint(d.get_value('pieces'));
+			let width = flt(d.get_value('width_mm'));
+			let height = flt(d.get_value('height_mm'));
+			if (pieces && (width || height)) {
+				let rft = pieces * (cint(d.get_value('width_sides')) * width / 305 + cint(d.get_value('height_sides')) * height / 305);
+				d.set_value('qty', Math.trunc(rft * 1000) / 1000);
+			}
+		}
+		if (!description_edited) d.set_value('description', auto_description());
+		let total = flt(d.get_value('qty')) * flt(d.get_value('rate'));
+		d.fields_dict.amount_html.$wrapper.html(
+			`<div style="text-align:right;font-weight:600;">Amount (VAT inclusive): ${format_currency(total, 'KES')}</div>`
+		);
+	};
+	d.fields_dict.polish_type.$input.on('change', function () {
+		let rate = rates[d.get_value('polish_type')];
+		if (rate !== undefined) d.set_value('rate', rate);
+		refresh(false);
+	});
+	['pieces', 'width_mm', 'height_mm', 'width_sides', 'height_sides'].forEach(function (fieldname) {
+		d.fields_dict[fieldname].$input.on('input change', function () { refresh(true); });
+	});
+	d.fields_dict.qty.$input.on('input change', function () { refresh(false); });
+	d.fields_dict.rate.$input.on('input change', function () { refresh(false); });
+	d.fields_dict.description.$input.on('input', function () { description_edited = true; });
+
+	d.show();
+	refresh(false);
+	frappe.call({
+		method: 'crystal_alluminium_works.api.get_polishing_service_rates',
+		callback: function (r) {
+			rates = (r.message && r.message.rates) || {};
+			// A new row starts at the Manage Items rate; an edited row keeps the rate it was given.
+			if (is_new && rates[d.get_value('polish_type')] !== undefined) {
+				d.set_value('rate', rates[d.get_value('polish_type')]);
+				refresh(false);
+			}
+		}
+	});
+}
+
 function open_item_editor(page, item, is_new = false) {
 	if (item.category === QB_MISCELLANEOUS_CATEGORY) {
 		open_miscellaneous_item_dialog(page, item);
+		return;
+	}
+	if (item.category === QB_SERVICES_CATEGORY) {
+		open_polishing_service_dialog(page, item);
 		return;
 	}
 	let is_glass = item.category === 'Glass';
@@ -4750,7 +4907,7 @@ function get_builder_html() {
 					<button class="qb-add-btn" data-category="Rubber">+ Rubber</button>
 					<button class="qb-nav-btn primary qb-edit-simple-details-btn" data-category="Rubber" style="display:none;" title="Reopen the Fill Details grid for the Rubber items already added">✎ Edit Rubber Details</button>
 					<button class="qb-add-btn" data-category="Silicone">+ Silicone</button>
-					<button class="qb-add-btn" data-category="Miscellaneous">+ A58</button>
+					<button class="qb-add-btn" data-category="Services">+ Services</button>
 					<button class="qb-nav-btn primary qb-edit-simple-details-btn" data-category="Silicone" style="display:none;" title="Reopen the Fill Details grid for the Silicone items already added">✎ Edit Silicone Details</button>
 				</div>
 

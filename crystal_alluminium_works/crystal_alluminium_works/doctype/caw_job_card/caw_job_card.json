@@ -18,11 +18,7 @@
   "quotation_amount",
   "payment_amount",
   "balance_amount",
-  "status",
-  "account_section",
-  "account_term",
-  "term_override_reason",
-  "term_overridden_by"
+  "status"
  ],
  "fields": [
   {
@@ -111,37 +107,12 @@
    "fieldtype": "Small Text",
    "hidden": 1,
    "label": "Sheet Consumption JSON"
-  },
-  {
-   "fieldname": "account_section",
-   "fieldtype": "Section Break",
-   "label": "Account Term"
-  },
-  {
-   "fieldname": "account_term",
-   "fieldtype": "Select",
-   "label": "Account Term",
-   "options": "\nPayment must clear\nCurrent cheque\nPD cheque 7 days\nPD cheque 15 days\nPD cheque 30 days\nPD cheque 45 days\nOn account 5 days\nOn account 7 days\nOn account 10 days\nOn account 14 days\nOn account 20 days\nOn account 25 days\nOn account 30 days\nOn account 35 days\nOn account 45 days\nOn account 60 days\nOn account 75 days",
-   "read_only": 1
-  },
-  {
-   "fieldname": "term_override_reason",
-   "fieldtype": "Small Text",
-   "label": "Term Changed For This Job Because",
-   "read_only": 1
-  },
-  {
-   "fieldname": "term_overridden_by",
-   "fieldtype": "Link",
-   "label": "Term Changed By",
-   "options": "User",
-   "read_only": 1
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-10-14 09:00:00.000000",
+ "modified": "2026-10-01 14:00:00.000000",
  "modified_by": "Administrator",
  "module": "Crystal Alluminium Works",
  "name": "CAW Job Card",

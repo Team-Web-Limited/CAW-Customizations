@@ -21,11 +21,7 @@
   "is_partial",
   "custom_sheet_consumption_json",
   "audit_section",
-  "changed_by",
-  "collector_section",
-  "collector_contact",
-  "collector_name",
-  "collector_id_number"
+  "changed_by"
  ],
  "fields": [
   {
@@ -119,33 +115,12 @@
    "label": "Changed By",
    "options": "User",
    "read_only": 1
-  },
-  {
-   "fieldname": "collector_section",
-   "fieldtype": "Section Break",
-   "label": "Collected By"
-  },
-  {
-   "fieldname": "collector_contact",
-   "fieldtype": "Link",
-   "label": "Authorised Collector",
-   "options": "Contact"
-  },
-  {
-   "fieldname": "collector_name",
-   "fieldtype": "Data",
-   "label": "Collector Name"
-  },
-  {
-   "fieldname": "collector_id_number",
-   "fieldtype": "Data",
-   "label": "Collector ID Number"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-10-14 09:00:00.000000",
+ "modified": "2026-06-27 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Crystal Alluminium Works",
  "name": "CAW Job Card Release",

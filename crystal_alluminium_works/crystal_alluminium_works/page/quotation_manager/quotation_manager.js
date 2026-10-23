@@ -1785,15 +1785,6 @@ async function open_job_card_modal(page, doc) {
 				}
 			},
 			{
-				// The customer's account term (credit_control.py): how and when they pay, and
-				// when goods may be released. Set by Accounts in Customer Manager.
-				fieldtype: 'Data',
-				fieldname: 'account_term',
-				label: 'Account Term',
-				read_only: 1,
-				default: (existing_job_card && existing_job_card.account_term) || doc.custom_account_term || ''
-			},
-			{
 				fieldtype: 'Select',
 				fieldname: 'payment_option',
 				label: 'Payment Method',
@@ -2163,7 +2154,8 @@ async function open_quotation_in_builder(doc) {
 				description: item.description || '',
 				price_list: doc.selling_price_list || 'Retail',
 				qty: item.qty,
-				pcs: item.custom_glass_sale_mode === 'Sheet' ? sheet_details.pcs : item.qty,
+				// A Services (polishing) row's qty is running feet; its pieces aren't stored.
+				pcs: item.custom_glass_sale_mode === 'Sheet' ? sheet_details.pcs : (category === 'Services' ? 0 : item.qty),
 				metres: item.qty || 1,
 				aluminium_color: item.custom_aluminium_color || '',
 				// Reopen with the Rate/Kg and Weight/Length the row was priced at — the only
