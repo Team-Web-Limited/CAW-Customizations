@@ -10555,9 +10555,16 @@ def save_jc_operations_consumption(job_card_name, consumption_json):
         total_sft = frappe.utils.flt(row.custom_area_sqft) * frappe.utils.flt(row.qty)
         
         if is_laminated:
-            # Execute repack (consumes raw glass, produces laminated)
+            # Execute repack (consumes raw glass, produces laminated). The modal puts every sheet
+            # typed for a code on its first row and a Cutoffs placeholder on the rest, so this one
+            # repack makes the laminated glass for all of them: row.name is deducted just below,
+            # the others when they are released.
+            produced_sft = total_sft + sum(
+                _native_release_qty_to_sft(other, _get_partial_row_native_full(other))
+                for other in _laminated_rows_covered_by(quotation_doc, row, consumption)
+            )
             _create_composite_repack_entry(
-                row.item_code, row_consumption, total_sft, warehouse, company, job_card.name, row.name, configs
+                row.item_code, row_consumption, produced_sft, warehouse, company, job_card.name, row.name, configs
             )
             # Execute immediate stock deduction for Laminated Glass (via Material Issue)
             # This makes it behave identically to Cut/Resized glass and appear on the ledger right away.
@@ -10586,6 +10593,19 @@ def save_jc_operations_consumption(job_card_name, consumption_json):
                     _create_glass_deduction_stock_entry_for_row(
                         itm, itm_sft_release_qty, warehouse, company, job_card.name, row.name, json.dumps(itm_sheets), total_sft
                     )
+
+def _laminated_rows_covered_by(quotation_doc, primary_row, consumption):
+    """The other rows of primary_row's laminated code whose JC Operations entry is only the
+    Cutoffs placeholder: their glass comes out of primary_row's repack."""
+    return [
+        other for other in quotation_doc.items
+        if other.name != primary_row.name
+        and other.item_code == primary_row.item_code
+        and not getattr(other, "custom_auto_generated", 0)
+        and consumption.get(other.name)
+        and all(_is_cutoff_sheet(sheet) for sheet in consumption[other.name])
+    ]
+
 
 def _create_composite_repack_entry(laminated_item, row_consumption, sft_qty_from_quotation, warehouse, company, job_card_name, row_name, configs):
     import json

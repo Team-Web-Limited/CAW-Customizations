@@ -233,6 +233,13 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
         /* Keeps the glass table's fixed-width columns from squeezing Item to a word per line. */
         min-width: 60px;
     }}
+    .cq-item-description {{
+        /* The Builder's free-text Description, under an aluminium row's item name. */
+        margin-top: 2px;
+        font-size: 12px;
+        color: #555;
+        white-space: pre-wrap;
+    }}
     /* Quotation / Sales Invoice item tables print at 14px: one table per section, and the Glass
        one without Polish Sides / Holes / Notches, so they have room for it. */
     .cq-table.cq-table-lg th,
@@ -552,7 +559,16 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
                     <td style="font-weight: bold; white-space: nowrap;">{{{{ parent.item_code or '' }}}}</td>
                     {{# A block with a minimum width is what wkhtmltopdf's table layout honours — it keeps the
                        glass table's many fixed-width columns from squeezing Item to a word per line. #}}
-                    <td><div{{{{ ' class="cq-item-glass"' if section_rows.glass else '' }}}}>{{{{ parent.item_name or parent.item_code or '' }}}}</div></td>
+                    <td>
+                        <div{{{{ ' class="cq-item-glass"' if section_rows.glass else '' }}}}>{{{{ parent.item_name or parent.item_code or '' }}}}</div>
+                        {{# The Builder's free-text Description (e.g. lengths/pieces for G85 Owners Good),
+                           as a line under the name rather than a column. Blank unless typed; ignore one
+                           that only repeats the item name. #}}
+                        {{% set parent_description = (parent.description or '')|striptags|trim %}}
+                        {{% if parent_category == 'Aluminium' and parent_description and parent_description != (parent.item_name or '')|trim %}}
+                        <div class="cq-item-description">{{{{ parent_description }}}}</div>
+                        {{% endif %}}
+                    </td>
                     {{% if section_rows.color %}}
                     <td style="text-align: center; white-space: nowrap;">
                         {{{{ parent.custom_aluminium_color or '-' }}}}
