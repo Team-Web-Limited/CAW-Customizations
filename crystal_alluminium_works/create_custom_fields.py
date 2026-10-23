@@ -27,7 +27,7 @@ def _get_crystal_item_fields(read_only=False):
             "fieldname": "custom_price_list",
             "label": "Price List",
             "fieldtype": "Select",
-            "options": "\nRetail\nWholesale",
+            "options": "\nRetail\nWholesale\nSpecial",
             "insert_after": "item_code",
             "read_only": ro,
         },
