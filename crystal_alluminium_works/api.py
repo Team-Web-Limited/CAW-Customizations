@@ -10495,6 +10495,10 @@ def save_jc_operations_consumption(job_card_name, consumption_json):
         row_consumption = consumption.get(row.name, [])
         if not row_consumption:
             continue
+
+        if is_laminated and not _laminated_code_has_sheets(quotation_doc, row.item_code, consumption):
+            _create_cutoff_laminated_receipt(job_card.name, quotation_doc, row, consumption, warehouse, company)
+            continue
             
         # Check if we already created a repack or deduction for this row
         if is_laminated:
@@ -10605,6 +10609,63 @@ def _laminated_rows_covered_by(quotation_doc, primary_row, consumption):
         and consumption.get(other.name)
         and all(_is_cutoff_sheet(sheet) for sheet in consumption[other.name])
     ]
+
+
+def _laminated_code_has_sheets(quotation_doc, item_code, consumption):
+    """True when JC Operations logged at least one real (non-Cutoffs) sheet for this code."""
+    return any(
+        not _is_cutoff_sheet(sheet)
+        for row in quotation_doc.items
+        if row.item_code == item_code
+        for sheet in consumption.get(row.name) or []
+    )
+
+
+def _cutoff_laminated_receipt_marker(job_card_name, item_code):
+    return f"Made from Cutoffs for CAW Job Card: {job_card_name} Row: % ({item_code})"
+
+
+def _create_cutoff_laminated_receipt(job_card_name, quotation_doc, row, consumption, warehouse, company, posting=None, qty=None):
+    """A laminated code made only from Cutoffs deducts no raw glass and so gets no repack, but
+    its rows are still deducted at release. Receive the code's laminated area once, at zero
+    cost (scrap carries none), so they have stock to come out of. posting = (date, time) to
+    backdate it; qty overrides the code's area. Returns the Stock Entry name, or None if the
+    code already has one."""
+    if frappe.db.exists(
+        "Stock Entry",
+        {"remarks": ["like", _cutoff_laminated_receipt_marker(job_card_name, row.item_code)], "docstatus": 1},
+    ):
+        return None
+    if qty is None:
+        qty = sum(
+            _native_release_qty_to_sft(item, _get_partial_row_native_full(item))
+            for item in quotation_doc.items
+            if item.item_code == row.item_code
+            and not getattr(item, "custom_auto_generated", 0)
+            and consumption.get(item.name)
+        )
+    qty = round(flt(qty), 4)
+    if qty <= 0.0001:
+        return None
+
+    entry = frappe.new_doc("Stock Entry")
+    entry.stock_entry_type = "Material Receipt"
+    entry.company = company
+    if posting:
+        entry.set_posting_time = 1
+        entry.posting_date, entry.posting_time = posting
+    entry.remarks = f"Made from Cutoffs for CAW Job Card: {job_card_name} Row: {row.name} ({row.item_code})"
+    entry.append("items", {
+        "item_code": row.item_code,
+        "t_warehouse": warehouse,
+        "qty": qty,
+        "basic_rate": 0,
+        "allow_zero_valuation_rate": 1,
+    })
+    entry.flags.ignore_permissions = True
+    entry.insert()
+    entry.submit()
+    return entry.name
 
 
 def _create_composite_repack_entry(laminated_item, row_consumption, sft_qty_from_quotation, warehouse, company, job_card_name, row_name, configs):
