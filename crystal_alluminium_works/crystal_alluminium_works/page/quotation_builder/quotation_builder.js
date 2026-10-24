@@ -2383,26 +2383,29 @@ function open_services_add_choice(page) {
 
 // Polishing sold on its own (no glass): priced per running foot. The rate comes from the polish
 // type's rate in Manage Items → Global Glass Service Rates, but can be changed for this row.
-// Running feet can be typed in, or worked out from pieces and sizes the way glass polishing is
-// (each polished side's length in mm / 305, times pieces).
+// Running feet are worked out from pieces, size and polished sides exactly as glass polishing
+// is (get_glass_polishing_rft: each polished side's length in mm / 305, times pieces).
 function open_polishing_service_dialog(page, item) {
 	let is_new = !item;
 	let rates = {};
+	// Rows reopened from a saved quotation have no size (only the running feet are stored), so
+	// they keep their saved running feet until a size is entered.
+	let saved_rft = item ? flt(item.qty) : 0;
 	let d = new frappe.ui.Dialog({
 		title: is_new ? 'Add Polishing' : 'Edit Polishing',
 		fields: [
 			{ fieldtype: 'Select', fieldname: 'polish_type', label: 'Polish Type (glass thickness, mm)', options: QB_POLISH_TYPES.join('\n'), reqd: 1, default: item ? item.polish_type : QB_POLISH_TYPES[0] },
 			{ fieldtype: 'Column Break' },
 			{ fieldtype: 'Currency', fieldname: 'rate', label: 'Rate per Rft (VAT inclusive)', reqd: 1, default: item ? item.rate : 0, description: 'From Manage Items; change it here for this customer if needed.' },
-			{ fieldtype: 'Section Break', label: 'Work out running feet (optional)', collapsible: 1, collapsible_depends_on: 'eval:doc.pieces' },
-			{ fieldtype: 'Int', fieldname: 'pieces', label: 'Pieces', default: item ? item.pcs : 0 },
+			{ fieldtype: 'Section Break', label: 'Glass Size' },
+			{ fieldtype: 'Int', fieldname: 'pieces', label: 'Pieces', default: item ? (item.pcs || 0) : 1 },
 			{ fieldtype: 'Float', fieldname: 'width_mm', label: 'Width (mm)', default: item ? item.width_mm : 0 },
 			{ fieldtype: 'Float', fieldname: 'height_mm', label: 'Height (mm)', default: item ? item.height_mm : 0 },
 			{ fieldtype: 'Column Break' },
 			{ fieldtype: 'Select', fieldname: 'width_sides', label: 'Width sides polished', options: '0\n1\n2', default: item ? String(item.polish_width_sides || 0) : '2' },
 			{ fieldtype: 'Select', fieldname: 'height_sides', label: 'Height sides polished', options: '0\n1\n2', default: item ? String(item.polish_height_sides || 0) : '2' },
 			{ fieldtype: 'Section Break' },
-			{ fieldtype: 'Float', fieldname: 'qty', label: 'Running Feet (Rft)', reqd: 1, default: item ? item.qty : 0 },
+			{ fieldtype: 'Float', fieldname: 'qty', label: 'Running Feet (Rft)', read_only: 1, default: saved_rft, description: 'Pieces × polished sides × length (mm) / 305' },
 			{ fieldtype: 'Column Break' },
 			{ fieldtype: 'Small Text', fieldname: 'description', label: 'Description (prints on the quotation)', reqd: 1, default: item ? item.description : '' },
 			{ fieldtype: 'Section Break' },
@@ -2411,8 +2414,18 @@ function open_polishing_service_dialog(page, item) {
 		primary_action_label: is_new ? 'Add Item' : 'Save',
 		primary_action: function (values) {
 			let description = (values.description || '').trim();
-			if (!description || flt(values.qty) <= 0 || flt(values.rate) <= 0) {
-				frappe.msgprint(__('Enter the running feet, a rate and a description.'));
+			let has_size = cint(values.pieces) > 0 && flt(values.width_mm) > 0 && flt(values.height_mm) > 0;
+			if (!has_size && !saved_rft) {
+				frappe.msgprint(__('Enter the pieces, width and height of the glass.'));
+				return;
+			}
+			if (has_size && !cint(values.width_sides) && !cint(values.height_sides)) {
+				frappe.msgprint(__('Choose at least one side to polish.'));
+				return;
+			}
+			let rft = get_rft();
+			if (!description || rft <= 0 || flt(values.rate) <= 0) {
+				frappe.msgprint(__('Enter the glass size, a rate and a description.'));
 				return;
 			}
 			let target = item || {
@@ -2426,7 +2439,7 @@ function open_polishing_service_dialog(page, item) {
 				description: description,
 				uom: 'Rft',
 				polish_type: values.polish_type,
-				qty: flt(values.qty),
+				qty: rft,
 				pcs: cint(values.pieces),
 				width_mm: flt(values.width_mm),
 				height_mm: flt(values.height_mm),
@@ -2441,6 +2454,19 @@ function open_polishing_service_dialog(page, item) {
 		}
 	});
 
+	// Same running feet glass polishing gets for this size.
+	let get_rft = function () {
+		let size = {
+			qty: cint(d.get_value('pieces')),
+			width_mm: flt(d.get_value('width_mm')),
+			height_mm: flt(d.get_value('height_mm')),
+			polish_width_sides: cint(d.get_value('width_sides')),
+			polish_height_sides: cint(d.get_value('height_sides'))
+		};
+		if (!(size.qty && size.width_mm && size.height_mm)) return saved_rft;
+		return get_glass_polishing_rft(size);
+	};
+
 	// The description follows the inputs until someone types their own.
 	let description_edited = !is_new;
 	let auto_description = function () {
@@ -2453,18 +2479,11 @@ function open_polishing_service_dialog(page, item) {
 		}
 		return parts.join(' - ');
 	};
-	let refresh = function (recalc_rft) {
-		if (recalc_rft) {
-			let pieces = cint(d.get_value('pieces'));
-			let width = flt(d.get_value('width_mm'));
-			let height = flt(d.get_value('height_mm'));
-			if (pieces && (width || height)) {
-				let rft = pieces * (cint(d.get_value('width_sides')) * width / 305 + cint(d.get_value('height_sides')) * height / 305);
-				d.set_value('qty', Math.trunc(rft * 1000) / 1000);
-			}
-		}
+	let refresh = function () {
+		let rft = get_rft();
+		if (flt(d.get_value('qty')) !== rft) d.set_value('qty', rft);
 		if (!description_edited) d.set_value('description', auto_description());
-		let total = flt(d.get_value('qty')) * flt(d.get_value('rate'));
+		let total = rft * flt(d.get_value('rate'));
 		d.fields_dict.amount_html.$wrapper.html(
 			`<div style="text-align:right;font-weight:600;">Amount (VAT inclusive): ${format_currency(total, 'KES')}</div>`
 		);
@@ -2472,17 +2491,15 @@ function open_polishing_service_dialog(page, item) {
 	d.fields_dict.polish_type.$input.on('change', function () {
 		let rate = rates[d.get_value('polish_type')];
 		if (rate !== undefined) d.set_value('rate', rate);
-		refresh(false);
+		refresh();
 	});
-	['pieces', 'width_mm', 'height_mm', 'width_sides', 'height_sides'].forEach(function (fieldname) {
-		d.fields_dict[fieldname].$input.on('input change', function () { refresh(true); });
+	['pieces', 'width_mm', 'height_mm', 'width_sides', 'height_sides', 'rate'].forEach(function (fieldname) {
+		d.fields_dict[fieldname].$input.on('input change', refresh);
 	});
-	d.fields_dict.qty.$input.on('input change', function () { refresh(false); });
-	d.fields_dict.rate.$input.on('input change', function () { refresh(false); });
 	d.fields_dict.description.$input.on('input', function () { description_edited = true; });
 
 	d.show();
-	refresh(false);
+	refresh();
 	frappe.call({
 		method: 'crystal_alluminium_works.api.get_polishing_service_rates',
 		callback: function (r) {
@@ -2490,7 +2507,7 @@ function open_polishing_service_dialog(page, item) {
 			// A new row starts at the Manage Items rate; an edited row keeps the rate it was given.
 			if (is_new && rates[d.get_value('polish_type')] !== undefined) {
 				d.set_value('rate', rates[d.get_value('polish_type')]);
-				refresh(false);
+				refresh();
 			}
 		}
 	});
