@@ -3373,7 +3373,7 @@
   "columns": 0,
   "default": null,
   "depends_on": "eval:doc.is_return",
-  "description": "Yes only if the goods physically came back. A credit note for a KRA duplicate or a price correction is No: the Job Card keeps the items as collected.",
+  "description": "Yes only if the goods physically came back.",
   "docstatus": 0,
   "doctype": "Custom Field",
   "dt": "Sales Invoice",
