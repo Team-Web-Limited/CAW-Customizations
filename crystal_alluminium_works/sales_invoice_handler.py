@@ -149,6 +149,15 @@ def on_validate(doc, method):
     if doc.get("is_return"):
         doc.update_stock = 0
         doc.set_posting_time = 1
+        # Decides whether the Job Card gets the items back (api.on_sales_invoice_submit).
+        # mandatory_depends_on is only enforced in the browser, so it is checked here too
+        # (validate runs on save and submit, not on update after submit).
+        if doc.get("custom_goods_returned") not in ("Yes", "No"):
+            frappe.throw(
+                "Choose Goods Returned?: Yes if the goods came back, No for a KRA duplicate "
+                "or a price correction.",
+                title="Goods Returned?",
+            )
         return
 
     # Keep custom invoicing non-stock for now.

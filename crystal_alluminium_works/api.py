@@ -6142,8 +6142,15 @@ def on_sales_invoice_submit(doc, method):
     invoice, give back the returned quantity on custom_collected_qty so 'remaining to
     invoice' stays correct. Price-only credit notes and non-job-card invoices are ignored,
     and ambiguous row mappings are skipped (the counter stays conservatively low, which can
-    never cause over-billing)."""
+    never cause over-billing).
+
+    Only when the credit note says Goods Returned? = Yes. A credit note never moves stock, so
+    one for a KRA duplicate or a price correction gave the items back to the Job Card while
+    they had already left, and its Partial Invoice offered them again (8485 against 80886,
+    26 Oct 2026)."""
     if not doc.get("is_return") or not doc.get("return_against"):
+        return
+    if doc.get("custom_goods_returned") != "Yes":
         return
     original = frappe.db.get_value(
         "Sales Invoice", doc.return_against, ["custom_source_quotation"], as_dict=True
