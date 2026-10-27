@@ -1567,20 +1567,37 @@ function get_job_card_pdf_section_key(row) {
 
 function get_job_card_pdf_sections(quotation) {
 	let counts = {};
+	// Glass is also offered one item at a time — glass is sometimes processed at
+	// different sites, each needing only its own sheet.
+	let glass_items = [];
 	((quotation || {}).items || []).forEach(row => {
 		if (row.custom_auto_generated) return;
 		let key = get_job_card_pdf_section_key(row);
 		counts[key] = (counts[key] || 0) + 1;
+		if (key === 'Glass') {
+			let glass_item = glass_items.find(entry => entry.item_code === row.item_code);
+			if (!glass_item) {
+				glass_item = { item_code: row.item_code, item_name: row.item_name || row.item_code, count: 0 };
+				glass_items.push(glass_item);
+			}
+			glass_item.count += 1;
+		}
 	});
 	return JC_PDF_SECTIONS
 		.filter(section => counts[section.key])
-		.map(section => Object.assign({ count: counts[section.key] }, section));
+		.map(section => Object.assign({
+			count: counts[section.key],
+			items: section.key === 'Glass' && glass_items.length > 1 ? glass_items : []
+		}, section));
 }
 
-function open_job_card_pdf(job_card_name, section) {
+function open_job_card_pdf(job_card_name, section, item_code) {
 	let query = `name=${encodeURIComponent(job_card_name)}`;
 	if (section) {
 		query += `&section=${encodeURIComponent(section)}`;
+	}
+	if (item_code) {
+		query += `&item_code=${encodeURIComponent(item_code)}`;
 	}
 	window.open(
 		frappe.urllib.get_full_url(`/api/method/crystal_alluminium_works.api.download_crystal_job_card_pdf?${query}`),
@@ -1590,12 +1607,19 @@ function open_job_card_pdf(job_card_name, section) {
 
 function open_job_card_download_dialog(job_card_name, sections) {
 	let total = sections.reduce((sum, section) => sum + section.count, 0);
-	let option = (key, label, count) => `
-		<button class="btn btn-default jc-pdf-section-option" data-section="${frappe.utils.escape_html(key)}">
+	let option = (key, label, count, item_code) => `
+		<button class="btn btn-default jc-pdf-section-option${item_code ? ' jc-pdf-item-option' : ''}" data-section="${frappe.utils.escape_html(key)}" data-item-code="${frappe.utils.escape_html(item_code || '')}">
 			<span>${frappe.utils.icon('download', 'sm')} ${frappe.utils.escape_html(label)}</span>
 			<span class="text-muted">${count} ${count === 1 ? __('item') : __('items')}</span>
 		</button>
 	`;
+	let section_options = section => option(section.key, __(section.label), section.count)
+		+ (section.items || []).map(item => option(
+			section.key,
+			item.item_name && item.item_name !== item.item_code ? `${item.item_code} — ${item.item_name}` : item.item_code,
+			item.count,
+			item.item_code
+		)).join('');
 
 	let dialog = new frappe.ui.Dialog({
 		title: __('Download Job Card'),
@@ -1606,17 +1630,18 @@ function open_job_card_download_dialog(job_card_name, sections) {
 				<style>
 					.jc-pdf-section-option { display:flex; width:100%; justify-content:space-between; align-items:center; gap:12px; margin-bottom:8px; text-align:left; }
 					.jc-pdf-section-option span:first-child { display:inline-flex; align-items:center; gap:6px; }
+					.jc-pdf-item-option { width:calc(100% - 24px); margin-left:24px; }
 				</style>
 				<p class="text-muted" style="margin-bottom:12px;">${__('Download the whole job card, or one section at a time.')}</p>
 				${option('', __('All Items'), total)}
 				<hr style="margin:12px 0;">
-				${sections.map(section => option(section.key, __(section.label), section.count)).join('')}
+				${sections.map(section_options).join('')}
 			`
 		}]
 	});
 
 	dialog.$wrapper.on('click', '.jc-pdf-section-option', function() {
-		open_job_card_pdf(job_card_name, $(this).attr('data-section') || null);
+		open_job_card_pdf(job_card_name, $(this).attr('data-section') || null, $(this).attr('data-item-code') || null);
 	});
 	dialog.show();
 }
@@ -2125,7 +2150,7 @@ function bind_single_job_card_detail_events(page, $body, job_card, quotation, hi
 
 	$body.on('click.job-card-detail', '[data-action="download-job-card-pdf"]', function() {
 		let sections = get_job_card_pdf_sections(quotation);
-		if (sections.length <= 1) {
+		if (sections.length <= 1 && !sections.some(section => section.items.length)) {
 			open_job_card_pdf(job_card.name);
 			return;
 		}

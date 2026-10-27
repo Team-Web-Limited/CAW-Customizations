@@ -613,18 +613,23 @@ JOB_CARD_PDF_SECTIONS = (
 
 
 @frappe.whitelist()
-def download_crystal_job_card_pdf(name, section=None):
+def download_crystal_job_card_pdf(name, section=None, item_code=None):
+    """`item_code` narrows the Glass section to one glass item, for glass processed at a
+    different site from the rest of the order."""
     if section and section not in JOB_CARD_PDF_SECTIONS:
         frappe.throw(frappe._("Unknown Job Card section: {0}").format(section))
+    if item_code and section != "Glass":
+        frappe.throw(frappe._("An item can only be picked within the Glass section."))
 
+    suffix = f"-{section}-{item_code}" if item_code else (f"-{section}" if section else "")
     _download_crystal_pdf(
         "CAW Job Card",
         name,
         "Crystal Job Card",
         "Job Card No",
         "",
-        render_context={"section_filter": section or ""},
-        filename_suffix=f"-{section.replace(' ', '-')}" if section else "",
+        render_context={"section_filter": section or "", "item_filter": item_code or ""},
+        filename_suffix=suffix.replace(" ", "-").replace("/", "-"),
     )
 
 

@@ -935,6 +935,7 @@ def build_crystal_job_card_print_format_html():
 {% set quotation = frappe.get_doc('Quotation', job_card.quotation) if job_card.quotation else None %}
 {% set print_items = quotation.items if quotation else [] %}
 {% set section_filter = section_filter if section_filter is defined else '' %}
+{% set item_filter = item_filter if item_filter is defined else '' %}
 
 {% macro short_uom(value) %}
     {% set normalized = (value or '')|trim|lower %}
@@ -963,7 +964,7 @@ def build_crystal_job_card_print_format_html():
             <div style="display: table-cell; width: 240px; text-align: right; vertical-align: top;">
                 <div style="font-size: 26px; font-weight: bold; color: #2c3e50; text-transform: uppercase; letter-spacing: 1px; margin-bottom: {{ 4 if section_filter else 12 }}px;">Job Card</div>
                 {% if section_filter %}
-                <div style="font-size: 13px; font-weight: 600; color: #7f8c8d; text-transform: uppercase; margin-bottom: 12px;">{{ section_filter }}</div>
+                <div style="font-size: 13px; font-weight: 600; color: #7f8c8d; text-transform: uppercase; margin-bottom: 12px;">{{ section_filter }}{% if item_filter %} — {{ item_filter }}{% endif %}</div>
                 {% endif %}
                 <div style="display: inline-block; min-width: 220px; padding: 12px 16px; border: 1px solid #dfe6e9; border-radius: 4px; text-align: left;">
                     <div style="color: #7f8c8d; font-size: 12px; text-transform: uppercase;">Approved Date</div>
@@ -1025,7 +1026,8 @@ def build_crystal_job_card_print_format_html():
     as separate tables, since their columns differ), Aluminium, Accessories
     and Ceiling. Fittings, Rubber, Silicone and anything uncategorised share
     the same Code/Item/Qty/UOM layout, so they go out as one Accessories
-    table rather than a sheet each. section_filter is a group name.
+    table rather than a sheet each. section_filter is a group name; item_filter
+    (Glass only) an item code, for glass processed at another site.
 #}
 {% set has_ceiling_parent = namespace(value=false) %}
 {% set has_ceiling_bundle = namespace(value=false) %}
@@ -1133,7 +1135,7 @@ def build_crystal_job_card_print_format_html():
         {% else %}
             {% set row_section = 'Accessories' %}
         {% endif %}
-        {% if row_section == section.key %}
+        {% if row_section == section.key and (not item_filter or row.item_code == item_filter) %}
             {% set section_data.rows = section_data.rows + [row] %}
             {% if (row.custom_aluminium_color or '')|trim %}
                 {% set section_data.has_color = true %}
