@@ -2373,6 +2373,7 @@ function open_services_add_choice(page) {
 		],
 		primary_action_label: 'Continue',
 		primary_action: function (values) {
+			if (!values.service) return;
 			d.hide();
 			if (values.service === 'A58') {
 				open_miscellaneous_item_dialog(page, null);
@@ -2388,6 +2389,44 @@ function open_services_add_choice(page) {
 		}
 	});
 	d.show();
+	// A glass service with no rate in Manage Items can't be priced, so it's greyed out.
+	fetch_glass_service_rates(function (rates) {
+		let has_rate = {
+			Polishing: Object.values(rates.polish || {}).some(rate => flt(rate) > 0),
+			Holes: Object.values(rates.hole || {}).some(rate => flt(rate) > 0),
+			Notches: Object.values(rates.notch || {}).some(rate => flt(rate) > 0),
+			Sandblasting: flt(rates.sandblast) > 0,
+			A58: true
+		};
+		set_select_options_by_rate(d, 'service', Object.keys(has_rate), has_rate, null);
+	});
+}
+
+// Rebuild a Select so options without a rate (has_rate[option] falsy) are disabled and marked,
+// with a hint to set the rate in Manage Items. `keep` stays selectable — an edited row keeps the
+// type it was priced at. If the current choice is disabled, the first enabled option is chosen.
+// Returns true when the selection changed.
+function set_select_options_by_rate(d, fieldname, options, has_rate, keep) {
+	let field = d.fields_dict[fieldname];
+	let current = d.get_value(fieldname);
+	let missing = options.filter(option => !has_rate[option] && option !== keep);
+	let values = options.map(option => {
+		let disabled = missing.includes(option);
+		return { label: disabled ? `${option} (no rate)` : option, value: option, disabled: disabled };
+	});
+	if (field.df._base_description === undefined) field.df._base_description = field.df.description || '';
+	let hint = missing.length
+		? `No rate set for ${missing.join(', ')} — set it in Manage Items → Global Glass Service Rates to use it.`
+		: '';
+	field.df.options = values;
+	field.df.description = [field.df._base_description, hint].filter(Boolean).join(' ');
+	field.refresh();
+	field.set_description(field.df.description);
+	let next = missing.includes(current) || !options.includes(current)
+		? (options.find(option => !missing.includes(option)) || '')
+		: current;
+	field.set_input(next);
+	return next !== current;
 }
 
 // Glass service rates from Manage Items → Global Glass Service Rates (VAT inclusive):
@@ -2516,6 +2555,9 @@ function open_count_service_dialog(page, item, item_code) {
 	refresh();
 	fetch_glass_service_rates(function (all_rates) {
 		rates = all_rates[config.rates_key] || {};
+		let has_rate = {};
+		Object.keys(rates).forEach(type => { has_rate[type] = flt(rates[type]) > 0; });
+		set_select_options_by_rate(d, 'service_type', config.type_options.split('\n'), has_rate, is_new ? null : item[config.type_field]);
 		// A new row starts at the Manage Items rate; an edited row keeps the rate it was given.
 		if (is_new && rates[d.get_value('service_type')] !== undefined) {
 			d.set_value('rate', rates[d.get_value('service_type')]);
@@ -2779,6 +2821,9 @@ function open_polishing_service_dialog(page, item) {
 	refresh();
 	fetch_glass_service_rates(function (all_rates) {
 		rates = all_rates.polish || {};
+		let has_rate = {};
+		Object.keys(rates).forEach(type => { has_rate[type] = flt(rates[type]) > 0; });
+		set_select_options_by_rate(d, 'polish_type', QB_POLISH_TYPES, has_rate, is_new ? null : item.polish_type);
 		// A new row starts at the Manage Items rate; an edited row keeps the rate it was given.
 		if (is_new && rates[d.get_value('polish_type')] !== undefined) {
 			d.set_value('rate', rates[d.get_value('polish_type')]);
