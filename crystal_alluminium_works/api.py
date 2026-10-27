@@ -927,29 +927,48 @@ OWNERS_GOOD_ITEM_CODE = "G85"
 MISCELLANEOUS_ITEM_CODE = "A58"
 MISCELLANEOUS_ITEM_GROUP = "Miscellaneous"
 
-# "Services": work sold on its own, with no material — e.g. polishing glass the customer brings
-# in. The Builder's + Services button offers A58 (still saved as Miscellaneous) and Polishing,
-# priced per running foot from the Glass Pricing Settings polish rates (editable per row).
-# Rows carry this category so no glass pricing, stock deduction or JC Operations touches them.
-# Mirrored as QB_SERVICES_CATEGORY / QB_POLISHING_ITEM_CODE in quotation_builder.js.
+# "Services": work sold on its own, with no material — e.g. polishing, drilling, notching or
+# sandblasting glass the customer brings in. The Builder's + Services button offers these and
+# A58 (still saved as Miscellaneous), priced from the Glass Pricing Settings service rates
+# (editable per row): polishing per running foot, holes and notches per piece, sandblasting per
+# square foot. Rows carry this category so no glass pricing, stock deduction or JC Operations
+# touches them. Mirrored as QB_SERVICES_CATEGORY / QB_*_ITEM_CODE in quotation_builder.js.
 SERVICES_CATEGORY = "Services"
 POLISHING_SERVICE_ITEM_CODE = "Glass Polishing"
-SERVICE_ITEM_CODES = (POLISHING_SERVICE_ITEM_CODE,)
+HOLE_SERVICE_ITEM_CODE = "Glass Hole Drilling"
+NOTCH_SERVICE_ITEM_CODE = "Glass Notching"
+SANDBLAST_SERVICE_ITEM_CODE = "Glass Sandblasting"
+SERVICE_ITEM_CODES = (
+    POLISHING_SERVICE_ITEM_CODE,
+    HOLE_SERVICE_ITEM_CODE,
+    NOTCH_SERVICE_ITEM_CODE,
+    SANDBLAST_SERVICE_ITEM_CODE,
+)
+SANDBLAST_SERVICE_TYPES = ("Full", "Half")
 
 
 @frappe.whitelist()
-def get_polishing_service_rates():
-    """VAT-inclusive polish rate per running foot for each polish type, as Manage Items sets
-    them (Global Glass Service Rates). The 4-6 rate falls back to the legacy single rate."""
+def get_glass_service_rates():
+    """VAT-inclusive glass service rates as Manage Items sets them (Global Glass Service Rates):
+    polish per running foot and hole/notch per piece, each by type, and sandblast per square
+    foot. A type with no rate of its own falls back to the legacy single rate, as glass does."""
     settings = frappe.get_single("Glass Pricing Settings")
-    rates = {}
-    for polish_type, fieldname in GLASS_POLISH_RATE_TYPES.items():
-        rate = settings.get(fieldname)
-        if (rate is None or rate == "") and polish_type == DEFAULT_GLASS_POLISH_TYPE:
-            rate = settings.get("polishing_rate")
-        rates[polish_type] = flt(rate or 0)
-    return {"rates": rates, "default_type": DEFAULT_GLASS_POLISH_TYPE}
 
+    def typed_rates(rate_types, fallback_fieldname):
+        rates = {}
+        for service_type, fieldname in rate_types.items():
+            rate = settings.get(fieldname)
+            if rate is None or rate == "":
+                rate = settings.get(fallback_fieldname)
+            rates[service_type] = flt(rate or 0)
+        return rates
+
+    return {
+        "polish": typed_rates(GLASS_POLISH_RATE_TYPES, "polishing_rate"),
+        "hole": typed_rates(GLASS_HOLE_RATE_TYPES, "hole_rate"),
+        "notch": typed_rates(GLASS_NOTCH_RATE_TYPES, "notch_rate"),
+        "sandblast": flt(settings.get("sandblast_rate") or 0),
+    }
 
 
 def _stock_rows_only(rows):
@@ -4236,12 +4255,21 @@ def _save_quotation_from_builder(
                 frappe.throw(f"'{item.get('item_code')}' is not a service item.")
             description = (item.get("description") or "").strip() or item.get("item_code")
             if frappe.utils.flt(item.get("qty")) <= 0:
-                frappe.throw(f"Enter the running feet to polish for '{description}'.")
+                frappe.throw(f"Enter the quantity for '{description}'.")
             if frappe.utils.flt(item.get("rate")) <= 0:
                 frappe.throw(f"Enter a price for '{description}'.")
             row_data["item_name"] = description[:140]
-            row_data["custom_polish_type"] = item.get("polish_type") or DEFAULT_GLASS_POLISH_TYPE
-        
+            service_item_code = item.get("item_code")
+            if service_item_code == POLISHING_SERVICE_ITEM_CODE:
+                row_data["custom_polish_type"] = item.get("polish_type") or DEFAULT_GLASS_POLISH_TYPE
+            elif service_item_code == HOLE_SERVICE_ITEM_CODE:
+                row_data["custom_hole_type"] = item.get("hole_type") or DEFAULT_GLASS_HOLE_TYPE
+            elif service_item_code == NOTCH_SERVICE_ITEM_CODE:
+                row_data["custom_notch_type"] = item.get("notch_type") or DEFAULT_GLASS_NOTCH_TYPE
+            elif service_item_code == SANDBLAST_SERVICE_ITEM_CODE:
+                sandblast_type = item.get("sandblast_type")
+                row_data["custom_sandblast_type"] = sandblast_type if sandblast_type in SANDBLAST_SERVICE_TYPES else "Full"
+
         # Glass-specific custom fields
         if item.get("category") == "Glass":
             sale_mode = item.get("sale_mode", "Resized")

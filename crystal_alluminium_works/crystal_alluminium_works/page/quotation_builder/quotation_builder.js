@@ -87,11 +87,14 @@ const QB_VAT_RATE = 0.16;
 // Mirrors MISCELLANEOUS_ITEM_CODE / MISCELLANEOUS_ITEM_GROUP in api.py.
 const QB_MISCELLANEOUS_ITEM_CODE = 'A58';
 const QB_MISCELLANEOUS_CATEGORY = 'Miscellaneous';
-// + Services: work sold without material — A58 (saved as Miscellaneous) or Polishing, priced
-// per running foot from the Manage Items polish rates. Mirrors SERVICES_CATEGORY /
-// POLISHING_SERVICE_ITEM_CODE in api.py.
+// + Services: work sold without material — A58 (saved as Miscellaneous), or glass polishing,
+// holes, notches and sandblasting priced from the Manage Items service rates. Mirrors
+// SERVICES_CATEGORY / *_SERVICE_ITEM_CODE in api.py.
 const QB_SERVICES_CATEGORY = 'Services';
 const QB_POLISHING_ITEM_CODE = 'Glass Polishing';
+const QB_HOLE_ITEM_CODE = 'Glass Hole Drilling';
+const QB_NOTCH_ITEM_CODE = 'Glass Notching';
+const QB_SANDBLAST_ITEM_CODE = 'Glass Sandblasting';
 const QB_POLISH_TYPES = ['4-6', '8-10', '14-35'];
 
 function qb_user_can_edit_rate() {
@@ -2362,10 +2365,10 @@ function open_services_add_choice(page) {
 				fieldtype: 'Select',
 				fieldname: 'service',
 				label: 'Service',
-				options: 'Polishing\nA58',
+				options: 'Polishing\nHoles\nNotches\nSandblasting\nA58',
 				default: 'Polishing',
 				reqd: 1,
-				description: 'Polishing: polish glass the customer brings in. A58: anything else, with your own description and price.'
+				description: 'Polishing, Holes, Notches, Sandblasting: work on glass the customer brings in. A58: anything else, with your own description and price.'
 			}
 		],
 		primary_action_label: 'Continue',
@@ -2373,12 +2376,289 @@ function open_services_add_choice(page) {
 			d.hide();
 			if (values.service === 'A58') {
 				open_miscellaneous_item_dialog(page, null);
+			} else if (values.service === 'Holes') {
+				open_count_service_dialog(page, null, QB_HOLE_ITEM_CODE);
+			} else if (values.service === 'Notches') {
+				open_count_service_dialog(page, null, QB_NOTCH_ITEM_CODE);
+			} else if (values.service === 'Sandblasting') {
+				open_sandblast_service_dialog(page, null);
 			} else {
 				open_polishing_service_dialog(page, null);
 			}
 		}
 	});
 	d.show();
+}
+
+// Glass service rates from Manage Items → Global Glass Service Rates (VAT inclusive):
+// { polish: {type: rate}, hole: {type: rate}, notch: {type: rate}, sandblast: rate }.
+function fetch_glass_service_rates(callback) {
+	frappe.call({
+		method: 'crystal_alluminium_works.api.get_glass_service_rates',
+		callback: function (r) {
+			callback(r.message || {});
+		}
+	});
+}
+
+function open_service_editor(page, item) {
+	if (item.item_code === QB_HOLE_ITEM_CODE || item.item_code === QB_NOTCH_ITEM_CODE) {
+		open_count_service_dialog(page, item, item.item_code);
+	} else if (item.item_code === QB_SANDBLAST_ITEM_CODE) {
+		open_sandblast_service_dialog(page, item);
+	} else {
+		open_polishing_service_dialog(page, item);
+	}
+}
+
+function render_service_amount(d, total) {
+	d.fields_dict.amount_html.$wrapper.html(
+		`<div style="text-align:right;font-weight:600;">Amount (VAT inclusive): ${format_currency(total, 'KES')}</div>`
+	);
+}
+
+// Holes or notches sold on their own: priced per hole/notch at the type's Manage Items rate
+// (changeable for this row), pieces × per piece — the same count glass holes/notches charge.
+const QB_COUNT_SERVICES = {
+	[QB_HOLE_ITEM_CODE]: {
+		noun: 'Holes', unit: 'hole', type_field: 'hole_type', type_label: 'Hole Size',
+		type_options: QB_HOLE_TYPE_OPTIONS, default_type: QB_DEFAULT_HOLE_TYPE, rates_key: 'hole',
+		describe: (type, count) => `Glass Hole Drilling ${type} - ${count} holes`
+	},
+	[QB_NOTCH_ITEM_CODE]: {
+		noun: 'Notches', unit: 'notch', type_field: 'notch_type', type_label: 'Notch Type',
+		type_options: QB_NOTCH_TYPE_OPTIONS, default_type: QB_DEFAULT_NOTCH_TYPE, rates_key: 'notch',
+		describe: (type, count) => `Glass Notching ${type} - ${count} notches`
+	}
+};
+
+function open_count_service_dialog(page, item, item_code) {
+	let config = QB_COUNT_SERVICES[item_code];
+	let is_new = !item;
+	let rates = {};
+	// Rows reopened from a saved quotation only store the total count, so they keep it until
+	// pieces and a per-piece count are entered.
+	let saved_count = item ? flt(item.qty) : 0;
+	let d = new frappe.ui.Dialog({
+		title: `${is_new ? 'Add' : 'Edit'} ${config.noun}`,
+		fields: [
+			{ fieldtype: 'Select', fieldname: 'service_type', label: config.type_label, options: config.type_options, reqd: 1, default: item ? (item[config.type_field] || config.default_type) : config.default_type },
+			{ fieldtype: 'Column Break' },
+			{ fieldtype: 'Currency', fieldname: 'rate', label: `Rate per ${config.unit} (VAT inclusive)`, reqd: 1, default: item ? item.rate : 0, description: 'From Manage Items; change it here for this customer if needed.' },
+			{ fieldtype: 'Section Break' },
+			{ fieldtype: 'Int', fieldname: 'pieces', label: 'Pieces', default: item ? (item.pcs || 0) : 1 },
+			{ fieldtype: 'Column Break' },
+			{ fieldtype: 'Int', fieldname: 'per_piece', label: `${config.noun} per piece`, default: item ? (item.per_piece || 0) : 1 },
+			{ fieldtype: 'Section Break' },
+			{ fieldtype: 'Float', fieldname: 'qty', label: `Total ${config.noun}`, read_only: 1, default: saved_count, description: `Pieces × ${config.noun.toLowerCase()} per piece` },
+			{ fieldtype: 'Column Break' },
+			{ fieldtype: 'Small Text', fieldname: 'description', label: 'Description (prints on the quotation)', reqd: 1, default: item ? item.description : '' },
+			{ fieldtype: 'Section Break' },
+			{ fieldtype: 'HTML', fieldname: 'amount_html' }
+		],
+		primary_action_label: is_new ? 'Add Item' : 'Save',
+		primary_action: function (values) {
+			let description = (values.description || '').trim();
+			let count = get_count();
+			if (!description || count <= 0 || flt(values.rate) <= 0) {
+				frappe.msgprint(__('Enter the pieces, {0} per piece, a rate and a description.', [config.noun.toLowerCase()]));
+				return;
+			}
+			let target = item || {
+				id: frappe.utils.get_random(8),
+				category: QB_SERVICES_CATEGORY,
+				price_list: 'Retail'
+			};
+			Object.assign(target, {
+				item_code: item_code,
+				item_name: description,
+				description: description,
+				uom: 'Nos',
+				[config.type_field]: values.service_type,
+				qty: count,
+				pcs: cint(values.pieces),
+				per_piece: cint(values.per_piece),
+				rate: flt(values.rate)
+			});
+			target.amount = calculate_item_amount(target);
+			if (is_new) window.qb_state.items.push(target);
+			d.hide();
+			render_items_table(page);
+		}
+	});
+
+	let get_count = function () {
+		let pieces = cint(d.get_value('pieces'));
+		let per_piece = cint(d.get_value('per_piece'));
+		if (!(pieces && per_piece)) return saved_count;
+		return pieces * per_piece;
+	};
+
+	// The description follows the inputs until someone types their own.
+	let description_edited = !is_new;
+	let refresh = function () {
+		let count = get_count();
+		if (flt(d.get_value('qty')) !== count) d.set_value('qty', count);
+		if (!description_edited) d.set_value('description', config.describe(d.get_value('service_type'), count));
+		render_service_amount(d, count * flt(d.get_value('rate')));
+	};
+	d.fields_dict.service_type.$input.on('change', function () {
+		let rate = rates[d.get_value('service_type')];
+		if (rate !== undefined) d.set_value('rate', rate);
+		refresh();
+	});
+	['pieces', 'per_piece', 'rate'].forEach(function (fieldname) {
+		d.fields_dict[fieldname].$input.on('input change', refresh);
+	});
+	d.fields_dict.description.$input.on('input', function () { description_edited = true; });
+
+	d.show();
+	refresh();
+	fetch_glass_service_rates(function (all_rates) {
+		rates = all_rates[config.rates_key] || {};
+		// A new row starts at the Manage Items rate; an edited row keeps the rate it was given.
+		if (is_new && rates[d.get_value('service_type')] !== undefined) {
+			d.set_value('rate', rates[d.get_value('service_type')]);
+			refresh();
+		}
+	});
+}
+
+// Sandblasting sold on its own: priced per square foot at the Manage Items sandblast rate
+// (changeable for this row). The area is the chargeable glass area — width and height rounded
+// up through the Dimension Range steps (calculate_dimensions), as a glass item is charged —
+// times pieces, halved for Half sandblast. So the same size costs the same either way.
+function open_sandblast_service_dialog(page, item) {
+	let is_new = !item;
+	// Rounded area of one piece for the size in `area_key`; fetched as width/height change.
+	let area_key = '';
+	let piece_area = 0;
+	// Rows reopened from a saved quotation have no size (only the square feet are stored), so
+	// they keep their saved square feet until a size is entered.
+	let saved_sqft = item ? flt(item.qty) : 0;
+	let d = new frappe.ui.Dialog({
+		title: is_new ? 'Add Sandblasting' : 'Edit Sandblasting',
+		fields: [
+			{ fieldtype: 'Select', fieldname: 'sandblast_type', label: 'Sandblast', options: 'Full\nHalf', reqd: 1, default: item ? (item.sandblast_type || 'Full') : 'Full' },
+			{ fieldtype: 'Column Break' },
+			{ fieldtype: 'Currency', fieldname: 'rate', label: 'Rate per Sq Ft (VAT inclusive)', reqd: 1, default: item ? item.rate : 0, description: 'From Manage Items; change it here for this customer if needed.' },
+			{ fieldtype: 'Section Break', label: 'Glass Size' },
+			{ fieldtype: 'Int', fieldname: 'pieces', label: 'Pieces', default: item ? (item.pcs || 0) : 1 },
+			{ fieldtype: 'Column Break' },
+			{ fieldtype: 'Float', fieldname: 'width_mm', label: 'Width (mm)', default: item ? item.width_mm : 0 },
+			{ fieldtype: 'Column Break' },
+			{ fieldtype: 'Float', fieldname: 'height_mm', label: 'Height (mm)', default: item ? item.height_mm : 0 },
+			{ fieldtype: 'Section Break' },
+			{ fieldtype: 'Float', fieldname: 'qty', label: 'Square Feet', read_only: 1, default: saved_sqft, description: 'Pieces × chargeable glass area (rounded up as glass is); half for Half' },
+			{ fieldtype: 'Column Break' },
+			{ fieldtype: 'Small Text', fieldname: 'description', label: 'Description (prints on the quotation)', reqd: 1, default: item ? item.description : '' },
+			{ fieldtype: 'Section Break' },
+			{ fieldtype: 'HTML', fieldname: 'amount_html' }
+		],
+		primary_action_label: is_new ? 'Add Item' : 'Save',
+		primary_action: function (values) {
+			// The rounded area may still be on its way for a size typed just before clicking.
+			if (has_size() && area_key !== size_key()) {
+				fetch_area(function () { d.primary_action(d.get_values()); });
+				return;
+			}
+			let description = (values.description || '').trim();
+			let sqft = get_sqft();
+			if (!description || sqft <= 0 || flt(values.rate) <= 0) {
+				frappe.msgprint(__('Enter the glass size, a rate and a description.'));
+				return;
+			}
+			let target = item || {
+				id: frappe.utils.get_random(8),
+				category: QB_SERVICES_CATEGORY,
+				price_list: 'Retail'
+			};
+			Object.assign(target, {
+				item_code: QB_SANDBLAST_ITEM_CODE,
+				item_name: description,
+				description: description,
+				uom: 'Square Foot',
+				sandblast_type: values.sandblast_type,
+				qty: sqft,
+				pcs: cint(values.pieces),
+				width_mm: flt(values.width_mm),
+				height_mm: flt(values.height_mm),
+				rate: flt(values.rate)
+			});
+			target.amount = calculate_item_amount(target);
+			if (is_new) window.qb_state.items.push(target);
+			d.hide();
+			render_items_table(page);
+		}
+	});
+
+	let size_key = function () {
+		return `${flt(d.get_value('width_mm'))}x${flt(d.get_value('height_mm'))}`;
+	};
+	let has_size = function () {
+		return cint(d.get_value('pieces')) > 0 && flt(d.get_value('width_mm')) > 0 && flt(d.get_value('height_mm')) > 0;
+	};
+	let fetch_area = function (callback) {
+		let key = size_key();
+		frappe.call({
+			method: 'crystal_alluminium_works.pricing_engine.calculate_dimensions',
+			args: { width_mm: flt(d.get_value('width_mm')), height_mm: flt(d.get_value('height_mm')) },
+			callback: function (r) {
+				// A later size may have been typed while this one was on its way.
+				if (key !== size_key()) return;
+				area_key = key;
+				piece_area = flt((r.message && r.message.area_sqft) || 0);
+				refresh();
+				if (callback) callback();
+			}
+		});
+	};
+	let get_sqft = function () {
+		if (!has_size()) return saved_sqft;
+		if (area_key !== size_key()) return 0;
+		let factor = d.get_value('sandblast_type') === 'Half' ? 0.5 : 1;
+		return flt(cint(d.get_value('pieces')) * piece_area * factor, 4);
+	};
+
+	// The description follows the inputs until someone types their own.
+	let description_edited = !is_new;
+	let auto_description = function () {
+		let parts = [`Glass Sandblasting (${d.get_value('sandblast_type')})`];
+		let pieces = cint(d.get_value('pieces'));
+		let width = flt(d.get_value('width_mm'));
+		let height = flt(d.get_value('height_mm'));
+		if (pieces && width && height) {
+			parts.push(`${pieces} pcs ${width} x ${height} mm`);
+		}
+		return parts.join(' - ');
+	};
+	let refresh = function () {
+		let sqft = get_sqft();
+		if (flt(d.get_value('qty')) !== sqft) d.set_value('qty', sqft);
+		if (!description_edited) d.set_value('description', auto_description());
+		render_service_amount(d, sqft * flt(d.get_value('rate')));
+	};
+	['sandblast_type', 'pieces', 'rate'].forEach(function (fieldname) {
+		d.fields_dict[fieldname].$input.on('input change', refresh);
+	});
+	['width_mm', 'height_mm'].forEach(function (fieldname) {
+		d.fields_dict[fieldname].$input.on('input change', frappe.utils.debounce(function () {
+			refresh();
+			if (has_size() && area_key !== size_key()) fetch_area();
+		}, 300));
+	});
+	d.fields_dict.description.$input.on('input', function () { description_edited = true; });
+
+	d.show();
+	refresh();
+	if (has_size()) fetch_area();
+	fetch_glass_service_rates(function (all_rates) {
+		// A new row starts at the Manage Items rate; an edited row keeps the rate it was given.
+		if (is_new && all_rates.sandblast !== undefined) {
+			d.set_value('rate', all_rates.sandblast);
+			refresh();
+		}
+	});
 }
 
 // Polishing sold on its own (no glass): priced per running foot. The rate comes from the polish
@@ -2483,10 +2763,7 @@ function open_polishing_service_dialog(page, item) {
 		let rft = get_rft();
 		if (flt(d.get_value('qty')) !== rft) d.set_value('qty', rft);
 		if (!description_edited) d.set_value('description', auto_description());
-		let total = rft * flt(d.get_value('rate'));
-		d.fields_dict.amount_html.$wrapper.html(
-			`<div style="text-align:right;font-weight:600;">Amount (VAT inclusive): ${format_currency(total, 'KES')}</div>`
-		);
+		render_service_amount(d, rft * flt(d.get_value('rate')));
 	};
 	d.fields_dict.polish_type.$input.on('change', function () {
 		let rate = rates[d.get_value('polish_type')];
@@ -2500,15 +2777,12 @@ function open_polishing_service_dialog(page, item) {
 
 	d.show();
 	refresh();
-	frappe.call({
-		method: 'crystal_alluminium_works.api.get_polishing_service_rates',
-		callback: function (r) {
-			rates = (r.message && r.message.rates) || {};
-			// A new row starts at the Manage Items rate; an edited row keeps the rate it was given.
-			if (is_new && rates[d.get_value('polish_type')] !== undefined) {
-				d.set_value('rate', rates[d.get_value('polish_type')]);
-				refresh();
-			}
+	fetch_glass_service_rates(function (all_rates) {
+		rates = all_rates.polish || {};
+		// A new row starts at the Manage Items rate; an edited row keeps the rate it was given.
+		if (is_new && rates[d.get_value('polish_type')] !== undefined) {
+			d.set_value('rate', rates[d.get_value('polish_type')]);
+			refresh();
 		}
 	});
 }
@@ -2519,7 +2793,7 @@ function open_item_editor(page, item, is_new = false) {
 		return;
 	}
 	if (item.category === QB_SERVICES_CATEGORY) {
-		open_polishing_service_dialog(page, item);
+		open_service_editor(page, item);
 		return;
 	}
 	let is_glass = item.category === 'Glass';
