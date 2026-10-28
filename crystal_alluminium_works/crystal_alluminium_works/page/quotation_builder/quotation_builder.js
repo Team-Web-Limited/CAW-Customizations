@@ -3871,6 +3871,27 @@ function open_glass_batch_details_dialog(page, items) {
 		}).join('');
 	}
 
+	// Every selectable glass item, loaded once after the dialog opens. A row may only switch to
+	// another item of its own glass type (genus), e.g. Ordinary 4+4 Clear -> another Ordinary item.
+	let glass_catalog = [];
+	function genus_of(item_code) {
+		let found = glass_catalog.find(function (g) { return g.name === item_code; });
+		return found ? (found.custom_glass_type || '') : '';
+	}
+	function item_option_list(item_code, item_name) {
+		let genus = genus_of(item_code);
+		let siblings = glass_catalog.filter(function (g) { return (g.custom_glass_type || '') === genus; });
+		if (!siblings.some(function (g) { return g.name === item_code; })) {
+			siblings = [{ name: item_code, item_name: item_name }].concat(siblings);
+		}
+		return siblings.map(function (g) {
+			return `<option value="${frappe.utils.escape_html(g.name)}" data-name="${frappe.utils.escape_html(g.item_name || g.name)}" ${g.name === item_code ? 'selected' : ''}>${frappe.utils.escape_html(g.item_name || g.name)}</option>`;
+		}).join('');
+	}
+	function row_item_name($row) {
+		return $row.find('[data-field="item_code"] option:selected').data('name');
+	}
+
 	// Shared by the initial render and by "duplicate row" below, so a clone
 	// picks up the exact same markup/behaviour as an item that came in
 	// through the multi-select. Values default from `it` so a clone can carry
@@ -3881,7 +3902,7 @@ function open_glass_batch_details_dialog(page, items) {
 		return `
 			<tr data-id="${it.id}">
 				<td style="text-align:center;white-space:nowrap;" class="qb-batch-row-no">${row_number}</td>
-				<td style="white-space:nowrap;">${frappe.utils.escape_html(it.item_name || it.item_code)}</td>
+				<td><select class="form-control input-sm qb-batch-input" data-field="item_code" style="min-width:160px;">${item_option_list(it.item_code, it.item_name || it.item_code)}</select></td>
 				<td><input type="text" class="form-control input-sm qb-batch-input" data-field="numbering" value="${frappe.utils.escape_html(it.numbering || '')}" style="width:90px;"></td>
 				<td><input type="number" min="0" step="any" class="form-control input-sm qb-batch-input" data-field="width_mm" value="${mm_to_dimension_input(it.width_mm || 0, dimension_uom)}" style="width:80px;"></td>
 				<td><input type="number" min="0" step="any" class="form-control input-sm qb-batch-input" data-field="height_mm" value="${mm_to_dimension_input(it.height_mm || 0, dimension_uom)}" style="width:80px;"></td>
@@ -3979,6 +4000,8 @@ function open_glass_batch_details_dialog(page, items) {
 				}
 
 				let final_item = Object.assign({}, it, {
+					item_code: val('item_code') || it.item_code,
+					item_name: row_item_name($row) || it.item_name,
 					sale_mode: 'Resized',
 					dimension_uom: dimension_uom,
 					width_mm: dimension_input_to_mm(val('width_mm'), dimension_uom),
@@ -4108,15 +4131,17 @@ function open_glass_batch_details_dialog(page, items) {
 		batch_total_timer = setTimeout(function () {
 			let rows = [];
 			let row_items = [];
+			let row_names = [];
 			let pieces = 0;
 			d.fields_dict.batch_table.$wrapper.find('tbody tr').each(function () {
 				let $row = $(this);
 				let it = items.find(function (x) { return x.id === $row.data('id'); });
 				if (!it) return;
 				row_items.push(it);
+				row_names.push(row_item_name($row));
 				let val = function (field) { return $row.find(`[data-field="${field}"]`).val(); };
 				let row = {
-					item_code: it.item_code,
+					item_code: val('item_code') || it.item_code,
 					width_mm: dimension_input_to_mm(val('width_mm'), dimension_uom),
 					height_mm: dimension_input_to_mm(val('height_mm'), dimension_uom),
 					width_allowance: flt(val('width_allowance') || 0),
@@ -4140,7 +4165,7 @@ function open_glass_batch_details_dialog(page, items) {
 						let sized = flt(row.width_mm) > 0 && flt(row.height_mm) > 0;
 						let g = by_code[row.item_code];
 						if (!g) {
-							g = by_code[row.item_code] = { item_code: row.item_code, item_name: row_items[i].item_name || row.item_code, pieces: 0, sqft: 0 };
+							g = by_code[row.item_code] = { item_code: row.item_code, item_name: row_names[i] || row_items[i].item_name || row.item_code, pieces: 0, sqft: 0 };
 							groups.push(g);
 						}
 						if (sized) g.pieces += row.qty;
@@ -4175,6 +4200,40 @@ function open_glass_batch_details_dialog(page, items) {
 		$(this).closest('tr').nextAll('tr').find(`select[data-field="${field}"]`).val($(this).val());
 	});
 
+	// Same cascade for the item, but only onto rows whose list offers it (same glass type).
+	$batch_wrapper.on('change', 'select[data-field="item_code"]', function () {
+		let chosen = $(this).val();
+		$(this).closest('tr').nextAll('tr').find('select[data-field="item_code"]').each(function () {
+			if ($(this).find('option').filter(function () { return this.value === chosen; }).length) {
+				$(this).val(chosen);
+			}
+		});
+	});
+
+	frappe.xcall('frappe.client.get_list', {
+		doctype: 'Item',
+		filters: [
+			['Item', 'item_group', '=', 'Glass'],
+			['Item', 'item_name', 'not like', '%Polishing%'],
+			['Item', 'item_name', 'not like', '%Drilling%'],
+			['Item', 'item_name', 'not like', '%Sandblasting%'],
+			['Item', 'item_name', 'not like', '%Hole%'],
+			['Item', 'item_name', 'not like', '%Notch%']
+		],
+		fields: ['name', 'item_name', 'custom_glass_type'],
+		order_by: 'item_name asc',
+		limit_page_length: 0
+	}).then(function (rows) {
+		glass_catalog = rows || [];
+		$batch_wrapper.find('tbody tr').each(function () {
+			let $sel = $(this).find('select[data-field="item_code"]');
+			let current = $sel.val();
+			let row_id = $(this).data('id');
+			let it = items.find(function (x) { return x.id === row_id; });
+			$sel.html(item_option_list(current, it ? it.item_name : current)).val(current);
+		});
+	});
+
 	function duplicate_glass_row($row, count) {
 		let source_id = $row.data('id');
 		let source = items.find(function (it) { return it.id === source_id; });
@@ -4191,6 +4250,8 @@ function open_glass_batch_details_dialog(page, items) {
 		for (let i = 0; i < count; i++) {
 			let clone = Object.assign({}, source, {
 				id: frappe.utils.get_random(8),
+				item_code: val('item_code') || source.item_code,
+				item_name: row_item_name($row) || source.item_name,
 				width_mm: dimension_input_to_mm(val('width_mm'), dimension_uom),
 				height_mm: dimension_input_to_mm(val('height_mm'), dimension_uom),
 				width_allowance: flt(val('width_allowance') || 0),
