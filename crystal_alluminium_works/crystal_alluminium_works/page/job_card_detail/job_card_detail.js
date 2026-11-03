@@ -2921,12 +2921,12 @@ function render_single_job_card_detail(job_card, quotation, history, sales_invoi
 		(item.custom_glass_sale_mode === 'Resized' || item.custom_glass_type === 'Laminated')
 	);
 
-	// The cut-list exports cut-size (Resized) glass only — api._is_cut_size_glass — so
-	// without any such line there is nothing to export.
+	// The export mirrors the PDF's Glass Cut Size table (every non-Sheet glass line —
+	// api._build_job_card_layout_rows), so without any such line there is nothing to export.
 	let has_layout_items = ((quotation || {}).items || []).some(item =>
 		!item.custom_auto_generated &&
 		item.custom_product_category === 'Glass' &&
-		(item.custom_glass_sale_mode || 'Resized') === 'Resized'
+		item.custom_glass_sale_mode !== 'Sheet'
 	);
 	let status_color = {
 		'Draft': 'orange',
@@ -2990,7 +2990,7 @@ function render_single_job_card_detail(job_card, quotation, history, sales_invoi
 			</div>
 			<div class="jc-detail-actions">
 				<button class="btn btn-primary jc-download-btn" data-action="download-job-card-pdf" title="Download Job Card PDF">${frappe.utils.icon('download', 'sm')}<span>Download</span></button>
-				${has_layout_items ? `<button class="btn btn-default jc-download-btn" data-action="export-job-card-layout" title="Export cut-list as xlsx (Code, Item, No, Width, Height, Pcs)">${frappe.utils.icon('download', 'sm')}<span>Export Layout</span></button>` : ''}
+				${has_layout_items ? `<button class="btn btn-default jc-download-btn" data-action="export-job-card-layout" title="Export the Glass Cut Size table as xlsx, same as the Job Card download">${frappe.utils.icon('download', 'sm')}<span>Export Layout</span></button>` : ''}
 				${can_create_partial_invoice ? '<button class="btn btn-default" data-action="create-partial-invoice">Partial Invoice</button>' : ''}
 				${primary_invoice_action}
 				<select class="form-control" data-action="view-menu" style="width:auto; min-width:170px; flex:0 0 auto;">

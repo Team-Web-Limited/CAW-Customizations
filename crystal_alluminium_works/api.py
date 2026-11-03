@@ -3,7 +3,7 @@ import json
 import os
 import re
 from frappe.model.rename_doc import rename_doc
-from frappe.utils import flt
+from frappe.utils import cint, flt
 from erpnext.accounts.party import get_party_account
 from crystal_alluminium_works.pricing_engine import (
     CEILING_BOARD_ITEM_CODES,
@@ -678,6 +678,115 @@ def _build_layout_rows(items):
     return rows
 
 
+def _pdf_short_uom(value):
+    """Same abbreviations as short_uom in the Crystal Job Card print template."""
+    normalized = (value or "").strip().lower()
+    return {
+        "square foot": "sft",
+        "square meter": "sqm",
+        "meter": "len",
+        "metre": "len",
+        "len": "len",
+        "running foot": "rft",
+        "rft": "rft",
+        "nos": "nos",
+    }.get(normalized, value or "-")
+
+
+def _pdf_dimension(value_mm, dimension_uom=None):
+    """format_dimension from the Crystal Job Card print template: "495mm" or 19.49"."""
+    value_mm = flt(value_mm or 0)
+    if not value_mm:
+        return "-"
+    if (dimension_uom or "").lower() == "inches":
+        return f'{flt(value_mm / 25.4, 2)}"'
+    return f"{value_mm:.0f}mm"
+
+
+def _build_job_card_layout_rows(items):
+    """Mirror of the Job Card PDF's "Glass Items — Cut Size" table (create_print_format.py):
+    same columns, same rows (every non-Sheet glass line), rows grouped by glass item in
+    order of first appearance with a Subtotal per group when there is more than one, and a
+    Total row. Keep in step with that template."""
+    rows = [
+        row for row in items
+        if not row.get("custom_auto_generated")
+        and (row.get("custom_product_category") or "") == "Glass"
+        and row.get("custom_glass_sale_mode") != "Sheet"
+    ]
+
+    codes = []
+    for row in rows:
+        if (row.item_code or "") not in codes:
+            codes.append(row.item_code or "")
+    show_subtotals = len(codes) > 1
+    if show_subtotals:
+        rows = [row for code in codes for row in rows if (row.item_code or "") == code]
+
+    out = [[
+        "Code", "Item", "Pcs", "Qty", "UOM", "No", "Width", "Height",
+        "Polish Sides (W/H)", "Holes", "Notches",
+    ]]
+    totals = {"pcs": 0, "qty": 0, "holes": 0, "notches": 0}
+    group = dict(totals)
+
+    for index, row in enumerate(rows):
+        pieces = row.qty or 0
+        if row.custom_glass_sale_mode == "Full Sheet":
+            qty = row.qty or 0
+            uom = "Nos"
+        else:
+            qty = (row.custom_area_sqft or 0) * (row.qty or 0)
+            uom = row.uom or "Square Foot"
+
+        width_sides = cint(row.custom_polish_width_sides or 0)
+        height_sides = cint(row.custom_polish_height_sides or 0)
+        if not width_sides and not height_sides and cint(row.custom_polishing or 0):
+            width_sides = height_sides = 2
+        polish_parts = []
+        if width_sides > 0:
+            polish_parts.append(f"{width_sides}W")
+        if height_sides > 0:
+            polish_parts.append(f"{height_sides}H")
+
+        holes = cint(row.custom_holes or 0)
+        notches = cint(row.custom_notches or 0)
+        for bucket in (totals, group):
+            bucket["pcs"] += flt(pieces, 2)
+            bucket["qty"] += flt(qty, 3)
+            bucket["holes"] += holes
+            bucket["notches"] += notches
+
+        out.append([
+            row.item_code or "",
+            row.item_name or row.item_code or "",
+            flt(pieces, 2),
+            flt(qty, 3),
+            _pdf_short_uom(uom),
+            row.custom_numbering or "-",
+            _pdf_dimension(row.custom_width_mm, row.get("custom_dimension_uom")),
+            _pdf_dimension(row.custom_height_mm, row.get("custom_dimension_uom")),
+            " + ".join(polish_parts) if polish_parts else "-",
+            holes if holes > 0 else "-",
+            notches if notches > 0 else "-",
+        ])
+
+        is_group_end = index == len(rows) - 1 or (rows[index + 1].item_code or "") != (row.item_code or "")
+        if show_subtotals and is_group_end:
+            out.append([
+                "Subtotal", "", flt(group["pcs"], 2), flt(group["qty"], 3),
+                "", "", "", "", "", group["holes"], group["notches"],
+            ])
+            group = dict.fromkeys(group, 0)
+
+    if rows:
+        out.append([
+            "Total" if show_subtotals else "", "", flt(totals["pcs"], 2), flt(totals["qty"], 3),
+            "", "", "", "", "", totals["holes"], totals["notches"],
+        ])
+    return out
+
+
 @frappe.whitelist(methods=["GET"])
 def export_job_card_layout(name):
     job_card = frappe.get_doc("CAW Job Card", name)
@@ -685,7 +794,7 @@ def export_job_card_layout(name):
     print_items = quotation.items if quotation else []
 
     filename = f"{name.replace(' ', '-').replace('/', '-')}-layout"
-    return _stream_xlsx_file(filename, _build_layout_rows(print_items))
+    return _stream_xlsx_file(filename, _build_job_card_layout_rows(print_items))
 
 
 @frappe.whitelist(methods=["GET"])
