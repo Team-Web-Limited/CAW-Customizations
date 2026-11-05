@@ -645,39 +645,6 @@ def _dimension_value_only(value_mm, dimension_uom=None):
     return flt(value_mm, 0)
 
 
-def _is_cut_size_glass(row):
-    """Glass cut to the customer's measurements (sale mode Resized) — the only lines
-    the workshop cut-list is for. Full Sheet / Sheet glass leaves the store uncut."""
-    return (
-        not row.get("custom_auto_generated")
-        and (row.get("custom_product_category") or "") == "Glass"
-        and (row.get("custom_glass_sale_mode") or "Resized") == "Resized"
-    )
-
-
-def _build_layout_rows(items):
-    """Cut-list rows for the workshop floor: Code/Item/No/Width/Height/Pcs for each
-    cut-size glass line (see _is_cut_size_glass) — aluminium, fittings, ceiling and
-    sheet glass carry no cut measurements, so they are left out. Width/Height are
-    exported as bare numbers (no "mm"/inch-mark suffix) so they read as plain glass
-    sizes in the spreadsheet."""
-    rows = [["Code", "Item", "No", "Width", "Height", "Pcs"]]
-    for row in items:
-        if not _is_cut_size_glass(row):
-            continue
-
-        rows.append([
-            row.item_code or "",
-            row.item_name or row.item_code or "",
-            row.custom_numbering or "-",
-            _dimension_value_only(row.custom_width_mm, row.get("custom_dimension_uom")),
-            _dimension_value_only(row.custom_height_mm, row.get("custom_dimension_uom")),
-            flt(row.qty or 0, 2),
-        ])
-
-    return rows
-
-
 def _pdf_short_uom(value):
     """Same abbreviations as short_uom in the Crystal Job Card print template."""
     normalized = (value or "").strip().lower()
@@ -802,7 +769,7 @@ def export_quotation_layout(name):
     quotation = frappe.get_doc("Quotation", name)
 
     filename = f"{name.replace(' ', '-').replace('/', '-')}-layout"
-    return _stream_xlsx_file(filename, _build_layout_rows(quotation.items))
+    return _stream_xlsx_file(filename, _build_job_card_layout_rows(quotation.items))
 
 
 @frappe.whitelist()
