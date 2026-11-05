@@ -971,6 +971,10 @@ def build_crystal_job_card_print_format_html():
                     <div style="font-size: 16px; font-weight: bold; margin-top: 4px;">{{ frappe.utils.formatdate(job_card.creation) }}</div>
                     <div style="color: #7f8c8d; font-size: 12px; text-transform: uppercase; margin-top: 12px;">Job Card No</div>
                     <div style="font-size: 14px; font-weight: 600; margin-top: 4px;">{{ job_card.name }}</div>
+                    {% if job_card.quotation %}
+                    <div style="color: #7f8c8d; font-size: 12px; text-transform: uppercase; margin-top: 12px;">Quotation No</div>
+                    <div style="font-size: 14px; font-weight: 600; margin-top: 4px;">{{ job_card.quotation }}</div>
+                    {% endif %}
                 </div>
             </div>
         </div>
