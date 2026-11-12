@@ -136,3 +136,14 @@ def _warn_if_history_moves(doc):
 		title=_("Backdated Entry Affects Later Payments"),
 		indicator="orange",
 	)
+
+
+def sync_workflow_state_on_cancel(doc, method=None):
+	"""Keep workflow_state in step with docstatus when a Payment Entry is cancelled.
+
+	Cancelling outside the workflow (programmatic cancels, job card reversals)
+	leaves workflow_state at "Approved"/"Submitted", so the list badge shows a
+	cancelled payment as live while ?status=Cancelled still lists it.
+	"""
+	if doc.meta.has_field("workflow_state") and doc.get("workflow_state") != "Cancelled":
+		doc.db_set("workflow_state", "Cancelled", update_modified=False)

@@ -235,7 +235,8 @@ doc_events = {
 	# oldest lots first, rather than at a rate someone types. before_validate so
 	# ERPNext derives every downstream figure from the rate we set.
 	"Payment Entry": {
-		"before_validate": "crystal_alluminium_works.payment_entry_forex_rate.set_fifo_exchange_rate"
+		"before_validate": "crystal_alluminium_works.payment_entry_forex_rate.set_fifo_exchange_rate",
+		"on_cancel": "crystal_alluminium_works.payment_entry_forex_rate.sync_workflow_state_on_cancel"
 	},
 	# CBK rates are typed by hand, so a blank New Exchange Rate reads as zero and
 	# would revalue the USD banks to nothing.
