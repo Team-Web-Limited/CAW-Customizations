@@ -454,6 +454,8 @@ def _get_procurement_item_fields(include_rate=True, include_rejected=False):
             "fieldname": "custom_rate_per_piece",
             "label": "Rate per Sheet / Piece",
             "fieldtype": "Currency",
+            # Shown in the document's currency (the parent's ), like the standard rate.
+            "options": "currency",
             "insert_after": last_fieldname,
             "depends_on": "eval:doc.custom_product_category=='Glass' || doc.custom_product_category=='Ceiling'",
             "read_only": 0,
