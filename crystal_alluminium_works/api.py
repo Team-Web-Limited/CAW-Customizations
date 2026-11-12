@@ -6604,6 +6604,72 @@ def get_items_with_prices(category):
     return items
 
 
+PRICE_LIST_VIEWER_ROLES = ["System Manager", "Sales Admin", "Sales User"]
+PRICE_LIST_CATEGORIES = [
+    "Aluminium", "Ordinary Glass", "Laminated Glass", "Ready Laminated Glass",
+    "Toughened Glass", "Fittings", "Ceiling", "Rubber", "Silicone", SERVICES_CATEGORY,
+]
+
+
+def _price_list_service_rows():
+    """Glass service rates as the Quotation Builder charges them: one rate per type, VAT
+    inclusive, from Glass Pricing Settings (Manage Items -> Global Glass Service Rates)."""
+    rates = get_glass_service_rates()
+    uoms = {code: GLASS_SERVICE_ITEM_DEFS[code]["uom"] for code in SERVICE_ITEM_CODES}
+    rows = []
+    for item_code, rate_key, label in (
+        (POLISHING_SERVICE_ITEM_CODE, "polish", "Glass Polishing ({})"),
+        (HOLE_SERVICE_ITEM_CODE, "hole", "Glass Hole Drilling ({})"),
+        (NOTCH_SERVICE_ITEM_CODE, "notch", "Glass Notching ({})"),
+    ):
+        for service_type, rate in rates[rate_key].items():
+            rows.append({
+                "item_code": item_code,
+                "item_name": label.format(service_type),
+                "uom": uoms[item_code],
+                "retail": flt(rate),
+            })
+    rows.append({
+        "item_code": SANDBLAST_SERVICE_ITEM_CODE,
+        "item_name": "Glass Sandblasting",
+        "uom": uoms[SANDBLAST_SERVICE_ITEM_CODE],
+        "retail": flt(rates["sandblast"]),
+    })
+    return rows
+
+
+@frappe.whitelist()
+def get_price_list(category):
+    """Read-only price list for the dashboard's Price List modal.
+
+    The sales team may look prices up but not maintain them, and Manage Items mixes
+    both, so this hands back only name, code, UOM and the three price lists -- no
+    ceiling configuration, no edit data. Reuses get_items_with_prices so the filters
+    (disabled items, glass service lines, ceiling de-duplication) cannot drift from
+    what Manage Items shows.
+    """
+    frappe.only_for(PRICE_LIST_VIEWER_ROLES)
+    if category not in PRICE_LIST_CATEGORIES:
+        frappe.throw(frappe._("Unknown item category: {0}").format(category))
+
+    if category == SERVICES_CATEGORY:
+        return _price_list_service_rows()
+
+    rows = []
+    for item in get_items_with_prices(category):
+        rows.append({
+            "item_code": item.get("item_code"),
+            "item_name": item.get("item_name"),
+            "product_code": item.get("custom_product_code") or "",
+            "uom": item.get("stock_uom"),
+            "retail": flt(item.get("retail_rate")),
+            "wholesale": flt(item.get("wholesale_rate")),
+            "special": flt(item.get("special_rate")),
+            "rate_per_kg": flt(item.get("aluminium_rate_per_kg")),
+        })
+    return rows
+
+
 @frappe.whitelist()
 def get_ceiling_board_item_codes():
     return CEILING_BOARD_ITEM_CODES

@@ -5,6 +5,11 @@ frappe.pages['mpesa-transactions'].on_page_load = function(wrapper) {
 		single_column: true
 	});
 
+	// Downloads every row the current filters match (not just the visible page).
+	page.set_primary_action(__('Download'), function() {
+		download_mpesa_transactions(page);
+	}, 'es-line-download');
+
 	wrapper.page = page;
 };
 
@@ -313,4 +318,23 @@ function render_mpesa_transactions_pagination(page) {
 			<button class="btn btn-default mpx-pagination-next" ${!state.has_next ? 'disabled' : ''}>Next</button>
 		</div>
 	`);
+}
+
+function download_mpesa_transactions(page) {
+	let $body = $(page.body);
+	let from_date = $body.find('[data-filter="from_date"]').val() || '';
+	let to_date = $body.find('[data-filter="to_date"]').val() || '';
+
+	if (from_date && to_date && from_date > to_date) {
+		frappe.msgprint(__('From Date cannot be after To Date.'));
+		return;
+	}
+
+	let params = $.param({
+		search: $body.find('[data-filter="search"]').val() || '',
+		status: $body.find('[data-filter="status"]').val() || '',
+		from_date: from_date,
+		to_date: to_date
+	});
+	window.open(`/api/method/crystal_alluminium_works.mpesa_link.download_mpesa_transactions?${params}`);
 }

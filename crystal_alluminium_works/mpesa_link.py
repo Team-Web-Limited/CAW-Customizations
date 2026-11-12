@@ -401,16 +401,9 @@ def _live_claims(transaction_names=None):
 	}
 
 
-@frappe.whitelist()
-def get_mpesa_transactions_page(search=None, status=None, from_date=None, to_date=None, page=1, page_length=30):
-	"""Rows for the M-Pesa Transactions page: what Safaricom confirmed on the Paybill, and
-	whether staff have recorded each one as a Payment yet. frappe.get_list enforces read access."""
-	if not _c2b_installed():
-		return {"rows": [], "total_count": 0, "page": 1, "page_length": 30, "has_next": False, "totals": {}}
-
-	page = max(cint(page) or 1, 1)
-	page_length = min(max(cint(page_length) or 30, 1), 100)
-
+def _mpesa_transactions_matching(search, status, from_date, to_date):
+	"""Register rows matching the page's filters, newest first, plus their live claims.
+	frappe.get_list enforces read access."""
 	filters = [["docstatus", "<", 2]]
 	if from_date:
 		filters.append(["creation", ">=", str(getdate(from_date))])
@@ -449,21 +442,23 @@ def get_mpesa_transactions_page(search=None, status=None, from_date=None, to_dat
 		"unrecorded_count": sum(1 for row in matching if row.name not in claims),
 		"unrecorded_amount": sum(flt(row.transamount) for row in matching if row.name not in claims),
 	}
+	return matching, claims, totals
 
-	start = (page - 1) * page_length
-	page_names = [row.name for row in matching[start : start + page_length]]
+
+def _mpesa_transaction_rows(names, claims):
+	"""Display rows for the given register names, in the order given."""
 	details = {
 		row.name: row
 		for row in frappe.get_all(
 			C2B_DOCTYPE,
-			filters={"name": ["in", page_names or [""]]},
+			filters={"name": ["in", names or [""]]},
 			fields=["name", "transid", "transamount", "billrefnumber", "full_name", "firstname", "transtime", "creation"],
 		)
 	}
 
 	quotation_cache = {}
 	rows = []
-	for name in page_names:
+	for name in names:
 		row = details[name]
 		claim = claims.get(name)
 		rows.append({
@@ -478,6 +473,23 @@ def get_mpesa_transactions_page(search=None, status=None, from_date=None, to_dat
 			"job_card": claim.job_card if claim else None,
 			"customer": claim.customer if claim else None,
 		})
+	return rows
+
+
+@frappe.whitelist()
+def get_mpesa_transactions_page(search=None, status=None, from_date=None, to_date=None, page=1, page_length=30):
+	"""Rows for the M-Pesa Transactions page: what Safaricom confirmed on the Paybill, and
+	whether staff have recorded each one as a Payment yet. frappe.get_list enforces read access."""
+	if not _c2b_installed():
+		return {"rows": [], "total_count": 0, "page": 1, "page_length": 30, "has_next": False, "totals": {}}
+
+	page = max(cint(page) or 1, 1)
+	page_length = min(max(cint(page_length) or 30, 1), 100)
+
+	matching, claims, totals = _mpesa_transactions_matching(search, status, from_date, to_date)
+
+	start = (page - 1) * page_length
+	rows = _mpesa_transaction_rows([row.name for row in matching[start : start + page_length]], claims)
 
 	return {
 		"rows": rows,
@@ -487,3 +499,39 @@ def get_mpesa_transactions_page(search=None, status=None, from_date=None, to_dat
 		"has_next": start + page_length < totals["count"],
 		"totals": totals,
 	}
+
+
+@frappe.whitelist(methods=["GET"])
+def download_mpesa_transactions(search=None, status=None, from_date=None, to_date=None):
+	"""Every row the M-Pesa Transactions page matches for these filters, as an xlsx -- not just
+	the visible page. Streamed so no File record is left behind."""
+	from crystal_alluminium_works.api import _stream_xlsx_file
+
+	if not _c2b_installed():
+		frappe.throw(frappe._("M-Pesa payments are not set up on this site."))
+
+	matching, claims, totals = _mpesa_transactions_matching(search, status, from_date, to_date)
+	rows = _mpesa_transaction_rows([row.name for row in matching], claims)
+
+	data = [["Received", "M-Pesa Code", "Amount (KES)", "Account No.", "Quotation", "Paid By", "Status", "Recorded As"]]
+	for row in rows:
+		if row["payment"]:
+			recorded_as = row["job_card"] or f"Payment #{row['payment']}"
+		else:
+			recorded_as = ""
+		data.append([
+			str(row["received_at"] or "")[:19],
+			row["mpesa_code"] or "",
+			row["amount"],
+			row["account_number"] or "",
+			row["quotation"] or "",
+			row["paid_by"],
+			"Recorded" if row["payment"] else "Not recorded",
+			recorded_as,
+		])
+	data.append([])
+	data.append(["Total", "", totals["amount"], "", "", "", f"{totals['count']} payments", ""])
+	data.append(["Not recorded", "", totals["unrecorded_amount"], "", "", "", f"{totals['unrecorded_count']} payments", ""])
+
+	label = f"{from_date or 'start'}_to_{to_date or 'today'}"
+	return _stream_xlsx_file(f"mpesa_transactions_{label}", data)
