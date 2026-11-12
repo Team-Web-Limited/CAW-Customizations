@@ -91,8 +91,13 @@ SELL = "Sell"  # tracked account -> company currency
 TRANSFER_IN = "Transfer In"  # between two tracked accounts of the same currency
 TRANSFER_OUT = "Transfer Out"
 
-INBOUND = (BUY, RECEIPT, TRANSFER_IN)
-OUTBOUND = (PAYMENT, SELL, TRANSFER_OUT)
+# Journal Entries (opening balances, manual adjustments) hit the bank directly, with no
+# Payment Entry. Without these a USD account opened by Journal Entry has no cost basis.
+JOURNAL_IN = "Journal In"
+JOURNAL_OUT = "Journal Out"
+
+INBOUND = (BUY, RECEIPT, TRANSFER_IN, JOURNAL_IN)
+OUTBOUND = (PAYMENT, SELL, TRANSFER_OUT, JOURNAL_OUT)
 
 
 # ---------------------------------------------------------------------------
@@ -296,6 +301,7 @@ def get_movements(company, tracked=None):
 			"base_paid_amount",
 			"base_received_amount",
 			"remarks",
+			"creation",
 		],
 		order_by="posting_date asc, creation asc, name asc",
 	)
@@ -308,6 +314,7 @@ def get_movements(company, tracked=None):
 		common = {
 			"voucher": pe.name,
 			"posting_date": pe.posting_date,
+			"creation": pe.creation,
 			"payment_type": pe.payment_type,
 			"party": pe.party,
 			"remarks": pe.remarks,
@@ -380,7 +387,51 @@ def get_movements(company, tracked=None):
 				)
 			)
 
+	movements.extend(_get_journal_movements(company, tracked))
+	# Payment Entries and Journal Entries share one timeline.
+	movements.sort(key=lambda mv: (getdate(mv["posting_date"]), mv.get("creation") or "", mv["voucher"]))
 	return movements
+
+
+def _get_journal_movements(company, tracked):
+	"""Lot movements from submitted Journal Entry rows on tracked accounts.
+
+	A debit in the account's own currency adds a lot costed at the KES the GL booked (so an
+	opening of USD 43,596.93 at 129.8 carries rate 129.8); a credit consumes lots FIFO. Rows
+	with no foreign-currency amount (Exchange Rate Revaluation adjustments) move no currency.
+	"""
+	rows = frappe.db.sql(
+		"""
+		select je.name, je.posting_date, je.creation, je.user_remark,
+			jea.account, jea.debit_in_account_currency dr, jea.credit_in_account_currency cr,
+			jea.debit base_dr, jea.credit base_cr
+		from `tabJournal Entry Account` jea
+		join `tabJournal Entry` je on je.name = jea.parent
+		where je.docstatus = 1 and je.company = %(company)s and jea.account in %(accounts)s
+		order by je.posting_date, je.creation, jea.idx
+		""",
+		{"company": company, "accounts": list(tracked)},
+		as_dict=True,
+	)
+
+	out = []
+	for r in rows:
+		common = {
+			"voucher": r.name,
+			"posting_date": r.posting_date,
+			"creation": r.creation,
+			"payment_type": "Journal Entry",
+			"party": None,
+			"remarks": r.user_remark,
+			"account": r.account,
+			"currency": tracked[r.account],
+			"counter_account": None,
+		}
+		if flt(r.dr, QTY_PRECISION) > EPSILON:
+			out.append(dict(common, movement_type=JOURNAL_IN, qty=flt(r.dr, QTY_PRECISION), value=flt(r.base_dr, VALUE_PRECISION)))
+		elif flt(r.cr, QTY_PRECISION) > EPSILON:
+			out.append(dict(common, movement_type=JOURNAL_OUT, qty=flt(r.cr, QTY_PRECISION), txn_rate=_rate(r.base_cr, r.cr)))
+	return out
 
 
 def build(company, account=None):

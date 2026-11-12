@@ -10409,6 +10409,9 @@ def get_glass_stock_ledger(item_code, warehouse, from_date=None, to_date=None):
         own = [r for r in rows if r.name == entry.voucher_detail_no]
         return own or rows
 
+    # A Purchase Invoice with Update Stock receives glass directly, with no Purchase Receipt; its
+    # item rows carry the same sheet size/pcs fields, so read them the same way.
+    pi_names = list(set([e.voucher_no for e in ledger if e.voucher_type == "Purchase Invoice"]))
     pr_names = list(set([e.voucher_no for e in ledger if e.voucher_type == "Purchase Receipt"]))
     se_names = list(set([e.voucher_no for e in ledger if e.voucher_type == "Stock Entry"]))
     
@@ -10422,6 +10425,15 @@ def get_glass_stock_ledger(item_code, warehouse, from_date=None, to_date=None):
         for r in pr_rows:
             pr_items.setdefault(r.parent, []).append(r)
             
+    if pi_names:
+        pi_rows = frappe.get_all(
+            "Purchase Invoice Item",
+            filters={"parent": ["in", pi_names], "item_code": item_code},
+            fields=["name", "parent", "custom_sheet_size", "custom_sheet_pcs"]
+        )
+        for r in pi_rows:
+            pr_items.setdefault(r.parent, []).append(r)
+
     se_items = {}
     if se_names:
         se_rows = frappe.get_all(
@@ -10452,7 +10464,7 @@ def get_glass_stock_ledger(item_code, warehouse, from_date=None, to_date=None):
                     entry_invoice_sft += frappe.utils.flt(match.group(1))
 
         if not is_laminated:
-            if entry.voucher_type == "Purchase Receipt":
+            if entry.voucher_type in ("Purchase Receipt", "Purchase Invoice"):
                 rows = _rows_for(entry, pr_items)
                 for r in rows:
                     size = (r.custom_sheet_size or "").strip()
