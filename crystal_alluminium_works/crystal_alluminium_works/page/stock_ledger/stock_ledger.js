@@ -28,10 +28,11 @@ function sl_invoice_links(row) {
 }
 
 /* ── State ───────────────────────────────────────────────────── */
+const SL_DEFAULT_WAREHOUSE = 'Stores - CA';
 let SL_STATE = {
 	category: '',   // Item Group
 	item: '',       // Item Code
-	warehouse: '',
+	warehouse: SL_DEFAULT_WAREHOUSE,
 	from_date: '',
 	to_date: '',
 	view: 'category' // 'category' | 'detail'
@@ -184,6 +185,10 @@ function render_stock_ledger_page(page) {
 		render_input: true
 	});
 
+	// Stores - CA by default; clearing the field shows all warehouses.
+	page.sl_warehouse.set_value(SL_DEFAULT_WAREHOUSE);
+	SL_STATE.warehouse = SL_DEFAULT_WAREHOUSE;
+
 	/* ── Bind events ───────────────────────────────── */
 	sl_bind_events(page, $body);
 
@@ -230,10 +235,10 @@ function sl_bind_events(page, $body) {
 	$body.on('click.slPage', '.btn-clear-filters', function() {
 		page.sl_category.set_value('');
 		page.sl_item.set_value('');
-		page.sl_warehouse.set_value('');
+		page.sl_warehouse.set_value(SL_DEFAULT_WAREHOUSE);
 		$body.find('[data-filter="from_date"]').val('');
 		$body.find('[data-filter="to_date"]').val('');
-		SL_STATE = { category: '', item: '', warehouse: '', from_date: '', to_date: '', view: 'category' };
+		SL_STATE = { category: '', item: '', warehouse: SL_DEFAULT_WAREHOUSE, from_date: '', to_date: '', view: 'category' };
 		sl_load_category_view(page);
 	});
 

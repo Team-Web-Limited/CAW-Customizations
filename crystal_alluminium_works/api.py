@@ -10381,7 +10381,7 @@ def _fold_opening_stock(entries, from_date=None, glass=False):
 
 
 @frappe.whitelist()
-def get_glass_stock_ledger(item_code, warehouse, from_date=None, to_date=None):
+def get_glass_stock_ledger(item_code, warehouse, from_date=None, to_date=None, summary_only=False):
     """Reconstruct a running sheet balance alongside the standard SFT balance by parsing
     the underlying Purchase Receipts and Stock Entries for a glass item in a warehouse."""
     if not item_code or not warehouse:
@@ -10523,8 +10523,13 @@ def get_glass_stock_ledger(item_code, warehouse, from_date=None, to_date=None):
         
         # Only include in result if it falls before the requested end date; the start of the range
         # (and the 30 Sep opening) is applied by _fold_opening_stock below.
-        if not (to_date and str(entry.posting_date) > to_date):
+        if not summary_only and not (to_date and str(entry.posting_date) > to_date):
             result.append(entry)
+
+    if summary_only:
+        # The stock overview needs only the closing sheet counts: skip the opening fold and the
+        # per-entry Sales Invoice lookups, which dominate the cost of the full ledger.
+        return {"final_sheet_balance": {k: v for k, v in sheet_balance.items() if abs(v) > 0.0001}}
 
     result = _fold_opening_stock(result, from_date=from_date, glass=True)
 
@@ -10580,7 +10585,7 @@ def get_category_stock_balance(item_group=None, warehouse=None):
         b.item_name = item.get("item_name", b.item_code)
         b.item_group = item.get("item_group", "")
         if b.item_group == "Glass":
-            glass_data = get_glass_stock_ledger(b.item_code, b.warehouse)
+            glass_data = get_glass_stock_ledger(b.item_code, b.warehouse, summary_only=True)
             b.sheet_balance = glass_data.get("final_sheet_balance", {})
 
     return bins
