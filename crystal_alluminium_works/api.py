@@ -717,8 +717,9 @@ def _build_job_card_layout_rows(items):
         if height_sides > 0:
             polish_parts.append(f"{height_sides}H")
 
-        holes = cint(row.custom_holes or 0)
-        notches = cint(row.custom_notches or 0)
+        # custom_holes is per piece; the layout shows (and totals) the holes actually drilled.
+        holes = cint(row.custom_holes or 0) * cint(flt(row.qty or 0))
+        notches = cint(row.custom_notches or 0) * cint(flt(row.qty or 0))
         for bucket in (totals, group):
             bucket["pcs"] += flt(pieces, 2)
             bucket["qty"] += flt(qty, 3)

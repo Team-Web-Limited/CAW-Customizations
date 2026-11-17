@@ -1798,8 +1798,8 @@ function render_job_card_partial_invoice_main_table(context) {
 
 		totals.pcs += flt(quantities.pieces || 0);
 		totals.qty += flt(quantities.qty || 0);
-		totals.holes += cint(row.custom_holes || 0);
-		totals.notches += cint(row.custom_notches || 0);
+		totals.holes += cint(row.custom_holes || 0) * cint(row.qty || 0);
+		totals.notches += cint(row.custom_notches || 0) * cint(row.qty || 0);
 		totals.amount += line_amount;
 
 		return `
@@ -1815,8 +1815,8 @@ function render_job_card_partial_invoice_main_table(context) {
 					<td class="jc-preview-center">${jc_escape(display_width)}</td>
 					<td class="jc-preview-center">${jc_escape(display_height)}</td>
 					<td class="jc-preview-center">${category === 'Glass' && polish_sides > 0 ? polish_sides : '-'}</td>
-					<td class="jc-preview-center">${category === 'Glass' && cint(row.custom_holes || 0) > 0 ? cint(row.custom_holes || 0) : '-'}</td>
-					<td class="jc-preview-center">${category === 'Glass' && cint(row.custom_notches || 0) > 0 ? cint(row.custom_notches || 0) : '-'}</td>
+					<td class="jc-preview-center">${category === 'Glass' && cint(row.custom_holes || 0) > 0 ? cint(row.custom_holes || 0) * cint(row.qty || 0) : '-'}</td>
+					<td class="jc-preview-center">${category === 'Glass' && cint(row.custom_notches || 0) > 0 ? cint(row.custom_notches || 0) * cint(row.qty || 0) : '-'}</td>
 				` : ''}
 				<td class="jc-preview-right jc-row-amount">${format_currency(line_amount)}</td>
 				${render_partial_release_cell(context, row)}
@@ -2337,8 +2337,8 @@ function render_released_breakdown_main_table(matches, has_color_rows, has_glass
 
 		totals.pcs += flt(quantities.pieces || 0);
 		totals.qty += flt(quantities.qty || 0);
-		totals.holes += cint(row.custom_holes || 0);
-		totals.notches += cint(row.custom_notches || 0);
+		totals.holes += cint(row.custom_holes || 0) * cint(row.qty || 0);
+		totals.notches += cint(row.custom_notches || 0) * cint(row.qty || 0);
 		totals.amount += line_amount;
 
 		return `
@@ -2354,8 +2354,8 @@ function render_released_breakdown_main_table(matches, has_color_rows, has_glass
 					<td class="jc-preview-center">${jc_escape(display_width)}</td>
 					<td class="jc-preview-center">${jc_escape(display_height)}</td>
 					<td class="jc-preview-center">${category === 'Glass' && polish_sides > 0 ? polish_sides : '-'}</td>
-					<td class="jc-preview-center">${category === 'Glass' && cint(row.custom_holes || 0) > 0 ? cint(row.custom_holes || 0) : '-'}</td>
-					<td class="jc-preview-center">${category === 'Glass' && cint(row.custom_notches || 0) > 0 ? cint(row.custom_notches || 0) : '-'}</td>
+					<td class="jc-preview-center">${category === 'Glass' && cint(row.custom_holes || 0) > 0 ? cint(row.custom_holes || 0) * cint(row.qty || 0) : '-'}</td>
+					<td class="jc-preview-center">${category === 'Glass' && cint(row.custom_notches || 0) > 0 ? cint(row.custom_notches || 0) * cint(row.qty || 0) : '-'}</td>
 				` : ''}
 				<td class="jc-preview-right jc-row-amount">${format_currency(line_amount)}</td>
 			</tr>

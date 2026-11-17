@@ -510,12 +510,12 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
                     {{% set quotation_totals.pcs = quotation_totals.pcs + frappe.utils.flt(pieces, 2) %}}
                 {{% endif %}}
                 {{% set quotation_totals.qty = quotation_totals.qty + qty_display %}}
-                {{% set quotation_totals.holes = quotation_totals.holes + frappe.utils.cint(parent.custom_holes or 0) %}}
-                {{% set quotation_totals.notches = quotation_totals.notches + frappe.utils.cint(parent.custom_notches or 0) %}}
+                {{% set quotation_totals.holes = quotation_totals.holes + (frappe.utils.cint(parent.custom_holes or 0) * frappe.utils.cint(parent.qty or 0)) %}}
+                {{% set quotation_totals.notches = quotation_totals.notches + (frappe.utils.cint(parent.custom_notches or 0) * frappe.utils.cint(parent.qty or 0)) %}}
                 {{% set glass_group_totals.pcs = glass_group_totals.pcs + frappe.utils.flt(pieces, 2) %}}
                 {{% set glass_group_totals.qty = glass_group_totals.qty + qty_display %}}
-                {{% set glass_group_totals.holes = glass_group_totals.holes + frappe.utils.cint(parent.custom_holes or 0) %}}
-                {{% set glass_group_totals.notches = glass_group_totals.notches + frappe.utils.cint(parent.custom_notches or 0) %}}
+                {{% set glass_group_totals.holes = glass_group_totals.holes + (frappe.utils.cint(parent.custom_holes or 0) * frappe.utils.cint(parent.qty or 0)) %}}
+                {{% set glass_group_totals.notches = glass_group_totals.notches + (frappe.utils.cint(parent.custom_notches or 0) * frappe.utils.cint(parent.qty or 0)) %}}
                 {{% set glass_group_totals.amount = glass_group_totals.amount + line.amount %}}
                 {{% set is_sheet_glass = parent_category == 'Glass' and parent.custom_glass_sale_mode == 'Sheet' %}}
                 {{% set width_sides = 0 if is_sheet_glass else frappe.utils.cint(parent.custom_polish_width_sides or 0) %}}
@@ -605,13 +605,13 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
                     </td>
                     <td style="text-align: center;">
                         {{% if parent_category == 'Glass' and not is_sheet_glass and frappe.utils.cint(parent.custom_holes or 0) > 0 %}}
-                            {{{{ frappe.utils.cint(parent.custom_holes or 0) }}}}
+                            {{{{ (frappe.utils.cint(parent.custom_holes or 0) * frappe.utils.cint(parent.qty or 0)) }}}}
                             {{% if glass_service.holes_amount %}} <span style="white-space: nowrap;">({{{{ frappe.format_value(glass_service.holes_amount, df={{'fieldtype': 'Currency'}}, doc=doc) }}}})</span>{{% endif %}}
                         {{% else %}}-{{% endif %}}
                     </td>
                     <td style="text-align: center;">
                         {{% if parent_category == 'Glass' and not is_sheet_glass and frappe.utils.cint(parent.custom_notches or 0) > 0 %}}
-                            {{{{ frappe.utils.cint(parent.custom_notches or 0) }}}}
+                            {{{{ (frappe.utils.cint(parent.custom_notches or 0) * frappe.utils.cint(parent.qty or 0)) }}}}
                             {{% if glass_service.notches_amount %}} <span style="white-space: nowrap;">({{{{ frappe.format_value(glass_service.notches_amount, df={{'fieldtype': 'Currency'}}, doc=doc) }}}})</span>{{% endif %}}
                         {{% else %}}-{{% endif %}}
                     </td>
@@ -1215,8 +1215,8 @@ def build_crystal_job_card_print_format_html():
                 {% set height_sides = 2 %}
             {% endif %}
             {% set polish_sides = width_sides + height_sides %}
-            {% set holes = frappe.utils.cint(parent.custom_holes or 0) %}
-            {% set notches = frappe.utils.cint(parent.custom_notches or 0) %}
+            {% set holes = (frappe.utils.cint(parent.custom_holes or 0) * frappe.utils.cint(parent.qty or 0)) %}
+            {% set notches = (frappe.utils.cint(parent.custom_notches or 0) * frappe.utils.cint(parent.qty or 0)) %}
             {% set totals.pcs = totals.pcs + frappe.utils.flt(pieces, 2) %}
             {% set totals.qty = totals.qty + frappe.utils.flt(qty, 3) %}
             {% set totals.holes = totals.holes + holes %}

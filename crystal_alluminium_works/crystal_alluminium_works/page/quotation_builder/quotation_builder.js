@@ -997,8 +997,8 @@ function render_review_glass_row(item, index) {
 			<td style="text-align:center;">${format_review_number(get_glass_polishing_rft(item))}</td>
 			<td style="text-align:center;">${format_review_number(get_glass_area_sqft(item))}</td>
 			<td style="white-space:nowrap;">${get_glass_polish_review_label(item)}</td>
-			<td style="text-align:center;white-space:nowrap;">${get_glass_count_with_price(item.holes || 0, holes_entry)}</td>
-			<td style="text-align:center;white-space:nowrap;">${get_glass_count_with_price(item.notches || 0, notches_entry)}</td>
+			<td style="text-align:center;white-space:nowrap;">${get_glass_count_with_price(cint(item.holes || 0) * cint(item.qty || 0), holes_entry)}</td>
+			<td style="text-align:center;white-space:nowrap;">${get_glass_count_with_price(cint(item.notches || 0) * cint(item.qty || 0), notches_entry)}</td>
 			<td style="text-align:center;white-space:nowrap;">${get_glass_sandblast_review_label(item)}</td>
 			<td style="text-align:center;">${item.numbering || '-'}</td>
 			<td style="text-align:center;">${format_review_number(get_glass_dimension_review_value(item, 'width_mm'), item.dimension_uom === 'inches' ? 2 : 0)}</td>
@@ -4982,8 +4982,8 @@ function export_review_rows(page) {
 			format_review_number(get_glass_polishing_rft(i)),
 			format_review_number(get_glass_area_sqft(i)),
 			get_polish_sides_label(i),
-			format_review_number(i.holes || 0, 0),
-			format_review_number(i.notches || 0, 0),
+			format_review_number(cint(i.holes || 0) * cint(i.qty || 0), 0),
+			format_review_number(cint(i.notches || 0) * cint(i.qty || 0), 0),
 			format_review_number(get_glass_sandblast_qty(i), 1),
 			idx + 1,
 			format_review_number(get_glass_dimension_review_value(i, 'width_mm'), i.dimension_uom === 'inches' ? 2 : 0),
