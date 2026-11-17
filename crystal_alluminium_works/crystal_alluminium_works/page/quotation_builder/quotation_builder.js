@@ -3953,7 +3953,7 @@ function open_glass_batch_details_dialog(page, items) {
 						<th style="white-space:nowrap;">PH</th>
 						<th style="white-space:nowrap;">Polish Type</th>
 						<th style="white-space:nowrap;">Description</th>
-						<th style="white-space:nowrap;"></th>
+						<th style="text-align:center;white-space:nowrap;"><button type="button" class="btn btn-xs btn-danger qb-remove-all-rows" title="Remove every row in this grid">Delete all</button></th>
 					</tr>
 				</thead>
 				<tbody>${rows_html}</tbody>
@@ -4322,6 +4322,23 @@ function open_glass_batch_details_dialog(page, items) {
 			$(this).find('.qb-batch-row-no').text(idx + 1);
 		});
 		refresh_batch_totals();
+	});
+
+	// Clear the whole grid in one go. Nothing is removed from the quotation until Save Items,
+	// so closing the dialog instead leaves a re-edited quotation as it was.
+	$batch_wrapper.on('click', '.qb-remove-all-rows', function () {
+		let row_count = $batch_wrapper.find('tbody tr').length;
+		if (!row_count) {
+			return;
+		}
+		frappe.confirm(
+			__('Delete all {0} row(s) in this grid? Saved items are only removed when you press Save Items.', [row_count]),
+			function () {
+				items = [];
+				$batch_wrapper.find('tbody').empty();
+				refresh_batch_totals();
+			}
+		);
 	});
 }
 
