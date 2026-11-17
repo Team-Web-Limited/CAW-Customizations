@@ -2911,7 +2911,10 @@ function open_item_editor(page, item, is_new = false) {
 			reqd: 1,
 			read_only: 0,
 			get_query: function () {
-				return { filters: resolve_item_editor_filters() };
+				return {
+					query: 'crystal_alluminium_works.api.search_builder_items',
+					filters: resolve_item_editor_filters()
+				};
 			},
 			default: item.item_code,
 			change: function () {
@@ -3094,7 +3097,12 @@ function open_item_editor(page, item, is_new = false) {
 				label: 'Item',
 				reqd: 1,
 				get_data: function (txt) {
-					return frappe.db.get_link_options('Item', txt, resolve_item_editor_filters());
+					return frappe.xcall('frappe.desk.search.search_link', {
+						doctype: 'Item',
+						txt: txt || '',
+						query: 'crystal_alluminium_works.api.search_builder_items',
+						filters: resolve_item_editor_filters()
+					});
 				}
 			},
 			{
@@ -4883,6 +4891,7 @@ function open_glass_import_dialog(page, dimension_uom = QB_DEFAULT_GLASS_DIMENSI
 
 	d.fields_dict.item_code.get_query = function () {
 		return {
+			query: 'crystal_alluminium_works.api.search_builder_items',
 			filters: [
 				['Item', 'item_group', '=', 'Glass'],
 				['Item', 'custom_glass_type', '=', d.get_value('glass_type') || 'Ordinary'],

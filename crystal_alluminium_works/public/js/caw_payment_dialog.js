@@ -522,6 +522,12 @@
 						// Money-in and money-out don't read the same — retitle the account fields
 						// and the save button to match the direction currently selected.
 						refresh_payment_direction_labels();
+						// A received cheque goes to Cheques in Hand, a cheque refund comes off the
+						// bank, so the account follows the direction too.
+						let method_field = d.fields_dict.payment_method;
+						if (method_field && method_field.df.onchange && d.get_value('payment_method')) {
+							method_field.df.onchange();
+						}
 					}
 				},
 				{
@@ -781,7 +787,7 @@
 						}
 						frappe.call({
 							method: 'crystal_alluminium_works.api.get_mode_of_payment_account_info',
-							args: { payment_method: payment_method },
+							args: { payment_method: payment_method, payment_type: d.get_value('payment_type') || prefill.payment_type || 'General Payment' },
 							callback: function(r) {
 								let info = (r && r.message) || {};
 								d.set_value('deposit_to', info.default_account || '');
@@ -809,6 +815,24 @@
 					// Toggled per payment_method's onchange above — only Bank Transfer / Cheque
 					// require it.
 					reqd: is_reference_required_method(prefill.payment_method) ? 1 : 0
+				},
+				// A received cheque goes into the Cheque Register (cheque_register.py): the date
+				// written on it decides when it can be banked, and a later date makes it post-dated.
+				{
+					fieldtype: 'Date',
+					fieldname: 'cheque_date',
+					label: __('Cheque Date'),
+					default: frappe.datetime.get_today(),
+					depends_on: "eval:doc.payment_method=='Cheque' && doc.payment_type!='Refund'",
+					mandatory_depends_on: "eval:doc.payment_method=='Cheque' && doc.payment_type!='Refund'",
+					description: __('The date written on the cheque. A later date makes it post-dated.')
+				},
+				{ fieldtype: 'Column Break' },
+				{
+					fieldtype: 'Data',
+					fieldname: 'cheque_bank',
+					label: __('Drawn On (Bank)'),
+					depends_on: "eval:doc.payment_method=='Cheque' && doc.payment_type!='Refund'"
 				}
 			],
 			primary_action_label: options.saveLabel || __('Save Payment'),
@@ -872,7 +896,9 @@
 							deposit_to: values.deposit_to,
 							allocations: JSON.stringify(allocations),
 							quotation: values.quotation || null,
-							customer_phone: get_walkin_phone(current_walkin) || undefined
+							customer_phone: get_walkin_phone(current_walkin) || undefined,
+							cheque_date: values.payment_method === 'Cheque' ? (values.cheque_date || null) : null,
+							cheque_bank: values.payment_method === 'Cheque' ? (values.cheque_bank || '') : ''
 						},
 						freeze: true,
 						freeze_message: 'Recording Payment...',
@@ -1183,7 +1209,7 @@
 						d.set_df_property('reference', 'reqd', is_reference_required_method(payment_method) ? 1 : 0);
 						frappe.call({
 							method: 'crystal_alluminium_works.api.get_mode_of_payment_account_info',
-							args: { payment_method: payment_method },
+							args: { payment_method: payment_method, payment_type: current.payment_type || 'General Payment' },
 							callback: function(r) {
 								d.set_value('deposit_to', ((r && r.message) || {}).default_account || '');
 							}

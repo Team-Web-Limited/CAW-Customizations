@@ -1090,16 +1090,16 @@ function get_action_buttons(doc, sales_invoices, existing_job_card, deposit_cred
 		`;
 	}
 
-	// The export is the Glass Cut Size table (every non-Sheet glass line —
-	// api._build_job_card_layout_rows), so without any such line there is nothing to export.
+	// The cut-list exports cut-size (Resized) glass only — api._is_cut_size_glass — so
+	// without any such line there is nothing to export.
 	let has_layout_items = ((doc || {}).items || []).some(item =>
 		!item.custom_auto_generated &&
 		item.custom_product_category === 'Glass' &&
-		item.custom_glass_sale_mode !== 'Sheet'
+		(item.custom_glass_sale_mode || 'Resized') === 'Resized'
 	);
 	if (has_layout_items) {
 		buttons += `
-			<button class="btn btn-default" id="btn-export-quotation-layout" title="Export the Glass Cut Size table as xlsx, same as the Job Card export">
+			<button class="btn btn-default" id="btn-export-quotation-layout" title="Export cut-list as xlsx (Code, Item, No, Width, Height, Pcs)">
 				<i class="fa fa-download" style="margin-right:6px;"></i>Export Layout
 			</button>
 		`;
@@ -1783,6 +1783,15 @@ async function open_job_card_modal(page, doc) {
 				change: function() {
 					refresh_job_card_payment_options(d);
 				}
+			},
+			{
+				// The customer's account term (credit_control.py): how and when they pay, and
+				// when goods may be released. Set by Accounts in Customer Manager.
+				fieldtype: 'Data',
+				fieldname: 'account_term',
+				label: 'Account Term',
+				read_only: 1,
+				default: (existing_job_card && existing_job_card.account_term) || doc.custom_account_term || ''
 			},
 			{
 				fieldtype: 'Select',

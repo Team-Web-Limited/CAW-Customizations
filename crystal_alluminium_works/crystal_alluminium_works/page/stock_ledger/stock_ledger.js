@@ -27,6 +27,17 @@ function sl_invoice_links(row) {
 	return `<div style="margin-top:2px;">${links}</div>`;
 }
 
+// In = green, Out = red; a Stock Reconciliation adjustment is purple when it adds stock
+// and amber when it removes it.
+function sl_movement_class(row) {
+	let qty = flt(row.actual_qty);
+	if (!qty) return 'sl-qty-zero';
+	if (row.voucher_type === 'Stock Reconciliation') {
+		return qty > 0 ? 'sl-qty-adj-positive' : 'sl-qty-adj-negative';
+	}
+	return qty > 0 ? 'sl-qty-positive' : 'sl-qty-negative';
+}
+
 /* ── State ───────────────────────────────────────────────────── */
 const SL_DEFAULT_WAREHOUSE = 'Stores - CA';
 let SL_STATE = {
@@ -68,8 +79,8 @@ function render_stock_ledger_page(page) {
 		.sl-summary-value { font-size:17px; font-weight:700; color:var(--text-color); }
 
 		/* ── Table ──────────────────────────────────── */
-		.sl-table-scroll { height:620px; overflow:auto; }
-		.sl-table { width:100%; min-width:700px; border-collapse:separate; border-spacing:0; }
+		.sl-table-scroll { height:620px; overflow-x:scroll; overflow-y:auto; }
+		.sl-table { width:max-content; min-width:100%; border-collapse:separate; border-spacing:0; }
 		.sl-table th { position:sticky; top:0; z-index:2; padding:10px 14px; font-size:11px; font-weight:700; color:var(--text-muted); text-align:left; border-bottom:1px solid var(--border-color); background:var(--subtle-fg); text-transform:uppercase; letter-spacing:.3px; white-space:nowrap; }
 		.sl-table td { padding:10px 14px; font-size:13px; color:var(--text-color); border-bottom:1px solid var(--border-color); vertical-align:top; white-space:nowrap; }
 		.sl-table tbody tr:last-child td { border-bottom:0; }
@@ -85,6 +96,8 @@ function render_stock_ledger_page(page) {
 		/* ── Stock indicator colors ─────────────── */
 		.sl-qty-positive { color:#28a745 !important; font-weight:600; }
 		.sl-qty-negative { color:#dc3545 !important; font-weight:600; }
+		.sl-qty-adj-positive { color:#7c3aed !important; font-weight:600; }
+		.sl-qty-adj-negative { color:#d97706 !important; font-weight:600; }
 		.sl-qty-zero { color:var(--text-muted) !important; }
 
 		/* ── Responsive ─────────────────────────── */
@@ -114,6 +127,15 @@ function render_stock_ledger_page(page) {
 						<input type="date" class="form-control form-control-sm" data-filter="to_date">
 					</div>
 					<button class="btn btn-primary btn-sm sl-btn-search">Search</button>
+					<div class="dropdown">
+						<button class="btn btn-default btn-sm dropdown-toggle" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+							<i class="fa fa-download" style="margin-right:4px;"></i>Download
+						</button>
+						<ul class="dropdown-menu dropdown-menu-right">
+							<li><a class="dropdown-item sl-download" data-format="xlsx" href="#">Excel (.xlsx)</a></li>
+							<li><a class="dropdown-item sl-download" data-format="pdf" href="#">PDF</a></li>
+						</ul>
+					</div>
 				</div>
 
 				<div class="sl-toolbar-field" style="margin-left:auto; min-width:auto;">
@@ -242,6 +264,20 @@ function sl_bind_events(page, $body) {
 		sl_load_category_view(page);
 	});
 
+	// Download the item's ledger, oldest transaction first, for the current filters
+	$body.on('click.slPage', '.sl-download', function(e) {
+		e.preventDefault();
+		if (!SL_STATE.item) return;
+		let params = new URLSearchParams({
+			item_code: SL_STATE.item,
+			warehouse: SL_STATE.warehouse || '',
+			from_date: $body.find('[data-filter="from_date"]').val() || '',
+			to_date: $body.find('[data-filter="to_date"]').val() || '',
+			file_format: $(this).data('format')
+		});
+		window.open(frappe.urllib.get_full_url('/api/method/crystal_alluminium_works.api.download_stock_ledger_report?' + params.toString()), '_blank');
+	});
+
 	// Date search button
 	$body.on('click.slPage', '.sl-btn-search', function() {
 		SL_STATE.from_date = $body.find('[data-filter="from_date"]').val() || '';
@@ -329,7 +365,12 @@ function sl_render_category_table(page, data) {
 
 	let rows_html = data.map(row => {
 		let qty_class = row.actual_qty > 0 ? 'sl-qty-positive' : (row.actual_qty < 0 ? 'sl-qty-negative' : 'sl-qty-zero');
-		
+		// Glass is counted in sheets per size; laminated (no sheet ledger) and non-glass keep qty + UOM.
+		let balance_html = (row.sheet_balance && Object.keys(row.sheet_balance).length)
+			? `<div style="display:inline-flex; flex-wrap:wrap; gap:4px; justify-content:flex-end;">${Object.entries(row.sheet_balance).map(([size, pcs]) =>
+				`<span class="sl-sheet-badge in">${frappe.utils.escape_html(size)}: ${flt(pcs)} sheets</span>`).join('')}</div>`
+			: `<div class="${qty_class}">${format_number(row.actual_qty, null, 2)} ${frappe.utils.escape_html(row.stock_uom || '')}</div>`;
+
 		return `
 			<tr class="sl-clickable" data-item="${frappe.utils.escape_html(row.item_code)}" data-group="${frappe.utils.escape_html(row.item_group)}" data-warehouse="${frappe.utils.escape_html(row.warehouse)}">
 				<td><strong>${frappe.utils.escape_html(row.item_code)}</strong></td>
@@ -337,7 +378,7 @@ function sl_render_category_table(page, data) {
 				<td>${frappe.utils.escape_html(row.item_group || '')}</td>
 				<td>${frappe.utils.escape_html(row.warehouse || '')}</td>
 				<td style="text-align:right;">
-					<div class="${qty_class}">${format_number(row.actual_qty, null, 2)} ${frappe.utils.escape_html(row.stock_uom || '')}</div>
+					${balance_html}
 				</td>
 			</tr>
 		`;
@@ -453,7 +494,7 @@ function sl_render_standard_detail(page, entries) {
 		let voucher_link = row.is_opening
 			? '<span style="font-weight:600;">Counted 30-09-2026</span>'
 			: `<a href="/app/${encodeURIComponent(row.voucher_type.toLowerCase().replace(/ /g, '-'))}/${encodeURIComponent(row.voucher_no)}">${frappe.utils.escape_html(row.voucher_no)}</a>`;
-		let qty_class = row.actual_qty > 0 ? 'sl-qty-positive' : (row.actual_qty < 0 ? 'sl-qty-negative' : 'sl-qty-zero');
+		let qty_class = sl_movement_class(row);
 		let qty_prefix = row.actual_qty > 0 ? '+' : '';
 
 		let invoice_html = sl_invoice_links(row);
@@ -572,7 +613,7 @@ function sl_render_glass_detail(page, result) {
 		let voucher_link = row.is_opening
 			? '<span style="font-weight:600;">Counted 30-09-2026</span>'
 			: `<a href="/app/${encodeURIComponent(row.voucher_type.toLowerCase().replace(/ /g, '-'))}/${encodeURIComponent(row.voucher_no)}">${frappe.utils.escape_html(row.voucher_no)}</a>`;
-		let qty_class = row.actual_qty > 0 ? 'sl-qty-positive' : (row.actual_qty < 0 ? 'sl-qty-negative' : 'sl-qty-zero');
+		let qty_class = sl_movement_class(row);
 		let qty_prefix = row.actual_qty > 0 ? '+' : '';
 
 		let invoice_html = sl_invoice_links(row);
@@ -596,7 +637,7 @@ function sl_render_glass_detail(page, result) {
 			row_html += `
 				<td>${sl_format_sheet_badges(row.sheets_in, 'in')}</td>
 				<td>${sl_format_sheet_badges(row.sheets_out, 'out')}</td>
-				<td>${sl_format_sheet_badges(row.sheet_balance, '')}</td>
+				<td>${sl_format_sheet_badges(row.sheet_balance, '', true)}</td>
 			`;
 		}
 		row_html += `</tr>`;
@@ -632,11 +673,18 @@ function sl_render_glass_detail(page, result) {
 }
 
 /* ── Helpers ─────────────────────────────────────────────── */
-function sl_format_sheet_badges(sheets_dict, type) {
+// show_all: list every size inline (no "+N more" and no hover tooltip) — used by the running balance.
+function sl_format_sheet_badges(sheets_dict, type, show_all) {
 	if (!sheets_dict || Object.keys(sheets_dict).length === 0) return '<span class="sl-muted">-</span>';
 	let keys = Object.keys(sheets_dict);
 	let title_text = keys.map(size => `${size}: ${sheets_dict[size]}`).join('\n');
 	
+	if (show_all) {
+		return `<div style="display:inline-flex; gap:4px; align-items:center; white-space:nowrap;">${keys.map(size =>
+			`<span class="sl-sheet-badge ${type}">${frappe.utils.escape_html(size)}: ${sheets_dict[size]}</span>`
+		).join('')}</div>`;
+	}
+
 	let badges = keys.slice(0, 2).map(size => {
 		return `<span class="sl-sheet-badge ${type}">${frappe.utils.escape_html(size)}: ${sheets_dict[size]}</span>`;
 	});

@@ -101,12 +101,19 @@ function update_qty_diff_display($row, item) {
 	}
 }
 
+// 1 x 1 is the offcut size: offcuts are only moved by Job Card operations, so the
+// Stock Adjustment modal never offers or shows it. Untouched sizes keep their
+// balance (New Qty is netted only over edited sizes), so 1 x 1 stock is unaffected.
+function is_offcut_size(size) {
+	return String(size || '').replace(/\s+/g, '').toLowerCase() === '1x1';
+}
+
 // The button shows only the first sheet size — either the first one the user edited,
 // or (before any edit) the first size the item currently holds stock in.
 function get_primary_sheet_size(item) {
-	let edited_sizes = Object.keys(item.sheet_edits || {});
+	let edited_sizes = Object.keys(item.sheet_edits || {}).filter(s => !is_offcut_size(s));
 	if (edited_sizes.length) return edited_sizes[0];
-	let existing_sizes = Object.keys(item.sheet_balance || {});
+	let existing_sizes = Object.keys(item.sheet_balance || {}).filter(s => !is_offcut_size(s));
 	if (existing_sizes.length) return existing_sizes[0];
 	return '';
 }
@@ -114,6 +121,7 @@ function get_primary_sheet_size(item) {
 function build_sheet_option_html(page, selected_size) {
 	let opts = '<option value=""></option>';
 	(page.se_options.sheet_sizes || []).forEach(s => {
+		if (is_offcut_size(s.size)) return;
 		let selected = s.size === selected_size ? 'selected' : '';
 		opts += `<option value="${frappe.utils.escape_html(s.size)}" ${selected}>${frappe.utils.escape_html(s.size)}</option>`;
 	});
@@ -130,6 +138,7 @@ function open_sheet_sizes_modal(page, $row, idx) {
 	let sizes = Object.keys(item.sheet_edits).length
 		? Object.keys(item.sheet_edits)
 		: Object.keys(item.sheet_balance);
+	sizes = sizes.filter(s => !is_offcut_size(s));
 
 	let initial_rows = sizes.map(size => ({
 		size: size,
