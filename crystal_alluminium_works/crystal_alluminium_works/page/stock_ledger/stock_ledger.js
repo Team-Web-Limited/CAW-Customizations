@@ -35,6 +35,7 @@ let SL_STATE = {
 	warehouse: SL_DEFAULT_WAREHOUSE,
 	from_date: '',
 	to_date: '',
+	search: '',     // text typed in the Item box, filters the balances list while no item is picked
 	view: 'category' // 'category' | 'detail'
 };
 
@@ -81,6 +82,8 @@ function render_stock_ledger_page(page) {
 		.sl-sheet-badge { display:inline-flex; align-items:center; padding:2px 6px; background:#e2e8f0; border-radius:4px; font-size:11px; font-weight:600; color:#475569; }
 		.sl-sheet-badge.in { background:#dcfce7; color:#166534; }
 		.sl-sheet-badge.out { background:#fee2e2; color:#991b1b; }
+		.sl-sheet-scroll { display:flex; gap:4px; align-items:center; max-width:260px; overflow-x:auto; overflow-y:hidden; white-space:nowrap; padding-bottom:4px; scrollbar-width:thin; }
+		.sl-sheet-scroll .sl-sheet-badge { flex:0 0 auto; }
 
 		/* ── Stock indicator colors ─────────────── */
 		.sl-qty-positive { color:#28a745 !important; font-weight:600; }
@@ -160,6 +163,12 @@ function render_stock_ledger_page(page) {
 			label: 'Item',
 			placeholder: 'Search item...',
 			only_select: true,
+			// Picking an item from the dropdown (or clearing the box) acts straight away. The
+			// control's own change hook is used because choosing from the list does not reliably
+			// fire a jQuery change event on the input.
+			change: function() {
+				sl_on_item_picked(page);
+			},
 			get_query: function() {
 				let cat = page.sl_category.get_value();
 				if (cat) {
@@ -207,17 +216,23 @@ function sl_bind_events(page, $body) {
 		let cat = page.sl_category.get_value();
 		SL_STATE.category = cat;
 		// Clear item when category changes
-		page.sl_item.set_value('');
+		// State first, so the Item box's own change hook finds nothing left to do.
 		SL_STATE.item = '';
+		SL_STATE.search = '';
+		page.sl_item.set_value('');
 		sl_load_category_view(page);
 	});
 
-	// Item change → switch to detail view
-	page.sl_item.$input && page.sl_item.$input.on('change.slPage', function() {
-		let item = page.sl_item.get_value();
-		if (item) {
-			SL_STATE.item = item;
-			sl_load_detail_view(page);
+	// Typing in the Item box narrows the balances list as you type (by code or name). Typing over an
+	// item that is already open goes back to the list so the new text can filter it.
+	page.sl_item.$input && page.sl_item.$input.on('input.slPage', function() {
+		let text = ($(this).val() || '').trim();
+		SL_STATE.search = text;
+		if (SL_STATE.view === 'detail' && text !== SL_STATE.item) {
+			SL_STATE.item = '';
+			sl_load_category_view(page);
+		} else if (SL_STATE.view === 'category' && page._sl_category_data) {
+			sl_render_category_table(page, page._sl_category_data);
 		}
 	});
 
@@ -233,12 +248,12 @@ function sl_bind_events(page, $body) {
 
 	// Clear button
 	$body.on('click.slPage', '.btn-clear-filters', function() {
+		SL_STATE = { category: '', item: '', warehouse: SL_DEFAULT_WAREHOUSE, from_date: '', to_date: '', search: '', view: 'category' };
 		page.sl_category.set_value('');
 		page.sl_item.set_value('');
 		page.sl_warehouse.set_value(SL_DEFAULT_WAREHOUSE);
 		$body.find('[data-filter="from_date"]').val('');
 		$body.find('[data-filter="to_date"]').val('');
-		SL_STATE = { category: '', item: '', warehouse: SL_DEFAULT_WAREHOUSE, from_date: '', to_date: '', view: 'category' };
 		sl_load_category_view(page);
 	});
 
@@ -277,8 +292,9 @@ function sl_bind_events(page, $body) {
 				SL_STATE.warehouse = warehouse;
 			}
 			
-			page.sl_item.set_value(item_code);
 			SL_STATE.item = item_code;
+			SL_STATE.search = item_code;
+			page.sl_item.set_value(item_code);
 			sl_load_detail_view(page);
 		}
 	});
@@ -309,19 +325,45 @@ function sl_load_category_view(page) {
 			warehouse: SL_STATE.warehouse || undefined
 		},
 		callback: function(r) {
+			// Ignore an answer that arrives after an item was picked meanwhile.
+			if (SL_STATE.view !== 'category') return;
 			let data = r.message || [];
+			page._sl_category_data = data;
 			sl_render_category_table(page, data);
 		}
 	});
 }
 
+// What the Item box does once its value is set: an item loads its ledger at once; an emptied box
+// returns to the balances list.
+function sl_on_item_picked(page) {
+	let item = page.sl_item.get_value();
+	if (item && item !== SL_STATE.item) {
+		SL_STATE.item = item;
+		SL_STATE.search = item;
+		sl_load_detail_view(page);
+	} else if (!item && SL_STATE.item) {
+		SL_STATE.item = '';
+		SL_STATE.search = '';
+		sl_load_category_view(page);
+	}
+}
+
 function sl_render_category_table(page, data) {
 	let $container = $(page.body).find('.sl-table-container');
+
+	// Filter by whatever is typed in the Item box (code or name).
+	let needle = (SL_STATE.search || '').toLowerCase();
+	if (needle) {
+		data = data.filter(row =>
+			(row.item_code || '').toLowerCase().includes(needle) || (row.item_name || '').toLowerCase().includes(needle)
+		);
+	}
 
 	if (!data.length) {
 		$container.html(`
 			<table class="sl-table"><tbody>
-				<tr><td class="sl-muted" style="text-align:center;padding:48px;">No stock found${SL_STATE.category ? ' for <strong>' + frappe.utils.escape_html(SL_STATE.category) + '</strong>' : ''}.</td></tr>
+				<tr><td class="sl-muted" style="text-align:center;padding:48px;">No stock found${SL_STATE.search ? ' matching <strong>' + frappe.utils.escape_html(SL_STATE.search) + '</strong>' : (SL_STATE.category ? ' for <strong>' + frappe.utils.escape_html(SL_STATE.category) + '</strong>' : '')}.</td></tr>
 			</tbody></table>
 		`);
 		return;
@@ -634,16 +676,11 @@ function sl_render_glass_detail(page, result) {
 /* ── Helpers ─────────────────────────────────────────────── */
 function sl_format_sheet_badges(sheets_dict, type) {
 	if (!sheets_dict || Object.keys(sheets_dict).length === 0) return '<span class="sl-muted">-</span>';
-	let keys = Object.keys(sheets_dict);
-	let title_text = keys.map(size => `${size}: ${sheets_dict[size]}`).join('\n');
-	
-	let badges = keys.slice(0, 2).map(size => {
-		return `<span class="sl-sheet-badge ${type}">${frappe.utils.escape_html(size)}: ${sheets_dict[size]}</span>`;
-	});
-	
-	if (keys.length > 2) {
-		badges.push(`<span class="sl-sheet-badge" style="background:transparent; border:1px dashed var(--border-color); color:var(--text-muted); cursor:help;">+${keys.length - 2} more</span>`);
-	}
-	
-	return `<div style="display:inline-flex; gap:4px; align-items:center; white-space:nowrap;" title="${frappe.utils.escape_html(title_text)}">${badges.join('')}</div>`;
+
+	// Every size is shown; a long list scrolls sideways inside its cell instead of being cut
+	// to "+N more" behind a hover tooltip.
+	let badges = Object.keys(sheets_dict).map(size =>
+		`<span class="sl-sheet-badge ${type}">${frappe.utils.escape_html(size)}: ${sheets_dict[size]}</span>`
+	);
+	return `<div class="sl-sheet-scroll">${badges.join('')}</div>`;
 }
