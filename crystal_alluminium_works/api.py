@@ -3275,6 +3275,13 @@ def create_job_card_from_quotation(quotation, customer, customer_name=None, paym
     if not job_card.get("__islocal"):
         _assert_job_card_not_frozen(job_card)
 
+    # Swap charges (invoice items swapped for dearer ones, swap_invoice_items) are owed on top of
+    # the quotation. The modal sends either the quotation total or the card's own amount (which
+    # already carries them), so rebuild it from the quotation rather than trust either.
+    swap_charges = _round_job_card_amount(job_card.get("swap_charges") or 0)
+    if swap_charges:
+        quotation_amount = _round_job_card_amount(_get_quotation_display_total(quotation_doc) + swap_charges)
+
     # Create/Edit Job Card is where a Cash Customer's payment_amount/balance_amount (and Payment
     # History) changes, besides Payments-page allocations (_apply_cash_job_card_receipt).
     # Invoices — partial or full — only ever track released items, never payments, for
@@ -5066,8 +5073,11 @@ def _record_job_card_item_releases(job_card, invoice, rows_by_name, released_qty
 
 def _released_invoice_value(job_card):
     """What has already gone out against this Job Card: the grand total of its submitted
-    Sales Invoices, credit notes (negative) included."""
-    return _round_job_card_amount(frappe.db.sql(
+    Sales Invoices, credit notes (negative) included, plus any swap charges — goods swapped for
+    dearer ones already left, so their extra counts as released and a Cash Customer must pay it
+    before taking more."""
+    swap_charges = flt(frappe.db.get_value("CAW Job Card", job_card.name, "swap_charges") or 0) if job_card.name else 0
+    return _round_job_card_amount(swap_charges + frappe.db.sql(
         """
         SELECT COALESCE(SUM(grand_total), 0)
         FROM `tabSales Invoice`
@@ -5655,7 +5665,10 @@ def _on_quotation_amendment_submitted(quotation_doc):
         return  # nothing to re-point
 
     job_card = frappe.get_doc("CAW Job Card", job_card_name)
-    new_total = _get_quotation_display_total(quotation_doc)
+    # Swap charges stay owed on top of whatever the amended quotation now totals.
+    new_total = _round_job_card_amount(
+        _get_quotation_display_total(quotation_doc) + flt(job_card.get("swap_charges") or 0)
+    )
     paid_to_date = _round_job_card_amount(job_card.payment_amount)
     if new_total < paid_to_date:
         frappe.throw(
@@ -6107,13 +6120,16 @@ def _repost_invoice_income_gl(invoice, old_income_map):
 
 
 @frappe.whitelist()
-def edit_submitted_invoice_items(name, items):
+def edit_submitted_invoice_items(name, items, reason=None):
     """Edit a SUBMITTED Sales Invoice's manual item rows in place (no cancel/amend).
     The grand total must remain exactly the same; stock and release bookkeeping are
     auto-corrected for categories deducted at invoice time. System Manager / Sales User only."""
     frappe.only_for(["System Manager", "Sales User"])
     if not name or not frappe.db.exists("Sales Invoice", name):
         frappe.throw("Please select a valid Sales Invoice.")
+    reason = (reason or "").strip()
+    if not reason:
+        frappe.throw("Give a reason for the edit.")
 
     invoice = frappe.get_doc("Sales Invoice", name)
     reasons = _invoice_edit_block_reasons(invoice)
@@ -6200,11 +6216,473 @@ def edit_submitted_invoice_items(name, items):
         comment_lines.append("Stock corrections: " + ", ".join(stock_entries))
     if gl_reposted:
         comment_lines.append("Income GL rows reposted.")
+    comment_lines.append(f"Reason: {frappe.utils.escape_html(reason)}")
     invoice.add_comment("Comment", "<br>".join(comment_lines))
+
+    edit_name = _record_invoice_item_edit(
+        invoice, job_card_name, reason, old_manual_rows, new_manual, old_grand_total, stock_entries, warnings
+    )
 
     return {
         "name": invoice.name,
+        "edit": edit_name,
         "grand_total": invoice.grand_total,
+        "stock_entries": stock_entries,
+        "warnings": warnings,
+    }
+
+
+def _record_invoice_item_edit(invoice, job_card_name, reason, old_rows, new_rows, old_grand_total, stock_entries, warnings):
+    """Keep every Edit Items save as a CAW Invoice Item Edit, like a swap, so the Edit Items and
+    Swap Items modals show one history. Rows are matched by their row name."""
+    old_by_name = {r.get("name"): r for r in old_rows}
+    new_by_name = {r.get("name"): r for r in new_rows}
+
+    record = frappe.new_doc("CAW Invoice Item Edit")
+    record.sales_invoice = invoice.name
+    record.job_card = job_card_name
+    record.customer = invoice.customer
+    record.customer_name = invoice.get("custom_customer_name") or invoice.customer_name
+    record.edited_by = frappe.session.user
+    record.edited_on = frappe.utils.now_datetime()
+    record.reason = reason
+    record.total_before = old_grand_total
+    record.total_after = flt(invoice.grand_total, 2)
+    record.stock_entries = ", ".join(stock_entries)
+    record.warnings = "\n".join(warnings)
+
+    def _gross(value):
+        # Kept VAT inclusive, as the customer sees it (the comparison above ran on stored net).
+        return flt(_swap_gross(invoice, value), 2)
+
+    def _line(change, old, new):
+        ref = new or old
+        record.append("items", {
+            "change": change,
+            "item_code": ref.get("item_code"),
+            "item_name": ref.get("item_name"),
+            "old_qty": flt(old.get("qty")) if old else 0,
+            "old_rate": _gross(old.get("rate")) if old else 0,
+            "old_amount": _gross(old.get("amount")) if old else 0,
+            "new_qty": flt(new.get("qty")) if new else 0,
+            "new_rate": _gross(new.get("rate")) if new else 0,
+            "new_amount": _gross(new.get("amount")) if new else 0,
+        })
+
+    for name, old in old_by_name.items():
+        new = new_by_name.get(name)
+        if not new:
+            _line("Removed", old, None)
+        elif any(
+            (old.get(f) or "") != (new.get(f) or "") if f == "item_code" else abs(flt(old.get(f)) - flt(new.get(f))) > 0.0001
+            for f in ("item_code", "qty", "rate", "amount")
+        ):
+            _line("Changed", old, new)
+    for name, new in new_by_name.items():
+        if name not in old_by_name:
+            _line("Added", None, new)
+
+    record.flags.ignore_permissions = True
+    record.insert()
+    return record.name
+
+
+# ── Invoice item swap ──────────────────────────────────────────────────────────────────────
+# A submitted invoice's line can name a different item of the same category: the stock that
+# actually left is corrected (old item back in, new item out) while the line keeps the exact
+# amount it was charged, so the invoice total never moves. What the new item would have cost
+# against that locked amount decides the outcome: a cheaper item is absorbed, a dearer one is
+# owed on the Job Card (swap_charges) and booked straight to income by a Journal Entry — no
+# second invoice, so the difference is never taxed again. Every swap is kept as a CAW Invoice
+# Item Swap record and a comment on the invoice.
+
+SWAP_NO_DIFFERENCE_TOLERANCE = 1  # KES: same cents rule as job card settlement
+
+
+def _swap_gross(invoice, net):
+    """Net invoice money as the customer sees it: plus the visual 16% when the invoice has no
+    tax rows, else scaled by the invoice's own tax."""
+    net = flt(net)
+    if _invoice_uses_visual_vat(invoice):
+        return net * (1 + VAT_RATE)
+    net_total = flt(invoice.net_total)
+    return net * (flt(invoice.grand_total) / net_total) if net_total else net
+
+
+def _swap_item_group(item_code):
+    return frappe.get_cached_value("Item", item_code, "item_group") or ""
+
+
+def _validate_swap_target(row, new_item_code):
+    if not new_item_code or not frappe.db.exists("Item", new_item_code):
+        frappe.throw(f"Row {row.idx}: choose a valid item to swap to.")
+    if new_item_code == row.item_code:
+        frappe.throw(f"Row {row.idx}: the new item is the same as the current one.")
+    if getattr(row, "custom_auto_generated", 0):
+        frappe.throw(f"Row {row.idx} is a generated service row and cannot be swapped.")
+    if frappe.get_cached_value("Item", new_item_code, "disabled"):
+        frappe.throw(f"{new_item_code} is disabled.")
+    old_group, new_group = _swap_item_group(row.item_code), _swap_item_group(new_item_code)
+    if old_group != new_group:
+        frappe.throw(
+            f"Row {row.idx}: {row.item_code} ({old_group or 'no group'}) can only be swapped for an "
+            f"item in the same category, not {new_item_code} ({new_group or 'no group'})."
+        )
+
+
+def _swap_new_item_value_net(invoice, row, new_item_code):
+    """What the new item would have been charged for this row's quantity at today's price,
+    with the invoice's Builder +/- % applied — net, like the row's own amount."""
+    from crystal_alluminium_works.pricing_engine import (
+        calculate_ceiling_pricing,
+        get_price_adjustment_multiplier,
+        process_glass_item,
+    )
+
+    item_group = _swap_item_group(new_item_code)
+    temp = frappe.get_doc(dict(row.as_dict(), doctype="Sales Invoice Item", item_code=new_item_code))
+    sale_mode = temp.get("custom_glass_sale_mode") or "Resized"
+
+    if item_group == "Glass" and sale_mode == "Sheet":
+        rate = get_item_rate(new_item_code, "Wholesale", fallback_rate=0) / (1 + VAT_RATE)
+        value = flt(temp.qty) * rate
+    elif item_group == "Glass" and (sale_mode == "Full Sheet" or (temp.get("custom_width_mm") and temp.get("custom_height_mm"))):
+        process_glass_item(temp, row.idx)
+        value = flt(temp.qty) * flt(temp.rate)
+    elif item_group == "Ceiling" and flt(temp.get("custom_ceiling_sq_m")):
+        calculate_ceiling_pricing(temp, row.idx)
+        value = flt(temp.qty) * flt(temp.rate)
+    else:
+        price_list = row.get("custom_price_list") or "Retail"
+        rate = get_item_rate(new_item_code, price_list, fallback_rate=0) / (1 + VAT_RATE)
+        value = flt(row.qty) * rate
+
+    return flt(value) * get_price_adjustment_multiplier(invoice)
+
+
+def _swap_stock_warning(invoice, row, new_item_code, jc_has_sheets):
+    """Glass taken at JC Operations (laminated, or cut glass on a card with sheet consumption)
+    is not corrected from the invoice — say so before the swap is made."""
+    if _swap_item_group(row.item_code) != "Glass":
+        return None
+    sale_mode = row.get("custom_glass_sale_mode") or ""
+    for code in (row.item_code, new_item_code):
+        glass_type = frappe.get_cached_value("Item", code, "custom_glass_type")
+        if glass_type == "Laminated" or (jc_has_sheets and sale_mode in ("Resized", "Custom")):
+            return (
+                f"Row {row.idx}: stock for this glass was taken at JC Operations, so the swap will "
+                "not move it — correct it from the Job Card's JC Operations."
+            )
+    return None
+
+
+def _evaluate_invoice_swaps(invoice, swaps):
+    """Per-row and total figures for the requested swaps (VAT inclusive, 2dp)."""
+    if isinstance(swaps, str):
+        swaps = json.loads(swaps)
+    swaps = [s for s in (swaps or []) if s.get("row_name") and s.get("new_item_code")]
+    if not swaps:
+        frappe.throw("Choose at least one item to swap.")
+
+    rows_by_name = {r.name: r for r in invoice.items}
+    job_card_name = _swap_job_card_name(invoice)
+    jc_has_sheets = False
+    if job_card_name:
+        jc_sheet_json = frappe.db.get_value("CAW Job Card", job_card_name, "custom_sheet_consumption_json")
+        jc_has_sheets = bool(jc_sheet_json and json.loads(jc_sheet_json or "{}"))
+
+    seen, rows, warnings = set(), [], []
+    for swap in swaps:
+        row = rows_by_name.get(swap["row_name"])
+        if not row:
+            frappe.throw(f"Row {swap['row_name']} does not belong to this invoice.")
+        if row.name in seen:
+            frappe.throw(f"Row {row.idx} is listed twice.")
+        seen.add(row.name)
+        new_item_code = swap["new_item_code"]
+        _validate_swap_target(row, new_item_code)
+
+        charged = flt(_swap_gross(invoice, row.amount), 2)
+        new_value = flt(_swap_gross(invoice, _swap_new_item_value_net(invoice, row, new_item_code)), 2)
+        rows.append({
+            "row_name": row.name,
+            "row_idx": row.idx,
+            "category": row.get("custom_product_category") or _swap_item_group(row.item_code),
+            "qty": flt(row.qty),
+            "old_item_code": row.item_code,
+            "old_item_name": row.item_name or row.item_code,
+            "new_item_code": new_item_code,
+            "new_item_name": frappe.get_cached_value("Item", new_item_code, "item_name") or new_item_code,
+            "line_amount": charged,
+            "new_item_value": new_value,
+            "difference": flt(new_value - charged, 2),
+        })
+        warning = _swap_stock_warning(invoice, row, new_item_code, jc_has_sheets)
+        if warning:
+            warnings.append(warning)
+
+    charged_total = flt(sum(r["line_amount"] for r in rows), 2)
+    new_value_total = flt(sum(r["new_item_value"] for r in rows), 2)
+    net_difference = flt(new_value_total - charged_total, 2)
+    if abs(net_difference) < SWAP_NO_DIFFERENCE_TOLERANCE:
+        outcome = "No Difference"
+    elif net_difference < 0:
+        outcome = "Absorbed"
+    else:
+        outcome = "To Collect"
+        if not job_card_name:
+            frappe.throw(
+                "This swap costs more than was charged, but the invoice has no Job Card to owe the "
+                "difference on. Choose items that cost the same or less."
+            )
+    return {
+        "rows": rows,
+        "charged_total": charged_total,
+        "new_value_total": new_value_total,
+        "net_difference": net_difference,
+        "outcome": outcome,
+        "job_card": job_card_name,
+        "warnings": warnings,
+    }
+
+
+def _swap_job_card_name(invoice):
+    job_card_name = invoice.get("custom_source_job_card")
+    if not job_card_name and invoice.get("custom_source_quotation"):
+        job_card_name = _resolve_job_card_for_quotation(invoice.custom_source_quotation)
+    return job_card_name or None
+
+
+@frappe.whitelist()
+def preview_invoice_item_swap(name, swaps):
+    """Figures for the Swap Items modal before anything is saved."""
+    frappe.only_for(["System Manager", "Sales User"])
+    invoice = frappe.get_doc("Sales Invoice", name)
+    reasons = _invoice_edit_block_reasons(invoice)
+    if reasons:
+        frappe.throw("<br>".join(reasons))
+    return _evaluate_invoice_swaps(invoice, swaps)
+
+
+def _book_swap_difference_income(invoice, row, job_card, amount, swap_name):
+    """Book what the dearer items cost over the locked amount as income: Debtors (the customer)
+    to the swapped line's income account, as charged — no tax, the goods were taxed on the
+    invoice already. The customer's payment, allocated to the Job Card, clears the Debtors side."""
+    company = invoice.company
+    debtors = get_party_account("Customer", invoice.customer, company)
+    income_account = row.income_account or frappe.get_cached_value("Company", company, "default_income_account")
+    cost_center = row.cost_center or frappe.get_cached_value("Company", company, "cost_center")
+    remark = (
+        f"Item swap {swap_name} on {invoice.name} ({job_card.name}): price difference owed by the "
+        "customer. Income only — no new invoice, no VAT."
+    )
+    journal = frappe.new_doc("Journal Entry")
+    journal.voucher_type = "Journal Entry"
+    journal.company = company
+    journal.posting_date = frappe.utils.today()
+    journal.user_remark = remark
+    journal.append("accounts", {
+        "account": debtors,
+        "party_type": "Customer",
+        "party": invoice.customer,
+        "debit_in_account_currency": flt(amount, 2),
+        "cost_center": cost_center,
+        "user_remark": remark,
+    })
+    journal.append("accounts", {
+        "account": income_account,
+        "credit_in_account_currency": flt(amount, 2),
+        "cost_center": cost_center,
+        "user_remark": remark,
+    })
+    journal.flags.ignore_permissions = True
+    journal.insert()
+    journal.submit()
+    return journal.name
+
+
+def _rename_swapped_release_records(invoice, row, old_item_code, warnings):
+    """Release records for this invoice line now name the new item; the quotation row they
+    point at (and its collected quantity) stay as they were — the goods did go out."""
+    for doctype in ("CAW Job Card Release", "CAW Ceiling Release"):
+        filters = {"sales_invoice": invoice.name, "item_code": old_item_code}
+        if row.get("custom_quotation_row"):
+            filters["quotation_item"] = row.custom_quotation_row
+        names = frappe.get_all(doctype, filters=filters, pluck="name")
+        if len(names) > 1:
+            warnings.append(f"{doctype} for {old_item_code} is ambiguous and still names the old item.")
+            continue
+        for rel in names:
+            frappe.db.set_value(doctype, rel, {"item_code": row.item_code, "item_name": row.item_name})
+
+
+@frappe.whitelist()
+def get_invoice_change_history(name):
+    """Every item swap and Edit Items save on this invoice, newest first, for the log shown in
+    the Swap Items and Edit Items modals."""
+    frappe.only_for(["System Manager", "Sales User"])
+    history = []
+    for swap in frappe.get_all(
+        "CAW Invoice Item Swap",
+        filters={"sales_invoice": name},
+        fields=["name", "swapped_by", "swapped_on", "outcome", "net_difference", "reason", "charged_total"],
+    ):
+        items = frappe.get_all(
+            "CAW Invoice Item Swap Row", filters={"parent": swap.name},
+            fields=["old_item_code", "new_item_code", "qty"], order_by="idx",
+        )
+        history.append({
+            "kind": "Swap", "name": swap.name, "doctype": "CAW Invoice Item Swap",
+            "by": swap.swapped_by, "on": swap.swapped_on, "reason": swap.reason,
+            "outcome": swap.outcome, "difference": swap.net_difference,
+            "original_amount": swap.charged_total,
+            "lines": [f"{i.old_item_code} → {i.new_item_code} × {flt(i.qty)}" for i in items],
+        })
+    for edit in frappe.get_all(
+        "CAW Invoice Item Edit",
+        filters={"sales_invoice": name},
+        fields=["name", "edited_by", "edited_on", "reason"],
+    ):
+        items = frappe.get_all(
+            "CAW Invoice Item Edit Row", filters={"parent": edit.name},
+            fields=["change", "item_code", "old_qty", "new_qty", "old_rate", "new_rate", "old_amount"], order_by="idx",
+        )
+        lines = []
+        for i in items:
+            if i.change == "Added":
+                lines.append(f"Added {i.item_code} × {flt(i.new_qty)} @ {flt(i.new_rate)}")
+            elif i.change == "Removed":
+                lines.append(f"Removed {i.item_code} × {flt(i.old_qty)}")
+            else:
+                lines.append(f"{i.item_code}: qty {flt(i.old_qty)} → {flt(i.new_qty)}, rate {flt(i.old_rate)} → {flt(i.new_rate)}")
+        history.append({
+            "kind": "Edit", "name": edit.name, "doctype": "CAW Invoice Item Edit",
+            "by": edit.edited_by, "on": edit.edited_on, "reason": edit.reason,
+            "outcome": "", "difference": 0, "lines": lines,
+            # What the changed and removed lines were worth before the edit (added lines had none).
+            "original_amount": flt(sum(flt(i.old_amount) for i in items), 2),
+        })
+    for entry in history:
+        entry["by_name"] = frappe.utils.get_fullname(entry["by"])
+    history.sort(key=lambda e: str(e["on"] or ""), reverse=True)
+    return history
+
+
+@frappe.whitelist()
+def swap_invoice_items(name, swaps, reason):
+    """Swap items on a SUBMITTED invoice keeping every line's amount (and so the total) as it
+    was. Stock follows the goods; a dearer swap is owed on the Job Card. See the section note."""
+    frappe.only_for(["System Manager", "Sales User"])
+    reason = (reason or "").strip()
+    if not reason:
+        frappe.throw("Give a reason for the swap.")
+
+    invoice = frappe.get_doc("Sales Invoice", name)
+    reasons = _invoice_edit_block_reasons(invoice)
+    if reasons:
+        frappe.throw("<br>".join(reasons))
+
+    evaluation = _evaluate_invoice_swaps(invoice, swaps)
+    old_manual_rows = [r.as_dict() for r in invoice.items if not getattr(r, "custom_auto_generated", 0)]
+    old_grand_total = flt(invoice.grand_total, 2)
+
+    rows_by_name = {r.name: r for r in invoice.items}
+    for entry in evaluation["rows"]:
+        row = rows_by_name[entry["row_name"]]
+        new_item = frappe.get_cached_doc("Item", entry["new_item_code"])
+        old_name = row.item_name or row.item_code
+        row.item_code = new_item.name
+        row.item_name = new_item.item_name or new_item.name
+        if row.description and old_name and old_name in row.description:
+            row.description = row.description.replace(old_name, row.item_name)
+        elif not row.description or row.description == old_name:
+            row.description = row.item_name
+        row.item_group = new_item.item_group
+        row.stock_uom = new_item.stock_uom
+        # qty, rate and amount are left exactly as charged.
+
+    # Item identity only — the pricing engine is deliberately not re-run, so nothing re-prices.
+    invoice.flags.ignore_permissions = True
+    invoice.flags.ignore_validate_update_after_submit = True
+    invoice.save()
+    if abs(flt(invoice.grand_total, 2) - old_grand_total) > 0.01:
+        frappe.throw("The swap changed the invoice total; nothing was saved.")
+
+    warnings = list(evaluation["warnings"])
+    job_card_name = evaluation["job_card"]
+    stock_entries = []
+    if job_card_name:
+        old_row_objs = [frappe._dict(r) for r in old_manual_rows]
+        stock_entries = _apply_invoice_edit_stock_deltas(old_row_objs, invoice, job_card_name, warnings)
+    else:
+        warnings.append("No source job card found — stock was not adjusted.")
+    for entry in evaluation["rows"]:
+        _rename_swapped_release_records(invoice, rows_by_name[entry["row_name"]], entry["old_item_code"], warnings)
+
+    swap = frappe.new_doc("CAW Invoice Item Swap")
+    swap.sales_invoice = invoice.name
+    swap.job_card = job_card_name
+    swap.customer = invoice.customer
+    swap.customer_name = invoice.get("custom_customer_name") or invoice.customer_name
+    swap.swapped_by = frappe.session.user
+    swap.swapped_on = frappe.utils.now_datetime()
+    swap.reason = reason
+    swap.outcome = evaluation["outcome"]
+    swap.charged_total = evaluation["charged_total"]
+    swap.new_value_total = evaluation["new_value_total"]
+    swap.net_difference = evaluation["net_difference"]
+    swap.stock_entries = ", ".join(stock_entries)
+    for entry in evaluation["rows"]:
+        swap.append("items", {k: v for k, v in entry.items() if k != "row_name"})
+    swap.flags.ignore_permissions = True
+    swap.insert()
+
+    difference_journal = None
+    if evaluation["outcome"] == "To Collect":
+        job_card = frappe.get_doc("CAW Job Card", job_card_name)
+        owed = _round_job_card_amount(evaluation["net_difference"])
+        first_row = rows_by_name[evaluation["rows"][0]["row_name"]]
+        difference_journal = _book_swap_difference_income(invoice, first_row, job_card, owed, swap.name)
+        job_card.swap_charges = _round_job_card_amount(flt(job_card.get("swap_charges")) + owed)
+        job_card.quotation_amount = _round_job_card_amount(flt(job_card.quotation_amount) + owed)
+        job_card.balance_amount = _job_card_balance(job_card.quotation_amount, flt(job_card.payment_amount))
+        job_card.flags.ignore_permissions = True
+        job_card.save(ignore_permissions=True)
+        _write_job_card_amendment_event(
+            job_card, "Item Swap",
+            note=f"{swap.name}: items swapped on {invoice.name}; {frappe.utils.fmt_money(owed, currency=invoice.currency)} owed",
+        )
+        frappe.db.set_value("CAW Invoice Item Swap", swap.name, "difference_journal", difference_journal)
+
+    money = lambda v: frappe.utils.fmt_money(v, currency=invoice.currency)
+    lines = [f"<b>Items swapped</b> ({swap.name}) by {frappe.utils.get_fullname(frappe.session.user)}"]
+    for entry in evaluation["rows"]:
+        lines.append(
+            f"• Row {entry['row_idx']}: {entry['old_item_code']} → {entry['new_item_code']} "
+            f"× {entry['qty']} — charged {money(entry['line_amount'])}, new item worth "
+            f"{money(entry['new_item_value'])} ({'+' if entry['difference'] >= 0 else '−'}{money(abs(entry['difference']))})"
+        )
+    if evaluation["outcome"] == "To Collect":
+        lines.append(f"Difference {money(evaluation['net_difference'])} owed on {job_card_name}, booked as income ({difference_journal}).")
+    elif evaluation["outcome"] == "Absorbed":
+        lines.append(f"Difference {money(abs(evaluation['net_difference']))} absorbed.")
+    else:
+        lines.append("No price difference.")
+    lines.append(f"Reason: {frappe.utils.escape_html(reason)}")
+    if stock_entries:
+        lines.append("Stock corrections: " + ", ".join(stock_entries))
+    invoice.add_comment("Comment", "<br>".join(lines))
+
+    job_card_info = frappe.db.get_value(
+        "CAW Job Card", job_card_name, ["customer", "customer_name", "quotation", "payment_mode"], as_dict=True
+    ) if job_card_name else None
+    return {
+        "swap": swap.name,
+        "outcome": evaluation["outcome"],
+        "net_difference": evaluation["net_difference"],
+        "difference_journal": difference_journal,
+        "job_card": job_card_name,
+        "job_card_info": job_card_info,
         "stock_entries": stock_entries,
         "warnings": warnings,
     }
@@ -8102,6 +8580,193 @@ def get_payments_page_totals(search=None, payment_method=None, from_date=None, t
         for method, total in sorted(totals_by_method.items(), key=lambda kv: -kv[1])
     ]
     return {"by_method": by_method, "total": _round_job_card_amount(grand_total)}
+
+
+# ── Payments page: Account Movements tab ───────────────────────────────────────────────────
+# A live reflection of the accounts behind the payment methods (Cash, Paybill, bank ...). For
+# each account the period's "captured" money comes only from the Payments recorded in sales;
+# every other posting to the account (journals, payment entries made outside sales, transfers,
+# expenses ...) is listed as not captured. The two are reconciled against the ledger so a gap
+# between a Payments row and what actually posted is visible rather than silent.
+
+ACCOUNT_MOVEMENTS_ROLES = ["System Manager", "Accounts Manager", "Accounts User"]
+ACCOUNT_MOVEMENTS_ROW_LIMIT = 500
+
+
+def _account_movement_accounts():
+    """{account: [modes of payment using it]} for enabled modes of payment with an account."""
+    company = _get_default_stock_company()
+    rows = frappe.db.sql(
+        """
+        SELECT mopa.default_account AS account, mop.name AS mode
+        FROM `tabMode of Payment` mop
+        JOIN `tabMode of Payment Account` mopa ON mopa.parent = mop.name
+        WHERE mop.enabled = 1 AND IFNULL(mopa.default_account, '') != '' AND mopa.company = %(company)s
+        ORDER BY mop.name
+        """,
+        {"company": company},
+        as_dict=True,
+    )
+    accounts = {}
+    for row in rows:
+        accounts.setdefault(row.account, []).append(row.mode)
+    return accounts
+
+
+@frappe.whitelist()
+def get_paybill_balance():
+    """What is actually in the Paybill account right now, for the top of the Payments page.
+
+    The Payments page's own method totals only add up what sales recorded coming in; money that
+    later left the account (transfers to the bank, withdrawals, expenses) is invisible there. This
+    reads the account's ledger balance, which has both. Only the balance is returned — Sales
+    Users have no access to the ledger itself — and only for the Phone-type (Paybill) accounts."""
+    frappe.only_for(["System Manager", "Accounts Manager", "Accounts User", "Sales User"])
+    company = _get_default_stock_company()
+    accounts = frappe.db.sql_list(
+        """
+        SELECT DISTINCT mopa.default_account
+        FROM `tabMode of Payment` mop
+        JOIN `tabMode of Payment Account` mopa ON mopa.parent = mop.name
+        WHERE mop.enabled = 1 AND mop.type = 'Phone' AND mopa.company = %(company)s
+          AND IFNULL(mopa.default_account, '') != ''
+        """,
+        {"company": company},
+    )
+    if not accounts:
+        return {"accounts": [], "balance": 0.0, "as_of": frappe.utils.now_datetime().strftime("%Y-%m-%d %H:%M:%S")}
+
+    balance = flt(frappe.db.sql(
+        """
+        SELECT SUM(debit - credit) FROM `tabGL Entry`
+        WHERE is_cancelled = 0 AND account IN %(accounts)s AND posting_date <= %(today)s
+        """,
+        {"accounts": accounts, "today": frappe.utils.today()},
+    )[0][0])
+    return {
+        "accounts": accounts,
+        "balance": _round_job_card_amount(balance),
+        "as_of": frappe.utils.now_datetime().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
+@frappe.whitelist()
+def get_payments_account_movements(from_date=None, to_date=None):
+    frappe.only_for(ACCOUNT_MOVEMENTS_ROLES)
+    from_date = frappe.utils.getdate(from_date or frappe.utils.today())
+    to_date = frappe.utils.getdate(to_date or from_date)
+    if to_date < from_date:
+        frappe.throw("To Date cannot be before From Date.")
+
+    accounts = _account_movement_accounts()
+    if not accounts:
+        return {"accounts": [], "entries": [], "totals": {}, "truncated": False}
+    names = list(accounts)
+
+    # Every Payment Entry a Payments row points at (superseded and voided ones are cancelled,
+    # so they carry no live ledger entries anyway): these are the captured postings.
+    captured_entries = {
+        pe for pe in frappe.get_all("Payments", filters={"payment_entry": ["is", "set"]}, pluck="payment_entry") if pe
+    }
+
+    def _balances(operator, day):
+        return {
+            r.account: flt(r.balance)
+            for r in frappe.db.sql(
+                f"""
+                SELECT account, SUM(debit - credit) AS balance
+                FROM `tabGL Entry`
+                WHERE is_cancelled = 0 AND account IN %(accounts)s AND posting_date {operator} %(day)s
+                GROUP BY account
+                """,
+                {"accounts": names, "day": day},
+                as_dict=True,
+            )
+        }
+
+    opening = _balances("<", from_date)
+    closing = _balances("<=", to_date)
+
+    # Captured in sales: the Payments records themselves, the only source of these amounts.
+    captured = {}
+    for row in frappe.db.sql(
+        """
+        SELECT deposit_to AS account, payment_type, SUM(amount) AS total
+        FROM `tabPayments`
+        WHERE deposit_to IN %(accounts)s AND date BETWEEN %(from_date)s AND %(to_date)s
+          AND IFNULL(is_voided, 0) = 0 AND IFNULL(is_corrected, 0) = 0
+        GROUP BY deposit_to, payment_type
+        """,
+        {"accounts": names, "from_date": from_date, "to_date": to_date},
+        as_dict=True,
+    ):
+        slot = captured.setdefault(row.account, {"in": 0.0, "out": 0.0})
+        slot["out" if row.payment_type == "Refund" else "in"] += flt(row.total)
+
+    # What the ledger posted for those captured payment entries, to reconcile against Payments.
+    captured_gl = {}
+    uncaptured = {}
+    entries = []
+    gl_rows = frappe.db.sql(
+        """
+        SELECT name, account, posting_date, voucher_type, voucher_no, party, remarks, against, debit, credit
+        FROM `tabGL Entry`
+        WHERE is_cancelled = 0 AND account IN %(accounts)s AND posting_date BETWEEN %(from_date)s AND %(to_date)s
+        ORDER BY posting_date DESC, creation DESC
+        """,
+        {"accounts": names, "from_date": from_date, "to_date": to_date},
+        as_dict=True,
+    )
+    for row in gl_rows:
+        is_captured = row.voucher_type == "Payment Entry" and row.voucher_no in captured_entries
+        bucket = captured_gl if is_captured else uncaptured
+        slot = bucket.setdefault(row.account, {"in": 0.0, "out": 0.0})
+        slot["in"] += flt(row.debit)
+        slot["out"] += flt(row.credit)
+        if not is_captured:
+            entries.append({
+                "account": row.account,
+                "posting_date": str(row.posting_date),
+                "voucher_type": row.voucher_type,
+                "voucher_no": row.voucher_no,
+                "party": row.party or "",
+                "remarks": (row.remarks or row.against or "")[:200],
+                "in": flt(row.debit),
+                "out": flt(row.credit),
+            })
+
+    out_accounts = []
+    totals = {"uncaptured_in": 0.0, "uncaptured_out": 0.0, "captured_in": 0.0, "captured_out": 0.0}
+    for account in names:
+        cap = captured.get(account, {"in": 0.0, "out": 0.0})
+        gl_cap = captured_gl.get(account, {"in": 0.0, "out": 0.0})
+        unc = uncaptured.get(account, {"in": 0.0, "out": 0.0})
+        row = {
+            "account": account,
+            "modes": accounts[account],
+            "opening": _round_job_card_amount(opening.get(account, 0)),
+            "captured_in": _round_job_card_amount(cap["in"]),
+            "captured_out": _round_job_card_amount(cap["out"]),
+            "uncaptured_in": _round_job_card_amount(unc["in"]),
+            "uncaptured_out": _round_job_card_amount(unc["out"]),
+            "closing": _round_job_card_amount(closing.get(account, 0)),
+            # Payments recorded in sales that the ledger does not show (no payment entry yet, a
+            # different amount, or a posting date outside the period): positive = ledger is short.
+            "captured_gap": _round_job_card_amount((cap["in"] - cap["out"]) - (gl_cap["in"] - gl_cap["out"])),
+        }
+        out_accounts.append(row)
+        for key in ("uncaptured_in", "uncaptured_out", "captured_in", "captured_out"):
+            totals[key] += row[key]
+
+    return {
+        "accounts": out_accounts,
+        "entries": entries[:ACCOUNT_MOVEMENTS_ROW_LIMIT],
+        "truncated": len(entries) > ACCOUNT_MOVEMENTS_ROW_LIMIT,
+        "entry_count": len(entries),
+        "totals": {k: _round_job_card_amount(v) for k, v in totals.items()},
+        "from_date": str(from_date),
+        "to_date": str(to_date),
+    }
 
 
 def _get_payments_report_data(search, payment_method, from_date, to_date):

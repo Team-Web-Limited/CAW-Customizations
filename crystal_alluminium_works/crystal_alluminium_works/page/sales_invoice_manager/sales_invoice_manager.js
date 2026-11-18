@@ -384,6 +384,23 @@ function sales_invoice_uses_visual_vat(doc) {
 	return flt(doc.total_taxes_and_charges || 0) === 0;
 }
 
+// The Builder's "-" % rides on the invoice (mapped from the quotation) and is baked into the item
+// rates: show it so the discount is visible at a glance, or say none was applied.
+function get_sales_invoice_discount_summary_html(doc) {
+	let percent = flt(doc.custom_price_adjustment_percent || 0);
+	let type = doc.custom_price_adjustment_type;
+	let text = 'None applied';
+	let color = 'var(--text-muted)';
+	if (percent && type === '-') {
+		text = `${percent}% discount applied`;
+		color = '#c0392b';
+	} else if (percent && type === '+') {
+		text = `No discount (+${percent}% price increase)`;
+		color = '#27ae60';
+	}
+	return `<div class="sim-subtotal-row sim-discount-row"><span>Discount</span><span style="font-weight:600;color:${color};">${text}</span></div>`;
+}
+
 function get_sales_invoice_display_total(doc) {
 	let total = get_sales_invoice_total_for_payment(doc);
 	return sales_invoice_uses_visual_vat(doc) ? flt(total * (1 + SALES_INVOICE_VAT_RATE)) : total;
@@ -844,6 +861,7 @@ async function render_sales_invoice_dashboard(page, invoice_name, wrapper, defau
 					${(!glass_html && !aluminium_html && !fittings_html && !ceiling_html && !other_html) ? '<p style="text-align:center;color:var(--text-muted);padding:20px;">No items in this invoice.</p>' : ''}
 				</div>
 				<div class="sim-total-breakdown">
+					${get_sales_invoice_discount_summary_html(doc)}
 					<div class="sim-subtotal-row">
 						<span>Subtotal</span>
 						<span>${format_currency(get_sales_invoice_display_total(doc) - get_sales_invoice_display_tax_total(doc), doc.currency || 'KES')}</span>
@@ -929,6 +947,9 @@ function get_sales_invoice_action_buttons(doc, quotation_name) {
 			buttons += `
 				<button class="btn btn-default" id="btn-edit-invoice-items">
 					<i class="fa fa-pencil" style="margin-right:6px;"></i>Edit Items
+				</button>
+				<button class="btn btn-default" id="btn-swap-invoice-items" title="Change which item a line names, keeping its charged amount">
+					<i class="fa fa-exchange" style="margin-right:6px;"></i>Swap Items
 				</button>
 			`;
 		}
@@ -1162,6 +1183,28 @@ function bind_sales_invoice_action_events(page, doc) {
 		});
 	});
 
+	// ── Swap Items: same-category item swap, every line keeps its charged amount ──
+	$body.find('#btn-swap-invoice-items').on('click', () => {
+		frappe.call({
+			method: 'crystal_alluminium_works.api.get_invoice_edit_eligibility',
+			args: { name: doc.name },
+			freeze: true,
+			callback: function(r) {
+				if (r.exc) return;
+				const elig = r.message || {};
+				if (!elig.can_edit) {
+					frappe.msgprint({
+						title: 'Cannot Swap Items',
+						indicator: 'red',
+						message: '<ul><li>' + (elig.reasons || ['Not eligible.']).join('</li><li>') + '</li></ul>',
+					});
+					return;
+				}
+				open_swap_invoice_items_dialog(page, doc);
+			},
+		});
+	});
+
 	// ── Amend Invoice (administrative fields only) ──
 	$body.find('#btn-amend-invoice').on('click', () => {
 		frappe.call({
@@ -1239,11 +1282,317 @@ function open_amend_invoice_dialog(page, draft) {
 	});
 }
 
+// The change log both Swap Items and Edit Items show: every swap (CAW Invoice Item Swap) and Edit
+// Items save (CAW Invoice Item Edit) on this invoice, newest first.
+function load_invoice_change_history($wrapper, invoice_name, currency) {
+	const esc = frappe.utils.escape_html;
+	const render = history => {
+		const outcome = h => {
+			if (h.kind !== 'Swap') return '';
+			const amount = flt(h.difference) ? ' ' + format_currency(Math.abs(flt(h.difference)), currency) : '';
+			if (h.outcome === 'To Collect') return `<span style="color:var(--red-600);font-weight:600;">${__('Owed')}${amount}</span>`;
+			if (h.outcome === 'Absorbed') return `<span style="color:var(--green-600);font-weight:600;">${__('Absorbed')}${amount}</span>`;
+			return `<span style="color:var(--text-muted);">${__('No difference')}</span>`;
+		};
+		const body = (history || []).length ? history.map(h => `
+			<tr>
+				<td style="white-space:nowrap;"><a href="/desk/${frappe.router.slug(h.doctype)}/${encodeURIComponent(h.name)}" target="_blank">${esc(h.name)}</a></td>
+				<td style="white-space:nowrap;">${esc(h.kind === 'Swap' ? __('Swap') : __('Edit'))}</td>
+				<td style="white-space:nowrap;">${esc(frappe.datetime.str_to_user(h.on || '') || '-')}</td>
+				<td>${esc(h.by_name || h.by || '-')}</td>
+				<td>${(h.lines || []).map(esc).join('<br>')}</td>
+				<td style="text-align:right;white-space:nowrap;">${format_currency(flt(h.original_amount), currency)}</td>
+				<td style="text-align:right;white-space:nowrap;">${outcome(h)}</td>
+				<td>${esc(h.reason || '')}</td>
+			</tr>
+		`).join('') : `<tr><td colspan="8" style="padding:16px;text-align:center;color:var(--text-muted);">${__('No swaps or edits on this invoice yet.')}</td></tr>`;
+		const count = (history || []).length;
+		// Collapsed by default so the form stays short; click the heading to open the log.
+		$wrapper.html(`
+			<details style="margin-top:6px;">
+				<summary style="font-weight:600;cursor:pointer;padding:6px 0;">${__('Change History')} <span style="font-weight:400;color:var(--text-muted);">(${count})</span></summary>
+				<div style="max-height:180px;overflow-y:auto;margin-top:6px;">
+					<table class="table table-bordered" style="margin-bottom:0;font-size:12px;">
+						<thead><tr><th>${__('Record')}</th><th>${__('Type')}</th><th>${__('Date')}</th><th>${__('By')}</th><th>${__('Changes')}</th><th style="text-align:right;" title="${__('What the changed lines were charged before this change, VAT inclusive')}">${__('Original Amount')}</th><th style="text-align:right;">${__('Difference')}</th><th>${__('Reason')}</th></tr></thead>
+						<tbody>${body}</tbody>
+					</table>
+				</div>
+			</details>
+		`);
+	};
+	frappe.xcall('crystal_alluminium_works.api.get_invoice_change_history', { name: invoice_name })
+		.then(render)
+		.catch(() => render([]));
+}
+
+// Swap which item an invoice line names. The line keeps the exact amount it was charged, so the
+// invoice total never moves; stock follows the goods (old item back in, new item out). The new
+// item's price against that amount decides the outcome, shown before saving: cheaper is
+// absorbed, dearer is owed on the Job Card and collected through the payment dialog
+// (api.swap_invoice_items, recorded as a CAW Invoice Item Swap).
+async function open_swap_invoice_items_dialog(page, doc) {
+	const esc = frappe.utils.escape_html;
+	const currency = doc.currency || 'KES';
+	const rows = (doc.items || []).filter(it => !it.custom_auto_generated);
+	if (!rows.length) {
+		frappe.msgprint(__('This invoice has no item lines to swap.'));
+		return;
+	}
+	// Everything in this modal is VAT inclusive, as the customer sees it. A line's stored amount is
+	// net: an invoice with no tax rows shows a visual 16% on top, and one with real tax rows is
+	// scaled by its own tax (grand total / net total) — the same rule the server prices swaps by.
+	const gross_factor = sales_invoice_uses_visual_vat(doc)
+		? 1 + SALES_INVOICE_VAT_RATE
+		: (flt(doc.net_total) ? flt(doc.grand_total) / flt(doc.net_total) : 1);
+	const display = amount => flt(amount) * gross_factor;
+	// The invoice total is already inclusive when it carries real tax rows.
+	const display_total = () => sales_invoice_uses_visual_vat(doc) ? flt(doc.grand_total) * (1 + SALES_INVOICE_VAT_RATE) : flt(doc.grand_total);
+
+	// Items may only be swapped within their own category (item group).
+	const groups = {};
+	const codes = [...new Set(rows.map(r => r.item_code))];
+	const group_rows = await frappe.xcall('frappe.client.get_list', {
+		doctype: 'Item', filters: { name: ['in', codes] }, fields: ['name', 'item_group'], limit_page_length: 0,
+	});
+	(group_rows || []).forEach(g => { groups[g.name] = g.item_group; });
+
+	const chosen = {};  // row name -> new item code
+	let preview = null;
+	let preview_seq = 0;
+
+	const d = new frappe.ui.Dialog({
+		title: `Swap Items — ${doc.name}`,
+		size: 'extra-large',
+		fields: [
+			{ fieldtype: 'HTML', fieldname: 'intro' },
+			{ fieldtype: 'HTML', fieldname: 'rows_html' },
+			{ fieldtype: 'HTML', fieldname: 'summary_html' },
+			{ fieldtype: 'Small Text', fieldname: 'reason', label: __('Reason for the swap'), reqd: 1 },
+			{ fieldtype: 'HTML', fieldname: 'history_html' },
+		],
+		primary_action_label: __('Swap Items'),
+		primary_action: function(values) {
+			const swaps = Object.keys(chosen).filter(k => chosen[k]).map(k => ({ row_name: k, new_item_code: chosen[k] }));
+			if (!swaps.length) {
+				frappe.msgprint(__('Choose at least one new item.'));
+				return;
+			}
+			if (!preview) {
+				frappe.msgprint(__('Wait for the price check to finish.'));
+				return;
+			}
+			const diff = Math.abs(flt(preview.net_difference));
+			const consequence = preview.outcome === 'To Collect'
+				? __('{0} will be owed on the Job Card and the payment dialog will open to collect it.', [format_currency(diff, currency)])
+				: (preview.outcome === 'Absorbed'
+					? __('{0} will be absorbed.', [format_currency(diff, currency)])
+					: __('There is no price difference.'));
+			frappe.confirm(
+				__('Swap {0} item(s)? The invoice total stays {1}. {2}', [swaps.length, format_currency(display_total(), currency), consequence]),
+				() => {
+					frappe.call({
+						method: 'crystal_alluminium_works.api.swap_invoice_items',
+						args: { name: doc.name, swaps: JSON.stringify(swaps), reason: values.reason },
+						freeze: true,
+						freeze_message: __('Swapping items...'),
+						callback: function(r) {
+							if (r.exc) return;
+							d.hide();
+							const res = r.message || {};
+							if ((res.warnings || []).length) {
+								frappe.msgprint({
+									title: __('Swapped with Warnings'),
+									indicator: 'orange',
+									message: '<ul><li>' + res.warnings.map(esc).join('</li><li>') + '</li></ul>',
+								});
+							}
+							const refresh = () => render_sales_invoice_dashboard(page, doc.name);
+							if (res.outcome === 'To Collect' && window.CAWPaymentDialog && res.job_card_info) {
+								frappe.show_alert({ message: __('Items swapped ({0}). Collect the difference.', [res.swap]), indicator: 'orange' });
+								const info = res.job_card_info;
+								// No quotation here: that would make it a deposit, saved as loose credit
+								// instead of being allocated to the Job Card that owes the difference.
+								window.CAWPaymentDialog.open({
+									customer: info.customer,
+									jobCard: res.job_card,
+									payment_type: 'General Payment',
+									lockPaymentType: true,
+									amount: flt(res.net_difference),
+									walkinName: info.payment_mode === 'Cash Customer' ? (info.customer_name || '') : '',
+									title: __('Collect Swap Difference — {0}', [res.job_card]),
+									onSaved: refresh,
+								});
+								refresh();
+							} else {
+								frappe.show_alert({ message: __('Items swapped ({0})', [res.swap]), indicator: 'green' });
+								refresh();
+							}
+						},
+					});
+				}
+			);
+		},
+	});
+
+	d.fields_dict.intro.$wrapper.html(`
+		<div style="font-size:12px; color:var(--text-muted); margin-bottom:10px;">
+			Pick the item that actually went out. Each line keeps the amount it was charged, so the invoice
+			total does not change; stock is moved from the old item to the new one. Only items in the same
+			category can be chosen.
+		</div>
+	`);
+
+	load_invoice_change_history(d.fields_dict.history_html.$wrapper, doc.name, currency);
+
+	// The Swap To dropdown opens inside the table: the table wrapper must not clip it (no
+	// overflow scrolling here), the modal body must let it overflow, and it has to sit above
+	// the modal's own layers.
+	d.$wrapper.find('.modal-body').css('overflow', 'visible');
+	d.$wrapper.find('.modal-content').css('overflow', 'visible');
+	d.$wrapper.append(`<style>
+		.sw-target .awesomplete > ul { z-index: 1100 !important; min-width: 320px; max-height: 260px; overflow-y: auto; }
+		.sw-target .awesomplete { display: block; }
+	</style>`);
+
+	d.fields_dict.rows_html.$wrapper.html(`
+		<div style="overflow:visible;">
+			<table class="table table-bordered" style="margin-bottom:8px;">
+				<thead><tr>
+					<th>#</th><th>Current Item</th><th>Category</th><th style="text-align:right;">Qty</th>
+					<th style="text-align:right;">Charged (incl. VAT)</th><th style="min-width:240px;">Swap To</th>
+					<th style="text-align:right;">New Item Value (incl. VAT)</th><th style="text-align:right;">Difference</th>
+				</tr></thead>
+				<tbody>
+					${rows.map(r => `
+						<tr data-row="${esc(r.name)}">
+							<td>${r.idx}</td>
+							<td><div style="font-weight:600;">${esc(r.item_code)}</div><div style="font-size:11px;color:var(--text-muted);">${esc(r.item_name || '')}</div></td>
+							<td>${esc(groups[r.item_code] || r.custom_product_category || '-')}</td>
+							<td style="text-align:right;">${flt(r.qty)}</td>
+							<td style="text-align:right;">${format_currency(display(r.amount), currency)}</td>
+							<td class="sw-target"></td>
+							<td class="sw-value" style="text-align:right;color:var(--text-muted);">-</td>
+							<td class="sw-diff" style="text-align:right;color:var(--text-muted);">-</td>
+						</tr>
+					`).join('')}
+				</tbody>
+			</table>
+		</div>
+	`);
+
+	rows.forEach(r => {
+		const $cell = d.fields_dict.rows_html.$wrapper.find(`tr[data-row="${r.name}"] .sw-target`);
+		const control = frappe.ui.form.make_control({
+			parent: $cell,
+			df: {
+				fieldtype: 'Link',
+				options: 'Item',
+				fieldname: 'swap_' + r.idx,
+				placeholder: __('Keep {0}', [r.item_code]),
+				get_query: () => ({
+					filters: {
+						item_group: groups[r.item_code] || '',
+						disabled: 0,
+						is_sales_item: 1,
+						name: ['!=', r.item_code],
+					},
+				}),
+				change: function() {
+					const value = this.get_value();
+					if ((chosen[r.name] || '') === (value || '')) return;
+					chosen[r.name] = value || '';
+					refresh_preview();
+				},
+			},
+			render_input: true,
+		});
+		control.$wrapper.css('margin-bottom', 0);
+	});
+
+	function render_summary() {
+		const $summary = d.fields_dict.summary_html.$wrapper;
+		const $rows = d.fields_dict.rows_html.$wrapper;
+		$rows.find('.sw-value, .sw-diff').text('-').css('color', 'var(--text-muted)');
+		if (!preview) {
+			$summary.html('');
+			return;
+		}
+		(preview.rows || []).forEach(p => {
+			const $tr = $rows.find(`tr[data-row="${p.row_name}"]`);
+			const diff = flt(p.difference);
+			$tr.find('.sw-value').text(format_currency(p.new_item_value, currency)).css('color', '');
+			$tr.find('.sw-diff')
+				.text(`${diff > 0 ? '+' : (diff < 0 ? '−' : '')}${format_currency(Math.abs(diff), currency)}`)
+				.css('color', diff > 0 ? 'var(--red-600)' : (diff < 0 ? 'var(--green-600)' : ''));
+		});
+		const diff = Math.abs(flt(preview.net_difference));
+		let banner;
+		if (preview.outcome === 'To Collect') {
+			banner = `<div style="font-weight:600;color:var(--red-600);">${__('New items cost {0} more — owed on {1} and booked as income (no new invoice, no extra VAT); the payment dialog opens to collect it.', [format_currency(diff, currency), esc(preview.job_card || '')])}</div>`;
+		} else if (preview.outcome === 'Absorbed') {
+			banner = `<div style="font-weight:600;color:var(--green-600);">${__('New items cost {0} less — absorbed. The customer pays nothing more.', [format_currency(diff, currency)])}</div>`;
+		} else {
+			banner = `<div style="font-weight:600;">${__('No price difference.')}</div>`;
+		}
+		const warnings = (preview.warnings || []).length
+			? `<ul style="margin:8px 0 0 18px;color:var(--orange-600);">${preview.warnings.map(w => `<li>${esc(w)}</li>`).join('')}</ul>`
+			: '';
+		$summary.html(`
+			<div style="margin:6px 0 12px; padding:10px 12px; border-radius:6px; background:var(--control-bg);">
+				<div style="display:flex; gap:24px; flex-wrap:wrap; font-size:13px; margin-bottom:6px;">
+					<span>${__('Charged (locked)')}: <b>${format_currency(preview.charged_total, currency)}</b></span>
+					<span>${__('New items value')}: <b>${format_currency(preview.new_value_total, currency)}</b></span>
+					<span>${__('Invoice total stays')}: <b>${format_currency(display_total(), currency)}</b></span>
+				</div>
+				${banner}
+				${warnings}
+			</div>
+		`);
+	}
+
+	function refresh_preview() {
+		const swaps = Object.keys(chosen).filter(k => chosen[k]).map(k => ({ row_name: k, new_item_code: chosen[k] }));
+		const seq = ++preview_seq;
+		if (!swaps.length) {
+			preview = null;
+			render_summary();
+			return;
+		}
+		preview = null;
+		d.fields_dict.summary_html.$wrapper.html(`<div style="margin:6px 0 12px;color:var(--text-muted);">${__('Checking prices...')}</div>`);
+		frappe.call({
+			method: 'crystal_alluminium_works.api.preview_invoice_item_swap',
+			args: { name: doc.name, swaps: JSON.stringify(swaps) },
+			callback: function(r) {
+				if (seq !== preview_seq) return;
+				preview = r.message || null;
+				render_summary();
+			},
+			error: function() {
+				if (seq !== preview_seq) return;
+				preview = null;
+				d.fields_dict.summary_html.$wrapper.html('');
+			},
+		});
+	}
+
+	d.show();
+}
+
 function open_edit_invoice_items_dialog(page, doc) {
 	const esc = frappe.utils.escape_html;
 	const manual_rows = (doc.items || []).filter(it => !it.custom_auto_generated);
 	const original_total = manual_rows.reduce((s, it) => s + flt(it.amount), 0);
 	const currency = doc.currency || 'KES';
+	// Shown VAT inclusive, as the customer sees it; rows keep their stored net rate and amount
+	// underneath, so what is saved (and the server's total lock) is unchanged. An invoice with
+	// no tax rows shows a visual 16%; one with real tax rows is scaled by grand total / net total.
+	const gross_factor = sales_invoice_uses_visual_vat(doc)
+		? 1 + SALES_INVOICE_VAT_RATE
+		: (flt(doc.net_total) ? flt(doc.grand_total) / flt(doc.net_total) : 1);
+	// The server holds the total within ±2 of grand_total: net on a visual-VAT invoice, inclusive
+	// when real tax rows exist. Check the balance on that same basis.
+	const lock_factor = sales_invoice_uses_visual_vat(doc) ? 1 : gross_factor;
 
 	// Working copy of the editable rows. Qty edits scale the row's driving
 	// quantity fields proportionally, mirroring the server's partial scaling.
@@ -1412,9 +1761,13 @@ function open_edit_invoice_items_dialog(page, doc) {
 	const d = new frappe.ui.Dialog({
 		title: `Edit Items — ${doc.name}`,
 		size: 'extra-large',
-		fields: [{ fieldtype: 'HTML', fieldname: 'items_html' }],
+		fields: [
+			{ fieldtype: 'HTML', fieldname: 'items_html' },
+			{ fieldtype: 'Small Text', fieldname: 'reason', label: __('Reason for the edit'), reqd: 1 },
+			{ fieldtype: 'HTML', fieldname: 'history_html' },
+		],
 		primary_action_label: 'Save Changes',
-		primary_action: function() {
+		primary_action: function(values) {
 			const payload = rows.map(r => {
 				const row = { row_name: r.row_name, item_code: r.item_code, qty: r.qty, rate: r.rate };
 				if (r.customs) {
@@ -1440,7 +1793,7 @@ function open_edit_invoice_items_dialog(page, doc) {
 				() => {
 					frappe.call({
 						method: 'crystal_alluminium_works.api.edit_submitted_invoice_items',
-						args: { name: doc.name, items: JSON.stringify(payload) },
+						args: { name: doc.name, items: JSON.stringify(payload), reason: values.reason },
 						freeze: true,
 						freeze_message: 'Saving invoice edits...',
 						callback: function(r) {
@@ -1464,6 +1817,7 @@ function open_edit_invoice_items_dialog(page, doc) {
 	});
 
 	const $wrap = d.get_field('items_html').$wrapper;
+	load_invoice_change_history(d.get_field('history_html').$wrapper, doc.name, currency);
 
 	function render_table() {
 		let body_html = rows.map((r, idx) => `
@@ -1474,8 +1828,8 @@ function open_edit_invoice_items_dialog(page, doc) {
 				</td>
 				<td style="padding:6px 8px;">${esc(r.category || '—')}</td>
 				<td style="padding:6px 8px;"><input type="number" step="any" min="0" class="form-control ei-qty" value="${r.qty}" style="width:90px;"></td>
-				<td style="padding:6px 8px;"><input type="number" step="any" min="0" class="form-control ei-rate" value="${r.rate}" style="width:110px;"></td>
-				<td style="padding:6px 8px; text-align:right;" class="ei-amount">${format_currency(row_amount(r), currency)}</td>
+				<td style="padding:6px 8px;"><input type="number" step="any" min="0" class="form-control ei-rate" value="${flt(flt(r.rate) * gross_factor, 4)}" style="width:110px;"></td>
+				<td style="padding:6px 8px; text-align:right;" class="ei-amount">${format_currency(row_amount(r) * gross_factor, currency)}</td>
 				<td style="padding:6px 8px; white-space:nowrap;">
 					${BUILDER_CATEGORIES.includes(r.category) ? '<button class="btn btn-xs btn-default ei-edit" title="Edit item" style="margin-right:4px;"><i class="fa fa-pencil"></i></button>' : ''}
 					${r.row_name ? '<button class="btn btn-xs btn-default ei-clear" title="Clear changes (restore original)" style="margin-right:4px;"><i class="fa fa-undo"></i></button>' : ''}
@@ -1491,8 +1845,8 @@ function open_edit_invoice_items_dialog(page, doc) {
 			<div style="overflow-x:auto;">
 				<table class="table table-bordered" style="margin-bottom:8px;">
 					<thead><tr>
-						<th>Item</th><th>Category</th><th>Qty</th><th>Rate</th>
-						<th style="text-align:right;">Amount</th><th></th>
+						<th>Item</th><th>Category</th><th>Qty</th><th>Rate (incl. VAT)</th>
+						<th style="text-align:right;">Amount (incl. VAT)</th><th></th>
 					</tr></thead>
 					<tbody>${body_html}</tbody>
 				</table>
@@ -1513,10 +1867,10 @@ function open_edit_invoice_items_dialog(page, doc) {
 			const idx = parseInt($(this).closest('tr').data('idx'), 10);
 			const row = rows[idx];
 			if ($(this).hasClass('ei-qty')) row.qty = flt($(this).val());
-			else row.rate = flt($(this).val());
+			else row.rate = flt($(this).val()) / gross_factor;  // typed VAT inclusive, stored net
 			// Manual qty/rate edit takes over from the builder's composite preview.
 			row.builder_amount = null;
-			$(this).closest('tr').find('.ei-amount').text(format_currency(row_amount(row), currency));
+			$(this).closest('tr').find('.ei-amount').text(format_currency(row_amount(row) * gross_factor, currency));
 			update_totals();
 		});
 
@@ -1585,12 +1939,12 @@ function open_edit_invoice_items_dialog(page, doc) {
 	function update_totals() {
 		const new_total = rows.reduce((s, r) => s + row_amount(r), 0);
 		const diff = new_total - original_total;
-		const balanced = Math.abs(diff) <= 2;
+		const balanced = Math.abs(diff * lock_factor) <= 2;
 		$wrap.find('#ei-totals').html(`
-			<div>Original items total: <b>${format_currency(original_total, currency)}</b></div>
-			<div>New items total: <b>${format_currency(new_total, currency)}</b></div>
+			<div>Original items total (incl. VAT): <b>${format_currency(original_total * gross_factor, currency)}</b></div>
+			<div>New items total (incl. VAT): <b>${format_currency(new_total * gross_factor, currency)}</b></div>
 			<div style="color:${balanced ? 'var(--green-600, green)' : 'var(--red-500, red)'};">
-				Difference: <b>${format_currency(diff, currency)}</b> ${balanced ? '✓' : '— must stay within ±2'}
+				Difference: <b>${format_currency(diff * gross_factor, currency)}</b> ${balanced ? '✓' : '— must stay within ±2'}
 			</div>
 		`);
 		d.get_primary_btn().prop('disabled', !balanced || !rows.length);

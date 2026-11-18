@@ -121,7 +121,11 @@
 			// custom_customer_name in hand). Without this, refresh_walkin_field has nothing
 			// to go on but whatever was typed into Customer — blank for a caller that set the
 			// field programmatically — and silently leaves Name blank instead.
-			walkinName: options.walkinName || route_prefill.walkinName || ''
+			walkinName: options.walkinName || route_prefill.walkinName || '',
+			// Optional — pin the payment to this one Job Card (e.g. collecting an invoice item
+			// swap's difference): the allocations grid keeps only its row, at the prefill amount
+			// capped to what the card still owes, instead of every outstanding card.
+			jobCard: options.jobCard || ''
 		};
 		// e.g. Quotation Manager's Record Deposit locks this to General Payment (and Refund
 		// Deposit to Refund) so staff can't accidentally flip the direction of the money.
@@ -414,12 +418,13 @@
 			});
 		}
 
-		// Tag the payment to the walk-in's own quotation, so money taken before a Job Card
-		// exists still lands against the right job once one is created (see api.py
-		// get_quotation_deposit_credit). Nothing else can carry that link: the Customer field
-		// is the shared record, and there's no Job Card to allocate against yet.
+		// Payments are taken against Job Cards only; the Quotation field is hidden and is set
+		// solely by Quotation Manager's Record/Refund Deposit (prefill.quotation). It used to be
+		// auto-filled for a walk-in with one quotation, which tagged money as a loose quotation
+		// deposit instead of allocating it — so that guess is switched off.
+		const AUTO_TAG_WALKIN_QUOTATION = false;
 		function resolve_walkin_quotation(customer) {
-			if (!d || !d.fields_dict.quotation || prefill.quotation) {
+			if (!AUTO_TAG_WALKIN_QUOTATION || !d || !d.fields_dict.quotation || prefill.quotation) {
 				return;  // caller pinned the quotation — don't second-guess it
 			}
 			let walkin = get_walkin_name();
@@ -482,6 +487,15 @@
 						// Nothing outstanding — the empty grid says that on its own, and the
 						// summary row above must keep showing the advance / unallocated figures.
 						return;
+					}
+
+					if (prefill.jobCard) {
+						let pinned = rows.filter(item => item.job_card === prefill.jobCard);
+						if (pinned.length) {
+							rows = pinned.map(item => Object.assign({}, item, {
+								amount: prefill.amount ? Math.min(flt(prefill.amount), flt(item.amount)) : item.amount
+							}));
+						}
 					}
 
 					// Populate grid with one row per outstanding job card
@@ -609,6 +623,10 @@
 					label: 'Quotation',
 					options: 'Quotation',
 					default: prefill.quotation || '',
+					// Hidden: payments go against Job Cards (the allocations grid). Only the
+					// Quotation Manager's Record/Refund Deposit sets it, for money taken before a
+					// Job Card exists; hidden fields are still saved with the payment.
+					hidden: 1,
 					// Read-only only when the caller pinned it (Record/Refund Deposit already
 					// knows which quotation it means) — otherwise searchable, so a walk-in who
 					// only has a Quotation so far (no Job Card yet, e.g. a deposit taken before
