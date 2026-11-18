@@ -390,15 +390,18 @@ function get_sales_invoice_discount_summary_html(doc) {
 	let percent = flt(doc.custom_price_adjustment_percent || 0);
 	let type = doc.custom_price_adjustment_type;
 	let text = 'None applied';
+	let label = 'Discount';
 	let color = 'var(--text-muted)';
 	if (percent && type === '-') {
 		text = `${percent}% discount applied`;
 		color = '#c0392b';
 	} else if (percent && type === '+') {
-		text = `No discount (+${percent}% price increase)`;
+		// A "+" is a markup, not a discount.
+		label = 'Markup';
+		text = `+${percent}% markup applied`;
 		color = '#27ae60';
 	}
-	return `<div class="sim-subtotal-row sim-discount-row"><span>Discount</span><span style="font-weight:600;color:${color};">${text}</span></div>`;
+	return `<div class="sim-subtotal-row sim-discount-row"><span>${label}</span><span style="font-weight:600;color:${color};">${text}</span></div>`;
 }
 
 function get_sales_invoice_display_total(doc) {

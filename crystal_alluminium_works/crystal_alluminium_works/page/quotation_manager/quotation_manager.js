@@ -93,7 +93,7 @@ function get_manager_price_adjustment(doc) {
 }
 
 // One line for the totals box so the discount is visible at a glance. The Builder's "-" % is the
-// discount (a "+" % is a price increase); `amount` is how much it took off (or added).
+// discount (a "+" % is a markup, shown as such); `amount` is how much it took off (or added).
 function get_manager_discount_summary_html(doc, amount = null) {
 	let adjustment = get_manager_price_adjustment(doc);
 	let label_style = 'color:var(--text-muted);';
@@ -103,13 +103,15 @@ function get_manager_discount_summary_html(doc, amount = null) {
 	}
 	let is_discount = adjustment.type === '-';
 	let color = is_discount ? '#c0392b' : '#27ae60';
+	// A "+" is a markup, not a discount: the row is headed Markup and says so.
+	let label = is_discount ? 'Discount' : 'Markup';
 	let text = is_discount
 		? `${adjustment.percent}% discount applied`
-		: `No discount (+${adjustment.percent}% price increase)`;
+		: `+${adjustment.percent}% markup applied`;
 	if (amount !== null && Math.abs(amount) >= 0.005) {
 		text += ` (${amount < 0 ? '−' : '+'}${format_currency(Math.abs(amount), doc.currency)})`;
 	}
-	return `<div class="qm-discount-row" style="${row_style}"><span style="${label_style}">Discount</span><span style="font-weight:600;color:${color};">${text}</span></div>`;
+	return `<div class="qm-discount-row" style="${row_style}"><span style="${label_style}">${label}</span><span style="font-weight:600;color:${color};">${text}</span></div>`;
 }
 
 function get_manager_unadjusted_value(value, doc) {
