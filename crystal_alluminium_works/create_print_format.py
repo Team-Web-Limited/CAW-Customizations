@@ -400,7 +400,10 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
    columns (their charges are still in the row's Amount). Quotations keep them, headed PS / HL /
    NT to fit the 14px table, as does the combined table Sales Orders print. #}}
 {{% set show_glass_services = section_rows.glass and (not sectioned_items or doc.doctype == 'Quotation') %}}
-{{% set short_glass_service_headers = doc.doctype == 'Quotation' %}}
+{{# A Sales Invoice still leaves out Holes / Notches, but does show which edges were polished
+   (Polish Sides), the same W/H column a Quotation has. #}}
+{{% set show_polish_sides = show_glass_services or (section_rows.glass and doc.doctype == 'Sales Invoice') %}}
+{{% set short_glass_service_headers = doc.doctype in ['Quotation', 'Sales Invoice'] %}}
 {{% set large_glass_table = section_rows.glass and sectioned_items %}}
 {{# A Glass section mixing types (3mm and 4mm clear, say) prints each type's rows together, in the
    order the type first appears, followed by that type's own Pcs / Qty / Amount subtotal. #}}
@@ -454,8 +457,10 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
             {{% endif %}}
             <th style="text-align: right; white-space: nowrap;">Rate</th>
             <th class="cq-uom" style="text-align: center; white-space: nowrap;">UOM</th>
-            {{% if show_glass_services %}}
+            {{% if show_polish_sides %}}
             <th style="text-align: left; white-space: nowrap;" title="Polish Sides">{{{{ 'PS' if short_glass_service_headers else 'Polish Sides' }}}}</th>
+            {{% endif %}}
+            {{% if show_glass_services %}}
             <th style="text-align: center; white-space: nowrap;" title="Holes">{{{{ 'HL' if short_glass_service_headers else 'Holes' }}}}</th>
             <th style="text-align: center; white-space: nowrap;" title="Notches">{{{{ 'NT' if short_glass_service_headers else 'Notches' }}}}</th>
             {{% endif %}}
@@ -589,7 +594,7 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
                     <td style="text-align: center; white-space: nowrap;">{{{{ qty_label }}}}</td>
                     <td style="text-align: right; white-space: nowrap;">{{{{ frappe.format_value(display_rate, df={{'fieldtype': 'Currency'}}, doc=doc) }}}}</td>
                     <td class="cq-uom" style="text-align: center; white-space: nowrap;">{{{{ print_uom(parent, uom) }}}}</td>
-                    {{% if show_glass_services %}}
+                    {{% if show_polish_sides %}}
                     {{# Polish / Holes / Notches: the count and its "(Sh …)" charge each stay whole, but the
                        charge may drop to a second line, so these columns never squeeze the Item column. #}}
                     <td>
@@ -603,6 +608,8 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
                             {{% if glass_service.polish_amount %}} <span style="white-space: nowrap;">({{{{ frappe.format_value(glass_service.polish_amount, df={{'fieldtype': 'Currency'}}, doc=doc) }}}})</span>{{% endif %}}
                         {{% else %}}-{{% endif %}}
                     </td>
+                    {{% endif %}}
+                    {{% if show_glass_services %}}
                     <td style="text-align: center;">
                         {{% if parent_category == 'Glass' and not is_sheet_glass and frappe.utils.cint(parent.custom_holes or 0) > 0 %}}
                             {{{{ (frappe.utils.cint(parent.custom_holes or 0) * frappe.utils.cint(parent.qty or 0)) }}}}
@@ -628,8 +635,10 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
                     <td style="text-align: center; white-space: nowrap;">{{{{ frappe.utils.flt(glass_group_totals.pcs, 2) }}}}</td>
                     <td style="text-align: center; white-space: nowrap;">{{{{ frappe.utils.flt(glass_group_totals.qty, 3) }}}}</td>
                     <td colspan="2">&nbsp;</td>
-                    {{% if show_glass_services %}}
+                    {{% if show_polish_sides %}}
                     <td>&nbsp;</td>
+                    {{% endif %}}
+                    {{% if show_glass_services %}}
                     <td style="text-align: center; white-space: nowrap;">{{{{ glass_group_totals.holes }}}}</td>
                     <td style="text-align: center; white-space: nowrap;">{{{{ glass_group_totals.notches }}}}</td>
                     {{% endif %}}
@@ -656,8 +665,10 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
             {{% endif %}}
             <td style="text-align: center; white-space: nowrap; font-weight: bold;">{{{{ frappe.utils.flt(quotation_totals.qty, 3) }}}}</td>
             <td colspan="2" style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
-            {{% if show_glass_services %}}
+            {{% if show_polish_sides %}}
             <td style="border-bottom: 1px solid #dee2e6;">&nbsp;</td>
+            {{% endif %}}
+            {{% if show_glass_services %}}
             <td style="text-align: center; white-space: nowrap; font-weight: bold;">{{{{ quotation_totals.holes }}}}</td>
             <td style="text-align: center; white-space: nowrap; font-weight: bold;">{{{{ quotation_totals.notches }}}}</td>
             {{% endif %}}

@@ -132,6 +132,16 @@ function refresh_job_card_payment_options(dialog, selected_option) {
 	dialog.set_df_property('payment_option', 'options', options.join('\n'));
 	dialog.set_value('payment_option', next_option);
 
+	// An Invoice Customer pays through the Payments page against their invoice, so there is no
+	// payment method or amount to capture here (same as the Create Job Card modal). The method
+	// keeps a value — the Job Card's Payment Option is mandatory — but is neither shown nor required.
+	let is_invoice = normalize_job_card_payment_mode(payment_mode) === 'invoice';
+	dialog.set_df_property('payment_option', 'hidden', is_invoice ? 1 : 0);
+	dialog.set_df_property('payment_option', 'reqd', is_invoice ? 0 : 1);
+	dialog.set_df_property('payment_amount', 'hidden', is_invoice ? 1 : 0);
+	dialog.set_df_property('record_payment_section', 'hidden', is_invoice ? 1 : 0);
+	dialog.set_df_property('balance_amount', 'label', is_invoice ? 'Amount to Invoice' : 'Balance');
+
 	// The chosen payment_option is the Mode of Payment, so derive its deposit account.
 	refresh_job_card_deposit_to_options(dialog);
 }
@@ -1146,7 +1156,7 @@ async function open_edit_job_card_modal(page, job_card, quotation) {
 			// money that was never paid (HAUSSMAN, QTN-2026-60178). Staff type what was received.
 			{ fieldtype: 'Currency', fieldname: 'payment_amount', label: 'Payment Amount', default: 0 },
 			{ fieldtype: 'Currency', fieldname: 'balance_amount', label: 'Balance', read_only: 1, default: payment_limit },
-			{ fieldtype: 'Section Break', label: 'Record Payment' },
+			{ fieldtype: 'Section Break', label: 'Record Payment', fieldname: 'record_payment_section' },
 			{
 				fieldtype: 'Link',
 				fieldname: 'deposit_to',
@@ -1177,7 +1187,8 @@ async function open_edit_job_card_modal(page, job_card, quotation) {
 				return CAWPaymentDialog.end_save(d);
 			}
 
-			let new_payment_amount = flt(values.payment_amount || 0);
+			let is_invoice = normalize_job_card_payment_mode(values.payment_mode) === 'invoice';
+			let new_payment_amount = is_invoice ? 0 : flt(values.payment_amount || 0);
 
 			frappe.call({
 				method: 'crystal_alluminium_works.api.create_job_card_from_quotation',
@@ -1186,12 +1197,12 @@ async function open_edit_job_card_modal(page, job_card, quotation) {
 					customer: values.customer,
 					customer_name: values.customer_name,
 					payment_mode: normalize_job_card_payment_mode(values.payment_mode),
-					payment_option: values.payment_option,
+					payment_option: d.get_value('payment_option') || values.payment_option,
 					customer_pin: values.customer_pin,
 					phone_number: values.phone_number,
 					quotation_amount: values.quotation_amount,
 					payment_amount: new_payment_amount,
-					balance_amount: values.balance_amount
+					balance_amount: is_invoice ? values.quotation_amount : values.balance_amount
 				},
 				freeze: true,
 				freeze_message: 'Saving Job Card...',

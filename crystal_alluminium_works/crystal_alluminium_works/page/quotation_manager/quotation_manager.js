@@ -92,6 +92,26 @@ function get_manager_price_adjustment(doc) {
 	return multiplier ? { type, percent, multiplier } : null;
 }
 
+// One line for the totals box so the discount is visible at a glance. The Builder's "-" % is the
+// discount (a "+" % is a price increase); `amount` is how much it took off (or added).
+function get_manager_discount_summary_html(doc, amount = null) {
+	let adjustment = get_manager_price_adjustment(doc);
+	let label_style = 'color:var(--text-muted);';
+	let row_style = 'display:flex; justify-content:space-between; align-items:center; font-size:13px; text-transform:uppercase; padding-bottom:10px; margin-bottom:10px; border-bottom:1px dashed var(--border-color);';
+	if (!adjustment) {
+		return `<div class="qm-discount-row" style="${row_style}"><span style="${label_style}">Discount</span><span style="font-weight:600;color:var(--text-muted);">None applied</span></div>`;
+	}
+	let is_discount = adjustment.type === '-';
+	let color = is_discount ? '#c0392b' : '#27ae60';
+	let text = is_discount
+		? `${adjustment.percent}% discount applied`
+		: `No discount (+${adjustment.percent}% price increase)`;
+	if (amount !== null && Math.abs(amount) >= 0.005) {
+		text += ` (${amount < 0 ? '−' : '+'}${format_currency(Math.abs(amount), doc.currency)})`;
+	}
+	return `<div class="qm-discount-row" style="${row_style}"><span style="${label_style}">Discount</span><span style="font-weight:600;color:${color};">${text}</span></div>`;
+}
+
 function get_manager_unadjusted_value(value, doc) {
 	let adjustment = get_manager_price_adjustment(doc);
 	return adjustment ? flt(value || 0) / adjustment.multiplier : flt(value || 0);
@@ -289,7 +309,27 @@ async function get_sheet_builder_details(item, glass_type) {
 	};
 }
 
-function render_manager_review_glass_row(item, index) {
+// The glass type with the VAT-inclusive rate it was quoted at beneath it (per sft, or per sheet for
+// a Full Sheet). With a Builder +/- % on the quotation the rate shown is the adjusted one the
+// amounts were built from, with the pre-adjustment rate struck through.
+function render_manager_glass_type_cell(item, doc) {
+	let name = frappe.utils.escape_html(item.item_name || item.item_code || '');
+	let rate = get_builder_glass_base_rate(item);
+	if (!(rate > 0)) {
+		return `<td style="font-weight:500; white-space:nowrap;">${name}</td>`;
+	}
+	let unit = item.custom_glass_sale_mode === 'Full Sheet' ? 'sheet' : 'sft';
+	let currency = doc ? doc.currency : 'KES';
+	let before = get_manager_unadjusted_value(rate, doc);
+	let struck = get_manager_price_adjustment(doc) && flt(before, 2) !== flt(rate, 2)
+		? ` <span title="Before price adjustment" style="text-decoration:line-through;">${format_currency(before, currency)}</span>`
+		: '';
+	return `<td style="font-weight:500; white-space:nowrap;">${name}
+		<span style="margin-left:8px; font-size:11px; font-weight:400; color:var(--text-muted);">${format_currency(rate, currency)}${struck} / ${unit}</span>
+	</td>`;
+}
+
+function render_manager_review_glass_row(item, index, doc) {
 	if (item.custom_glass_sale_mode === 'Sheet') {
 		let pieces = flt(item.custom_sheet_pcs || item.qty || 0);
 		let sheet_dimensions = get_manager_sheet_size_dimensions(item.custom_sheet_size);
@@ -308,7 +348,8 @@ function render_manager_review_glass_row(item, index) {
 				<td style="text-align:center; white-space:nowrap;">${sheet_dimensions.width ? frappe.utils.escape_html(sheet_dimensions.width) : '-'}</td>
 				<td style="text-align:center; white-space:nowrap;">${sheet_dimensions.height ? frappe.utils.escape_html(sheet_dimensions.height) : '-'}</td>
 				<td style="text-align:center; white-space:nowrap;">${pieces || '-'}</td>
-				<td style="font-weight:500; white-space:nowrap;">${frappe.utils.escape_html(item.item_name || item.item_code || '')}</td>
+				<td style="text-align:center; white-space:nowrap;">${format_manager_review_number(item.qty || item.custom_sheet_sft || 0)}</td>
+				${render_manager_glass_type_cell(item, doc)}
 				<td style="white-space:pre-wrap;">${item.description ? frappe.utils.escape_html(item.description) : '-'}</td>
 			</tr>
 		`;
@@ -333,7 +374,8 @@ function render_manager_review_glass_row(item, index) {
 			<td style="text-align:center; white-space:nowrap;">${format_manager_review_number(item.custom_width_mm || 0, 0)}</td>
 			<td style="text-align:center; white-space:nowrap;">${format_manager_review_number(item.custom_height_mm || 0, 0)}</td>
 			<td style="text-align:center; white-space:nowrap;">${pieces || '-'}</td>
-			<td style="font-weight:500; white-space:nowrap;">${frappe.utils.escape_html(item.item_name || item.item_code || '')}</td>
+			<td style="text-align:center; white-space:nowrap; font-weight:600;">${flt(item.custom_area_sqft || 0) ? format_manager_review_number(flt(item.custom_area_sqft) * pieces) : '-'}</td>
+			${render_manager_glass_type_cell(item, doc)}
 			<td style="white-space:pre-wrap;">${item.description ? frappe.utils.escape_html(item.description) : '-'}</td>
 		</tr>
 	`;
@@ -607,12 +649,13 @@ function render_quotation_dashboard(page, quotation_name, wrapper, auto_amend) {
 									<th style="text-align:center;white-space:nowrap;">WIDTH</th>
 									<th style="text-align:center;white-space:nowrap;">HEIGHT</th>
 									<th style="text-align:center;white-space:nowrap;">Pcs</th>
+									<th style="text-align:center;white-space:nowrap;" title="T.SFT × Pcs">Total SFT</th>
 									<th style="white-space:nowrap;">Glass Type</th>
 									<th style="white-space:nowrap;">Description</th>
 								</tr>
 							</thead>
 							<tbody>
-								${glass_items.map((i, index) => render_manager_review_glass_row(i, index)).join('')}
+								${glass_items.map((i, index) => render_manager_review_glass_row(i, index, doc)).join('')}
 							</tbody>
 						</table>
 					</div>
@@ -905,6 +948,7 @@ function render_quotation_dashboard(page, quotation_name, wrapper, auto_amend) {
 				</div>
 				${adjustment_totals_html}
 				<div class="qm-total-row" style="display:block;">
+					${get_manager_discount_summary_html(doc, price_adjustment_info ? total_amount - (get_manager_unadjusted_subtotal(doc) + (subtotal_amount ? tax_amount * (get_manager_unadjusted_subtotal(doc) / subtotal_amount) : 0)) : null)}
 					<div style="display:flex; justify-content:space-between; align-items:center; font-size:13px; color:var(--text-muted); text-transform:uppercase; margin-bottom:8px;">
 						<span>Subtotal</span>
 						<span>${format_currency(subtotal_amount, doc.currency)}</span>
@@ -1244,6 +1288,11 @@ function refresh_job_card_payment_options(dialog) {
 	dialog.set_value('payment_option', option_value);
 
 	let is_invoice = normalize_job_card_payment_mode(payment_mode) === 'invoice';
+	// An Invoice Customer pays through the Payments page against their invoice, never at this
+	// modal, so the method has nothing to describe. The field keeps its default value (the Job
+	// Card's Payment Option is mandatory) but is neither shown nor required.
+	dialog.set_df_property('payment_option', 'hidden', is_invoice ? 1 : 0);
+	dialog.set_df_property('payment_option', 'reqd', is_invoice ? 0 : 1);
 	dialog.set_df_property('payment_amount', 'hidden', is_invoice ? 1 : 0);
 	dialog.set_df_property('payment_amount', 'reqd', is_invoice ? 0 : 1);
 	dialog.set_df_property('record_payment_section', 'hidden', is_invoice ? 1 : 0);
@@ -1894,7 +1943,7 @@ async function open_job_card_modal(page, doc) {
 					customer: values.customer,
 					customer_name: values.customer_name,
 					payment_mode: normalize_job_card_payment_mode(values.payment_mode),
-					payment_option: values.payment_option,
+					payment_option: d.get_value('payment_option') || values.payment_option,
 					customer_pin: values.customer_pin,
 					phone_number: values.phone_number,
 					quotation_amount: values.quotation_amount,
