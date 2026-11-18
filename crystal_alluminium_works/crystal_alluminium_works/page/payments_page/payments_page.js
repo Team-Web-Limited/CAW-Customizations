@@ -94,6 +94,16 @@ async function render_payments_page(page) {
 	</style>
 
 	<div class="pay-page">
+		<div class="pay-balance-banner" style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;padding:14px 18px;margin-bottom:18px;border:1px solid var(--border-color);border-radius:8px;background:var(--fg-color);box-shadow:var(--shadow-xs);">
+			<div>
+				<div style="font-size:12px;font-weight:600;color:var(--text-muted);text-transform:uppercase;">${__('Current Paybill Balance')}</div>
+				<div class="pay-balance-note" style="font-size:12px;color:var(--text-muted);">${__('What is in the Paybill account now, after money that has left it')}</div>
+			</div>
+			<div style="text-align:right;">
+				<div class="pay-balance-value" style="font-size:24px;font-weight:700;color:var(--heading-color);">…</div>
+				<div class="pay-balance-updated" style="font-size:11px;color:var(--text-muted);"></div>
+			</div>
+		</div>
 		<div class="pay-card">
 			<div class="pay-card-header">
 				<span class="pay-icon">#</span> Recent Payments
@@ -173,8 +183,258 @@ async function render_payments_page(page) {
 	`;
 
 	$body.html(html);
+	load_paybill_balance($body);
+	setup_payments_page_tabs(page, $body);
 	bind_payments_page_events(page, $body);
 	load_payment_records(page, 1);
+}
+
+// The live Paybill balance at the top of the page, for everyone who can open it. The method
+// totals below only add up what sales recorded coming in; this is the account's ledger balance,
+// so it also reflects money that left the Paybill. Refreshes itself while the page is open.
+function load_paybill_balance($body) {
+	let $banner = $body.find('.pay-balance-banner');
+	if (!$banner.length) return;
+	let load = () => {
+		if (!$.contains(document.documentElement, $banner[0])) {
+			clearInterval($banner.data('timer'));
+			return;
+		}
+		frappe.call({
+			method: 'crystal_alluminium_works.api.get_paybill_balance',
+			callback: function(r) {
+				let data = r.message;
+				if (!data) return;
+				$banner.find('.pay-balance-value').text(format_currency(data.balance || 0, 'KES'))
+					.css('color', flt(data.balance) < 0 ? 'var(--red-600)' : '');
+				$banner.find('.pay-balance-updated').text(__('Updated {0}', [frappe.datetime.str_to_user(data.as_of)]));
+			},
+			error: function() {
+				$banner.find('.pay-balance-value').text('—');
+			},
+			freeze: false,
+		});
+	};
+	load();
+	$banner.data('timer', setInterval(load, 60000));
+}
+
+// ── Tabs: Payments (the recorded payments, unchanged) and Account Movements (live) ──────────
+const PAY_ACCOUNT_MOVEMENT_ROLES = ['System Manager', 'Accounts Manager', 'Accounts User'];
+const PAY_ACCOUNT_REFRESH_MS = 30000;
+
+function setup_payments_page_tabs(page, $body) {
+	if (!PAY_ACCOUNT_MOVEMENT_ROLES.some(role => frappe.user.has_role(role))) {
+		return;  // the ledger view is for Accounts; everyone else keeps the page as it was
+	}
+
+	let $page = $body.find('.pay-page');
+	let $payments_pane = $('<div class="pay-tab-pane" data-pane="payments"></div>').append($page.children().not('.pay-balance-banner'));
+	let $accounts_pane = $('<div class="pay-tab-pane" data-pane="accounts" hidden></div>');
+	let $tabs = $(`
+		<style>
+			.pay-tabs { display:flex; gap:4px; border-bottom:1px solid var(--border-color); margin-bottom:18px; }
+			.pay-tab { padding:9px 16px; font-size:13px; font-weight:600; color:var(--text-muted); cursor:pointer; border:1px solid transparent; border-bottom:0; border-radius:6px 6px 0 0; background:none; }
+			.pay-tab.active { color:var(--heading-color); background:var(--fg-color); border-color:var(--border-color); margin-bottom:-1px; }
+		</style>
+		<div class="pay-tabs">
+			<button type="button" class="pay-tab active" data-tab="payments">${__('Payments')}</button>
+			<button type="button" class="pay-tab" data-tab="accounts">${__('Account Movements')}</button>
+		</div>
+	`);
+	$page.append($tabs, $payments_pane, $accounts_pane);
+
+	let timer = null;
+	function stop_refresh() {
+		if (timer) { clearInterval(timer); timer = null; }
+	}
+	function start_refresh() {
+		stop_refresh();
+		timer = setInterval(() => {
+			// Stop quietly once the page is gone or this tab is no longer the one on show.
+			if (!$.contains(document.documentElement, $accounts_pane[0]) || $accounts_pane.prop('hidden')) {
+				stop_refresh();
+				return;
+			}
+			load_account_movements(page, $accounts_pane, true);
+		}, PAY_ACCOUNT_REFRESH_MS);
+	}
+
+	$tabs.filter('.pay-tabs').on('click', '.pay-tab', function() {
+		let tab = $(this).data('tab');
+		$tabs.find('.pay-tab').removeClass('active');
+		$(this).addClass('active');
+		$payments_pane.prop('hidden', tab !== 'payments');
+		$accounts_pane.prop('hidden', tab !== 'accounts');
+		if (tab === 'accounts') {
+			if (!$accounts_pane.data('ready')) {
+				render_account_movements_shell($accounts_pane);
+				$accounts_pane.data('ready', 1);
+			}
+			load_account_movements(page, $accounts_pane);
+			start_refresh();
+		} else {
+			stop_refresh();
+		}
+	});
+}
+
+function render_account_movements_shell($pane) {
+	let today = frappe.datetime.get_today();
+	// Quick month picker: this month and the 11 before it. Choosing one fills From / To with the
+	// month's first and last day (this month stops at today); editing a date by hand puts it
+	// back on Custom.
+	let month_options = [];
+	for (let i = 0; i < 12; i++) {
+		let month = moment().startOf('month').subtract(i, 'months');
+		let first = month.format('YYYY-MM-DD');
+		let last = i === 0 ? today : month.clone().endOf('month').format('YYYY-MM-DD');
+		month_options.push({ value: `${first}|${last}`, label: month.format('MMMM YYYY') });
+	}
+	$pane.html(`
+		<style>
+			.am-note { color:var(--text-muted); font-size:12px; margin:0 0 14px; line-height:1.5; }
+			.am-filters { display:flex; gap:12px; align-items:end; flex-wrap:wrap; margin-bottom:16px; }
+			.am-filters label { display:block; margin-bottom:6px; color:var(--text-muted); font-size:12px; font-weight:600; }
+			.am-card { background:var(--fg-color); border:1px solid var(--border-color); border-radius:8px; box-shadow:var(--shadow-xs); overflow:hidden; margin-bottom:20px; }
+			.am-card-header { padding:12px 18px; font-size:14px; font-weight:700; color:var(--heading-color); border-bottom:1px solid var(--border-color); background:var(--subtle-fg); display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+			.am-scroll { overflow:auto; max-height:480px; }
+			.am-table { width:100%; border-collapse:separate; border-spacing:0; }
+			.am-table th { position:sticky; top:0; padding:10px 14px; font-size:12px; font-weight:700; color:var(--text-muted); background:var(--subtle-fg); border-bottom:1px solid var(--border-color); white-space:nowrap; text-align:left; }
+			.am-table td { padding:10px 14px; font-size:13px; border-bottom:1px solid var(--border-color); vertical-align:top; }
+			.am-table .num { text-align:right; white-space:nowrap; }
+			.am-table tfoot td { font-weight:700; background:var(--subtle-fg); }
+			.am-in { color:var(--green-600); } .am-out { color:var(--red-600); }
+			.am-flag { color:var(--orange-600); font-size:12px; }
+		</style>
+		<p class="am-note">
+			A live reflection of the accounts behind the payment methods. <b>Captured</b> is the money recorded as
+			Payments in sales (the only source of those figures). <b>Not captured</b> is every other posting to the
+			account in the period — journals, payment entries made outside sales, transfers, expenses — which sales
+			never saw. Opening and Closing come from the ledger; refreshes by itself every 30 seconds.
+		</p>
+		<div class="am-filters">
+			<div>
+				<label>${__('Month')}</label>
+				<select class="form-control am-month">
+					<option value="">${__('Custom dates')}</option>
+					${month_options.map(m => `<option value="${m.value}">${m.label}</option>`).join('')}
+				</select>
+			</div>
+			<div><label>${__('From Date')}</label><input type="date" class="form-control am-from" value="${today}"></div>
+			<div><label>${__('To Date')}</label><input type="date" class="form-control am-to" value="${today}"></div>
+			<button class="btn btn-primary am-refresh">${__('Refresh')}</button>
+			<span class="am-updated text-muted" style="font-size:12px;"></span>
+		</div>
+		<div class="am-body"><div style="padding:40px;text-align:center;color:var(--text-muted);"><span class="spinner"></span></div></div>
+	`);
+	$pane.on('click', '.am-refresh', () => load_account_movements(null, $pane));
+	$pane.on('change', '.am-month', function() {
+		let value = $(this).val();
+		if (!value) {
+			// Custom dates goes back to the default: today.
+			let today = frappe.datetime.get_today();
+			$pane.find('.am-from').val(today);
+			$pane.find('.am-to').val(today);
+			load_account_movements(null, $pane);
+			return;
+		}
+		let [from_date, to_date] = value.split('|');
+		$pane.find('.am-from').val(from_date);
+		$pane.find('.am-to').val(to_date);
+		load_account_movements(null, $pane);
+	});
+	$pane.on('change', '.am-from, .am-to', function() {
+		$pane.find('.am-month').val('');
+		load_account_movements(null, $pane);
+	});
+}
+
+function load_account_movements(page, $pane, silent) {
+	let from_date = $pane.find('.am-from').val() || frappe.datetime.get_today();
+	let to_date = $pane.find('.am-to').val() || from_date;
+	let serial = ($pane.data('serial') || 0) + 1;
+	$pane.data('serial', serial);
+	frappe.call({
+		method: 'crystal_alluminium_works.api.get_payments_account_movements',
+		args: { from_date: from_date, to_date: to_date },
+		callback: function(r) {
+			if (serial !== $pane.data('serial') || !r.message) return;
+			render_account_movements($pane, r.message);
+			$pane.find('.am-updated').text(__('Updated {0}', [frappe.datetime.now_time()]));
+		},
+		error: function() {
+			if (!silent) $pane.find('.am-body').html(`<div class="text-muted" style="padding:24px;">${__('Could not load the account movements.')}</div>`);
+		},
+		freeze: false,
+	});
+}
+
+function render_account_movements($pane, data) {
+	const esc = frappe.utils.escape_html;
+	const money = value => format_currency(value || 0, 'KES');
+	const gap_note = a => Math.abs(a.captured_gap) < 0.005 ? '' :
+		`<div class="am-flag" title="${esc(__('Payments recorded in sales for this account, less what the ledger posted for them in this period. A gap means a Payments row has no payment entry, or its entry has a different amount or date.'))}">${__('Payments vs ledger')}: ${money(a.captured_gap)}</div>`;
+
+	let rows = (data.accounts || []).map(a => `
+		<tr>
+			<td><div style="font-weight:600;">${esc(a.account)}</div><div class="text-muted" style="font-size:11px;">${esc((a.modes || []).join(', '))}</div>${gap_note(a)}</td>
+			<td class="num">${money(a.opening)}</td>
+			<td class="num am-in">${money(a.captured_in)}</td>
+			<td class="num am-out">${money(a.captured_out)}</td>
+			<td class="num am-in">${money(a.uncaptured_in)}</td>
+			<td class="num am-out">${money(a.uncaptured_out)}</td>
+			<td class="num" style="font-weight:700;">${money(a.closing)}</td>
+		</tr>
+	`).join('');
+	let t = data.totals || {};
+
+	let entries = (data.entries || []).map(e => `
+		<tr>
+			<td style="white-space:nowrap;">${esc(frappe.datetime.str_to_user(e.posting_date))}</td>
+			<td>${esc(e.account)}</td>
+			<td style="white-space:nowrap;"><a href="/desk/${frappe.router.slug(e.voucher_type)}/${encodeURIComponent(e.voucher_no)}" target="_blank">${esc(e.voucher_no)}</a><div class="text-muted" style="font-size:11px;">${esc(e.voucher_type)}</div></td>
+			<td>${esc(e.party || '')}</td>
+			<td style="white-space:pre-wrap;">${esc(e.remarks || '')}</td>
+			<td class="num am-in">${e.in ? money(e.in) : ''}</td>
+			<td class="num am-out">${e.out ? money(e.out) : ''}</td>
+		</tr>
+	`).join('') || `<tr><td colspan="7" style="padding:24px;text-align:center;color:var(--text-muted);">${__('Nothing outside sales was posted to these accounts in this period.')}</td></tr>`;
+
+	$pane.find('.am-body').html(`
+		<div class="am-card">
+			<div class="am-card-header">${__('Accounts')} <span class="text-muted" style="font-weight:400;font-size:12px;">${esc(data.from_date)} → ${esc(data.to_date)}</span></div>
+			<div class="am-scroll">
+				<table class="am-table">
+					<thead><tr>
+						<th>${__('Account')}</th><th class="num" style="text-align:right;">${__('Opening')}</th>
+						<th class="num" style="text-align:right;">${__('Captured In')}</th><th class="num" style="text-align:right;">${__('Captured Out')}</th>
+						<th class="num" style="text-align:right;">${__('Not Captured In')}</th><th class="num" style="text-align:right;">${__('Not Captured Out')}</th>
+						<th class="num" style="text-align:right;">${__('Closing')}</th>
+					</tr></thead>
+					<tbody>${rows}</tbody>
+					<tfoot><tr>
+						<td>${__('Total')}</td><td></td>
+						<td class="num am-in">${money(t.captured_in)}</td><td class="num am-out">${money(t.captured_out)}</td>
+						<td class="num am-in">${money(t.uncaptured_in)}</td><td class="num am-out">${money(t.uncaptured_out)}</td><td></td>
+					</tr></tfoot>
+				</table>
+			</div>
+		</div>
+		<div class="am-card">
+			<div class="am-card-header">${__('Not captured in sales')} <span class="text-muted" style="font-weight:400;font-size:12px;">(${data.entry_count || 0})</span></div>
+			<div class="am-scroll">
+				<table class="am-table">
+					<thead><tr>
+						<th>${__('Date')}</th><th>${__('Account')}</th><th>${__('Voucher')}</th><th>${__('Party')}</th><th>${__('Remarks')}</th>
+						<th class="num" style="text-align:right;">${__('In')}</th><th class="num" style="text-align:right;">${__('Out')}</th>
+					</tr></thead>
+					<tbody>${entries}</tbody>
+				</table>
+			</div>
+			${data.truncated ? `<div class="am-flag" style="padding:8px 18px;">${__('Showing the latest {0} of {1}. Narrow the dates to see the rest.', [(data.entries || []).length, data.entry_count])}</div>` : ''}
+		</div>
+	`);
 }
 
 async function get_payment_mode_options() {
