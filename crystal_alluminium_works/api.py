@@ -692,7 +692,7 @@ def _build_job_card_layout_rows(items):
         rows = [row for code in codes for row in rows if (row.item_code or "") == code]
 
     out = [[
-        "Code", "Item", "Pcs", "Qty", "No", "Width", "Height",
+        "Code", "Item", "No", "Width", "Height", "Pcs", "Qty",
         "Polish Sides (W/H)", "Holes", "Notches",
     ]]
     totals = {"pcs": 0, "qty": 0, "holes": 0, "notches": 0}
@@ -729,11 +729,11 @@ def _build_job_card_layout_rows(items):
         out.append([
             row.item_code or "",
             row.item_name or row.item_code or "",
-            flt(pieces, 2),
-            flt(qty, 3),
             row.custom_numbering or "-",
             _dimension_value_only(row.custom_width_mm, row.get("custom_dimension_uom")),
             _dimension_value_only(row.custom_height_mm, row.get("custom_dimension_uom")),
+            flt(pieces, 2),
+            flt(qty, 3),
             " + ".join(polish_parts) if polish_parts else "-",
             holes if holes > 0 else "-",
             notches if notches > 0 else "-",
@@ -742,15 +742,15 @@ def _build_job_card_layout_rows(items):
         is_group_end = index == len(rows) - 1 or (rows[index + 1].item_code or "") != (row.item_code or "")
         if show_subtotals and is_group_end:
             out.append([
-                "Subtotal", "", flt(group["pcs"], 2), flt(group["qty"], 3),
-                "", "", "", "", group["holes"], group["notches"],
+                "Subtotal", "", "", "", "", flt(group["pcs"], 2), flt(group["qty"], 3),
+                "", group["holes"], group["notches"],
             ])
             group = dict.fromkeys(group, 0)
 
     if rows:
         out.append([
-            "Total" if show_subtotals else "", "", flt(totals["pcs"], 2), flt(totals["qty"], 3),
-            "", "", "", "", totals["holes"], totals["notches"],
+            "Total" if show_subtotals else "", "", "", "", "", flt(totals["pcs"], 2), flt(totals["qty"], 3),
+            "", totals["holes"], totals["notches"],
         ])
     return out
 

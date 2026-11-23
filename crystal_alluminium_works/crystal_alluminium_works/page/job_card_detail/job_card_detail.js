@@ -1730,11 +1730,22 @@ function partial_line_amount(context, row) {
 	return line_amount;
 }
 
-function render_partial_release_cell(context, row) {
+function render_partial_release_cell(context, row, track_left) {
 	let native_full = get_partial_native_full(row);
 	let collected = flt(row.custom_collected_qty || 0);
 	let remaining = flt(native_full - collected, 3);
 	if (remaining < 0) remaining = 0;
+	// Data for the live "Left after this invoice" panel (main table rows only): pieces are
+	// the native release unit, qty scales per piece from the row's own quantity/UOM.
+	let left_attrs = '';
+	if (track_left && native_full > 0) {
+		let quantities = get_job_card_row_quantities(row);
+		left_attrs = `data-left-base="${remaining}"
+				data-left-code="${jc_escape(row.item_code || '')}"
+				data-left-name="${jc_escape(row.item_name || row.item_code || '')}"
+				data-left-qty-per-pc="${flt(quantities.qty) / native_full}"
+				data-left-uom="${jc_escape(jc_short_uom(quantities.uom))}"`;
+	}
 	let line_amount = partial_line_amount(context, row);
 	// Cut-size / laminated glass whose JC Operations isn't recorded yet: held at 0 so the
 	// rest of the job can be released first.
@@ -1747,6 +1758,7 @@ function render_partial_release_cell(context, row) {
 					data-row-name="${jc_escape(row.name || '')}"
 					data-native-full="${native_full}"
 					data-line-amount="${line_amount}"
+					${left_attrs}
 					data-remaining="0">
 				<div style="font-size:11px;color:#856404;">Needs JC Operations</div>
 			</td>
@@ -1762,6 +1774,7 @@ function render_partial_release_cell(context, row) {
 				data-row-name="${jc_escape(row.name || '')}"
 				data-native-full="${native_full}"
 				data-line-amount="${line_amount}"
+				${left_attrs}
 				data-remaining="${remaining}">
 			<div style="font-size:11px;color:var(--text-muted);">/ ${jc_number(remaining, 2)} ${jc_escape(get_partial_unit(row))}</div>
 		</td>
@@ -1830,7 +1843,7 @@ function render_job_card_partial_invoice_main_table(context) {
 					<td class="jc-preview-center">${category === 'Glass' && cint(row.custom_notches || 0) > 0 ? cint(row.custom_notches || 0) * cint(row.qty || 0) : '-'}</td>
 				` : ''}
 				<td class="jc-preview-right jc-row-amount">${format_currency(line_amount)}</td>
-				${render_partial_release_cell(context, row)}
+				${render_partial_release_cell(context, row, true)}
 			</tr>
 		`;
 	}).join('');
@@ -1981,11 +1994,49 @@ function render_job_card_partial_invoice_preview(quotation, jc_pending_rows) {
 			${ceiling_table}
 			${!main_table && !ceiling_table ? '<div style="padding:24px;text-align:center;color:var(--text-muted);">No printable quotation items found.</div>' : ''}
 		</div>
-		<div class="jc-release-summary" style="margin-top:12px;border-top:1px solid #dee2e6;padding-top:10px;max-width:280px;margin-left:auto;font-size:13px;">
-			<div style="display:flex;justify-content:space-between;color:#6c757d;"><span>Subtotal</span><span data-summary="subtotal">-</span></div>
-			<div style="display:flex;justify-content:space-between;color:#6c757d;"><span>V.A.T (16%)</span><span data-summary="vat">-</span></div>
-			<div style="display:flex;justify-content:space-between;font-weight:700;font-size:16px;color:#2c3e50;margin-top:6px;"><span>Total</span><span data-summary="total">-</span></div>
+		<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:24px;flex-wrap:wrap;margin-top:12px;border-top:1px solid #dee2e6;padding-top:10px;">
+			<div class="jc-left-summary" style="font-size:12px;"></div>
+			<div class="jc-release-summary" style="width:280px;margin-left:auto;font-size:13px;">
+				<div style="display:flex;justify-content:space-between;color:#6c757d;"><span>Subtotal</span><span data-summary="subtotal">-</span></div>
+				<div style="display:flex;justify-content:space-between;color:#6c757d;"><span>V.A.T (16%)</span><span data-summary="vat">-</span></div>
+				<div style="display:flex;justify-content:space-between;font-weight:700;font-size:16px;color:#2c3e50;margin-top:6px;"><span>Total</span><span data-summary="total">-</span></div>
+			</div>
 		</div>
+	`;
+}
+
+// "Releasing in this invoice" table: pieces and square feet being released per item code,
+// recomputed live from the release inputs (same idea as the totals under the Quotation Builder's
+// batch grid). Non-sft rows (e.g. aluminium sold in Nos) show their own UOM instead of sft.
+function render_partial_left_summary(groups) {
+	if (!groups.length) return '';
+	let total_pcs = 0;
+	let total_sft = 0;
+	let body = groups.map(g => {
+		total_pcs += g.pcs;
+		total_sft += g.sft;
+		let other = Object.keys(g.other).map(u => `${jc_number(g.other[u], 2)} ${jc_escape(u)}`).join(', ');
+		let qty_text = [g.sft > 0 || !other ? jc_number(g.sft, 2) : '', other].filter(Boolean).join(' + ');
+		return `<tr>
+			<td style="font-weight:600;white-space:nowrap;">${jc_escape(g.code)}</td>
+			<td>${jc_escape(g.name)}</td>
+			<td style="text-align:right;">${jc_number(g.pcs, 2)}</td>
+			<td style="text-align:right;">${qty_text}</td>
+		</tr>`;
+	}).join('');
+	return `
+		<div style="font-weight:600;margin-bottom:4px;color:#2c3e50;">Releasing in this invoice</div>
+		<table class="table table-bordered" style="width:auto;min-width:420px;margin:0;background:var(--card-bg);">
+			<thead style="background:var(--control-bg);">
+				<tr><th>Code</th><th>Item</th><th style="text-align:right;">Pcs</th><th style="text-align:right;">Sft</th></tr>
+			</thead>
+			<tbody>${body}</tbody>
+			<tfoot><tr style="font-weight:700;">
+				<td colspan="2">Total</td>
+				<td style="text-align:right;">${jc_number(total_pcs, 2)}</td>
+				<td style="text-align:right;">${jc_number(total_sft, 2)}</td>
+			</tr></tfoot>
+		</table>
 	`;
 }
 
@@ -1996,6 +2047,8 @@ function render_job_card_partial_invoice_preview(quotation, jc_pending_rows) {
 function update_partial_invoice_summary(dialog, $wrapper) {
 	let subtotal = 0;
 	let main_total = 0;
+	let left_groups = [];
+	let left_by_code = {};
 	$wrapper.find('.jc-release-input').each(function() {
 		let $input = $(this);
 		let native_full = flt($input.attr('data-native-full'));
@@ -2012,7 +2065,22 @@ function update_partial_invoice_summary(dialog, $wrapper) {
 			// each line shows its contribution to this invoice instead of the full quoted value.
 			$input.closest('tr').find('.jc-row-amount').text(format_currency(released_amount));
 		}
+		if ($input.attr('data-left-code') !== undefined) {
+			let code = $input.attr('data-left-code');
+			let left_pcs = release;
+			let g = left_by_code[code];
+			if (!g) {
+				g = left_by_code[code] = { code: code, name: $input.attr('data-left-name'), pcs: 0, sft: 0, other: {} };
+				left_groups.push(g);
+			}
+			g.pcs += left_pcs;
+			let qty_left = left_pcs * flt($input.attr('data-left-qty-per-pc'));
+			let uom = $input.attr('data-left-uom');
+			if (uom === 'sft') g.sft += qty_left;
+			else g.other[uom] = (g.other[uom] || 0) + qty_left;
+		}
 	});
+	$wrapper.find('.jc-left-summary').html(render_partial_left_summary(left_groups));
 	$wrapper.find('.jc-main-total-amount').text(format_currency(main_total));
 	let vat = subtotal * 0.16;
 	let total = subtotal + vat;
