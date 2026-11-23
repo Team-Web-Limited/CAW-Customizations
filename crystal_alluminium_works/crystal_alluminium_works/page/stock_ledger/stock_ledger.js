@@ -121,6 +121,10 @@ function render_stock_ledger_page(page) {
 
 				<div class="sl-toolbar-field" style="margin-left:auto; min-width:auto;">
 					<label style="visibility:hidden;">Clear</label>
+					<button class="btn btn-default btn-sm sl-btn-download" disabled style="margin-right:6px;">
+						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+						Download
+					</button>
 					<button class="btn btn-primary btn-sm btn-clear-filters">
 						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
 						Clear
@@ -257,6 +261,11 @@ function sl_bind_events(page, $body) {
 		sl_load_category_view(page);
 	});
 
+	// Download what is currently shown as Excel
+	$body.on('click.slPage', '.sl-btn-download', function() {
+		sl_download_xlsx();
+	});
+
 	// Date search button
 	$body.on('click.slPage', '.sl-btn-search', function() {
 		SL_STATE.from_date = $body.find('[data-filter="from_date"]').val() || '';
@@ -306,6 +315,8 @@ function sl_bind_events(page, $body) {
 function sl_load_category_view(page) {
 	SL_STATE.view = 'category';
 	let $body = $(page.body);
+
+	sl_set_export(page, false);
 
 	// Hide date filters & summary
 	$body.find('.sl-date-filters').removeClass('visible');
@@ -360,6 +371,8 @@ function sl_render_category_table(page, data) {
 		);
 	}
 
+	sl_set_export(page, data.length > 0);
+
 	if (!data.length) {
 		$container.html(`
 			<table class="sl-table"><tbody>
@@ -407,6 +420,8 @@ function sl_render_category_table(page, data) {
 function sl_load_detail_view(page) {
 	SL_STATE.view = 'detail';
 	let $body = $(page.body);
+
+	sl_set_export(page, false);
 
 	// Show date filters
 	$body.find('.sl-date-filters').addClass('visible');
@@ -465,6 +480,8 @@ function sl_render_standard_detail(page, entries) {
 	let $body = $(page.body);
 	let $container = $body.find('.sl-table-container');
 	let $summary = $body.find('.sl-summary');
+
+	sl_set_export(page, entries.length > 0);
 
 	// Summary: last balance
 	let last_balance = entries.length ? entries[entries.length - 1].qty_after_transaction : 0;
@@ -560,6 +577,8 @@ function sl_render_glass_detail(page, result) {
 	let $container = $body.find('.sl-table-container');
 	let $summary = $body.find('.sl-summary');
 	let ledger = result.ledger || [];
+
+	sl_set_export(page, ledger.length > 0);
 
 	// Summary cards
 	let summary_html = `
@@ -674,6 +693,26 @@ function sl_render_glass_detail(page, result) {
 }
 
 /* ── Helpers ─────────────────────────────────────────────── */
+// Download is only enabled while there are rows on screen.
+function sl_set_export(page, enabled) {
+	$(page.body).find('.sl-btn-download').prop('disabled', !enabled);
+}
+
+// Excel export of the current view, built and streamed by the server (no File record is saved).
+function sl_download_xlsx() {
+	let params = new URLSearchParams();
+	if (SL_STATE.item) params.set('item_code', SL_STATE.item);
+	if (SL_STATE.category) params.set('item_group', SL_STATE.category);
+	if (SL_STATE.warehouse) params.set('warehouse', SL_STATE.warehouse);
+	if (SL_STATE.view === 'detail') {
+		if (SL_STATE.from_date) params.set('from_date', SL_STATE.from_date);
+		if (SL_STATE.to_date) params.set('to_date', SL_STATE.to_date);
+	} else if (SL_STATE.search) {
+		params.set('search', SL_STATE.search);
+	}
+	window.open('/api/method/crystal_alluminium_works.api.download_stock_ledger_xlsx?' + params.toString());
+}
+
 function sl_format_sheet_badges(sheets_dict, type) {
 	if (!sheets_dict || Object.keys(sheets_dict).length === 0) return '<span class="sl-muted">-</span>';
 

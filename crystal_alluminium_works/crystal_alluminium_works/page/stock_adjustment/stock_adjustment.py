@@ -67,6 +67,33 @@ def get_items_for_adjustment(item_group, warehouse):
 
 	return items
 
+@frappe.whitelist(methods=["GET"])
+def download_adjustment_sheet(item_group, warehouse):
+	"""Excel count sheet of the items this page lists for a warehouse and item group: current
+	stock plus a blank Counted Qty column to fill in. Glass also gets its per-size sheet counts."""
+	from crystal_alluminium_works.api import _stream_xlsx_file
+
+	is_glass = item_group == "Glass"
+	header = ["Item", "Description", "Current Qty"]
+	if is_glass:
+		header += ["Current Sheets", "Sheet Sizes"]
+	header += ["Counted Qty", "U/M"]
+
+	rows = [header]
+	for item in get_items_for_adjustment(item_group, warehouse):
+		line = [item.item_code, item.description or "", flt(item.current_qty, 4)]
+		if is_glass:
+			balance = item.get("sheet_balance") or {}
+			line += [
+				flt(sum(balance.values()), 2),
+				"; ".join(f"{size}: {flt(pcs, 2):g}" for size, pcs in balance.items()),
+			]
+		line += ["", item.stock_uom]
+		rows.append(line)
+
+	return _stream_xlsx_file(f"Stock_Adjustment_{item_group}_{warehouse}", rows)
+
+
 @frappe.whitelist()
 def submit_stock_reconciliation(payload):
 	data = frappe.parse_json(payload)

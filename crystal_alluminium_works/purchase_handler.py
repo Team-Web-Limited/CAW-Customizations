@@ -90,6 +90,26 @@ def _apply_rejected_pcs(row, area_per_piece):
     row.rejected_qty = flt(area_per_piece * rejected_pcs)
 
 
+def _route_rejected_qty(doc, row):
+    """Make sure rejected stock has a warehouse to land in.
+
+    ERPNext's own rejected-warehouse check (default from the document's Rejected Warehouse,
+    else throw) runs in the controller's validate, before our hook turns custom_rejected_pcs
+    into rejected_qty — so it saw zero rejected stock and did nothing. The receipt then saved
+    without a rejected warehouse (or the header's one never reached the row) and only failed
+    later, at submit. Repeat the check here, once the quantity is known."""
+    if flt(row.get("rejected_qty") or 0) <= 0 or not row.meta.has_field("rejected_warehouse"):
+        return
+    if not row.get("rejected_warehouse"):
+        row.rejected_warehouse = doc.get("rejected_warehouse")
+    if not row.get("rejected_warehouse"):
+        frappe.throw(
+            f"Row {row.idx}: select a Rejected Warehouse for the rejected item {row.item_code}."
+        )
+    if row.rejected_warehouse == row.get("warehouse"):
+        frappe.throw(f"Row {row.idx}: Accepted Warehouse and Rejected Warehouse cannot be the same.")
+
+
 def _sync_received_qty(row, takes_stock_in):
     """`qty` is the accepted quantity and ERPNext requires
     received = accepted + rejected. Without this, receiving fewer sheets than a
@@ -207,6 +227,9 @@ def recompute_sheet_quantities(doc, method=None):
             recomputed |= _apply_glass_row(row, sheet_map, takes_stock_in)
         elif category == "Ceiling":
             recomputed |= _apply_ceiling_row(row, takes_stock_in)
+
+        if takes_stock_in:
+            _route_rejected_qty(doc, row)
 
     # doc_events hooks run *after* the controller's own validate (see
     # Document.hook's compose), so the totals were already calculated from

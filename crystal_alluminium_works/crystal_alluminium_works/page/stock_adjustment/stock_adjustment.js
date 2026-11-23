@@ -64,6 +64,14 @@ function bind_events(page) {
 		load_items(page);
 	});
 
+	$(page.body).on('click', '.sa-download-btn', function() {
+		let params = new URLSearchParams({
+			item_group: page.loaded_group,
+			warehouse: page.loaded_warehouse
+		});
+		window.open('/api/method/crystal_alluminium_works.crystal_alluminium_works.page.stock_adjustment.stock_adjustment.download_adjustment_sheet?' + params.toString());
+	});
+
 	$(page.body).on('click', '.sa-submit-btn', function() {
 		submit_reconciliation(page);
 	});
@@ -264,6 +272,10 @@ function load_items(page) {
 		freeze_message: 'Loading items...',
 		callback: function(r) {
 			page.adjustment_items = r.message || [];
+			// Download exports the list as loaded, not whatever the dropdowns say now.
+			page.loaded_group = item_group;
+			page.loaded_warehouse = warehouse;
+			$(page.body).find('.sa-download-btn').prop('disabled', !page.adjustment_items.length);
 			render_grid(page, item_group);
 		}
 	});
@@ -375,6 +387,14 @@ function submit_reconciliation(page) {
 		}
 	});
 
+	// A reconciliation sets the counted quantity, and ERPNext refuses a negative one. Name the item
+	// instead of letting the server answer with an anonymous "Row #1".
+	let negatives = modified_items.filter(m => m.new_qty !== undefined && flt(m.new_qty) < 0).map(m => m.item_code);
+	if (negatives.length) {
+		frappe.msgprint(`New Qty cannot be negative (${negatives.map(frappe.utils.escape_html).join(', ')}). A reconciliation sets the counted quantity, so enter what is physically there (0 or more). To remove more stock from an item already below zero, use a Material Issue instead.`);
+		return;
+	}
+
 	if (!modified_items.length) {
 		frappe.msgprint(is_glass ? 'No sheet counts were changed. Please update at least one size.' : 'No quantities were changed. Please update at least one item.');
 		return;
@@ -429,6 +449,7 @@ function get_stock_adjustment_html() {
 				</div>
 				<div>
 					<button class="btn btn-primary sa-load-btn">Load Items</button>
+					<button class="btn btn-default sa-download-btn" disabled style="margin-left:6px;">Download</button>
 				</div>
 			</div>
 		</div>

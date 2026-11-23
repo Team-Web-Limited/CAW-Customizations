@@ -10840,7 +10840,7 @@ def get_stock_entry_options():
     )
     warehouses = frappe.get_all(
         "Warehouse",
-        filters={"company": company, "is_group": 0},
+        filters={"company": company, "is_group": 0, "disabled": 0},
         fields=["name"],
         order_by="name asc",
     )
@@ -11086,7 +11086,7 @@ def get_glass_stock_ledger(item_code, warehouse, from_date=None, to_date=None, s
         pr_rows = frappe.get_all(
             "Purchase Receipt Item",
             filters={"parent": ["in", pr_names], "item_code": item_code},
-            fields=["name", "parent", "custom_sheet_size", "custom_sheet_pcs"]
+            fields=["name", "parent", "custom_sheet_size", "custom_sheet_pcs", "custom_rejected_pcs", "warehouse", "rejected_warehouse"]
         )
         for r in pr_rows:
             pr_items.setdefault(r.parent, []).append(r)
@@ -11095,7 +11095,7 @@ def get_glass_stock_ledger(item_code, warehouse, from_date=None, to_date=None, s
         pi_rows = frappe.get_all(
             "Purchase Invoice Item",
             filters={"parent": ["in", pi_names], "item_code": item_code},
-            fields=["name", "parent", "custom_sheet_size", "custom_sheet_pcs"]
+            fields=["name", "parent", "custom_sheet_size", "custom_sheet_pcs", "custom_rejected_pcs", "warehouse", "rejected_warehouse"]
         )
         for r in pi_rows:
             pr_items.setdefault(r.parent, []).append(r)
@@ -11135,6 +11135,11 @@ def get_glass_stock_ledger(item_code, warehouse, from_date=None, to_date=None, s
                 for r in rows:
                     size = (r.custom_sheet_size or "").strip()
                     pcs = frappe.utils.flt(r.custom_sheet_pcs)
+                    # A receipt with rejected sheets posts two ledger lines for the one row: the
+                    # accepted sheets into the row's warehouse and the rejected ones into its
+                    # Rejected Warehouse. Each warehouse's ledger counts only its own share.
+                    if r.rejected_warehouse and r.rejected_warehouse != r.warehouse and r.rejected_warehouse == warehouse:
+                        pcs = frappe.utils.flt(r.custom_rejected_pcs)
                     if size and pcs > 0:
                         sheets_in[size] = sheets_in.get(size, 0) + pcs
                         sheet_balance[size] = sheet_balance.get(size, 0) + pcs
@@ -11294,6 +11299,67 @@ def get_standard_stock_ledger(item_code, warehouse=None, from_date=None, to_date
     _attach_sales_invoices_to_entries([e for e in entries if not e.get("is_opening")])
 
     return entries
+
+
+@frappe.whitelist(methods=["GET"])
+def download_stock_ledger_xlsx(item_code=None, item_group=None, warehouse=None,
+                               from_date=None, to_date=None, search=None):
+    """Excel export of the Stock Ledger page, mirroring whatever view it is showing:
+    the stock balances list when no item is picked, otherwise that item's ledger
+    (glass items get the sheet-tracking columns)."""
+    def sheets(d):
+        return "; ".join(f"{k}: {v}" for k, v in (d or {}).items())
+
+    def invoices(row):
+        return ", ".join(row.get("sales_invoices") or ([row["sales_invoice"]] if row.get("sales_invoice") else []))
+
+    def day(value):
+        return frappe.utils.formatdate(value) if value else ""
+
+    if not item_code:
+        needle = (search or "").strip().lower()
+        data = [
+            b for b in get_category_stock_balance(item_group or None, warehouse or None)
+            if not needle or needle in (b.item_code or "").lower() or needle in (b.item_name or "").lower()
+        ]
+        rows = [["Item Code", "Item Name", "Category", "Warehouse", "Stock Balance", "UOM"]]
+        rows += [[b.item_code, b.item_name, b.item_group, b.warehouse, flt(b.actual_qty), b.stock_uom] for b in data]
+        return _stream_xlsx_file("Stock_Balances", rows)
+
+    group = frappe.db.get_value("Item", item_code, "item_group")
+    if group == "Glass":
+        if not warehouse:
+            frappe.throw(frappe._("Please select a Warehouse for the glass ledger."))
+        result = get_glass_stock_ledger(item_code, warehouse, from_date or None, to_date or None)
+        with_sheets = not result.get("is_laminated")
+        header = ["Date", "Time", "Voucher Type", "Voucher No", "Sales Invoices",
+                  "SFT In/Out", "Invoice SFT", "Balance (SFT)"]
+        if with_sheets:
+            header += ["Sheets In", "Sheets Out", "Running Sheet Balance"]
+        rows = [header]
+        for r in reversed(result.get("ledger") or []):
+            line = [
+                day(r.get("posting_date")), str(r.get("posting_time") or "")[:8],
+                "Opening" if r.get("is_opening") else r.get("voucher_type"),
+                "Counted 30-09-2026" if r.get("is_opening") else r.get("voucher_no"),
+                invoices(r), flt(r.get("actual_qty")), flt(r.get("invoice_sft")) or "",
+                flt(r.get("qty_after_transaction")),
+            ]
+            if with_sheets:
+                line += [sheets(r.get("sheets_in")), sheets(r.get("sheets_out")), sheets(r.get("sheet_balance"))]
+            rows.append(line)
+        return _stream_xlsx_file(f"Glass_Stock_Ledger_{item_code}", rows)
+
+    entries = get_standard_stock_ledger(item_code, warehouse or None, from_date or None, to_date or None)
+    rows = [["Date", "Voucher Type", "Voucher No", "Sales Invoices", "Qty In/Out", "Balance"]]
+    for r in reversed(entries):
+        rows.append([
+            day(r.get("posting_date")),
+            "Opening" if r.get("is_opening") else r.get("voucher_type"),
+            "Counted 30-09-2026" if r.get("is_opening") else r.get("voucher_no"),
+            invoices(r), flt(r.get("actual_qty")), flt(r.get("qty_after_transaction")),
+        ])
+    return _stream_xlsx_file(f"Stock_Ledger_{item_code}", rows)
 
 
 @frappe.whitelist()
