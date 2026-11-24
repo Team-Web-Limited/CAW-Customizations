@@ -83,6 +83,38 @@ function caw_set_item_code_query(frm) {
 	});
 }
 
+// Area of one sheet in m², from its size in mm ("3300 x 2140" -> 7.062) — what suppliers bill
+// on. Mirrors purchase_handler.sheet_size_sqm.
+function caw_sheet_size_sqm(sheet_size) {
+	let sides = String(sheet_size || '').match(/\d+(?:\.\d+)?/g) || [];
+	return sides.length === 2 ? flt(sides[0]) * flt(sides[1]) / 1000000 : 0;
+}
+
+// Glass priced Per Sheet / Per m² / Per sft: the line amount is worked out the supplier's way
+// and Rate (per sft, the stock UOM) = amount / qty. Mirrors purchase_handler._apply_glass_price,
+// which re-derives it on save. Returns false when the row has no price in this form.
+function caw_apply_glass_price(cdt, cdn, row, sft, pcs, qty) {
+	if (!frappe.meta.has_field(cdt, 'custom_price_unit')) return false;
+	let sqm = caw_sheet_size_sqm(row.custom_sheet_size);
+	frappe.model.set_value(cdt, cdn, 'custom_qty_sqm', flt(sqm * pcs, 4));
+
+	let price = flt(row.custom_unit_price || 0);
+	if (price <= 0) return false;
+	let unit = row.custom_price_unit || 'Per Sheet';
+	let amount;
+	if (unit === 'Per m²') {
+		if (sqm <= 0) return false;
+		amount = pcs * sqm * price;
+	} else if (unit === 'Per sft') {
+		amount = pcs * sft * price;
+	} else {
+		amount = pcs * price;
+	}
+	frappe.model.set_value(cdt, cdn, 'custom_rate_per_piece', amount / pcs);
+	frappe.model.set_value(cdt, cdn, 'rate', amount / qty);
+	return true;
+}
+
 function caw_recompute_row(frm, cdt, cdn) {
 	let row = locals[cdt][cdn];
 	if (!row) return;
@@ -139,6 +171,10 @@ function caw_recompute_row(frm, cdt, cdn) {
 		frappe.model.set_value(
 			cdt, cdn, 'rejected_qty', flt(per_piece * flt(row.custom_rejected_pcs || 0))
 		);
+	}
+
+	if (row.custom_product_category === 'Glass' && caw_apply_glass_price(cdt, cdn, row, per_piece, pcs, qty)) {
+		return;
 	}
 
 	// Supplier quotes per sheet/piece; ERPNext values stock per stock UOM.
@@ -299,6 +335,14 @@ Object.entries(CAW_PROCUREMENT_DOCTYPES).forEach(([parent_doctype, child_doctype
 			caw_recompute_row(frm, cdt, cdn);
 		},
 		custom_rate_per_piece: function(frm, cdt, cdn) {
+			// Glass derives Rate per Sheet from Price Unit + Price; only ceiling enters it.
+			if ((locals[cdt][cdn] || {}).custom_product_category === 'Glass') return;
+			caw_recompute_row(frm, cdt, cdn);
+		},
+		custom_price_unit: function(frm, cdt, cdn) {
+			caw_recompute_row(frm, cdt, cdn);
+		},
+		custom_unit_price: function(frm, cdt, cdn) {
 			caw_recompute_row(frm, cdt, cdn);
 		}
 	});

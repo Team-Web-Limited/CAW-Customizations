@@ -19,6 +19,8 @@ is a fourth entry point into this flow rather than only a billing document — s
 _takes_stock_in for what that changes.
 """
 
+import re
+
 import frappe
 from frappe.utils import cint, flt
 
@@ -148,13 +150,74 @@ def _apply_piece_rate(row, pcs, qty):
     rate_per_piece = flt(row.get("custom_rate_per_piece") or 0)
     if rate_per_piece <= 0 or qty <= 0:
         return
-    row.rate = flt(pcs * rate_per_piece) / qty
+    _set_row_rate(row, flt(pcs * rate_per_piece) / qty)
+
+
+# How the supplier priced a glass row. Stock and the standard Rate stay in Square Foot; the
+# buyer types the price exactly as the supplier invoice shows it and the Rate is derived.
+PRICE_PER_SHEET = "Per Sheet"
+PRICE_PER_SQM = "Per m²"
+PRICE_PER_SFT = "Per sft"
+
+
+def sheet_size_sqm(sheet_size):
+    """Area of one sheet in m², from its size in millimetres ("3300 x 2140" -> 7.062).
+
+    Taken from the millimetres rather than the Glass Sheet Config sft, which is rounded
+    (3300 x 2140 is 76.01 sft, stored as 76): suppliers bill m² from the exact size, so this is
+    what makes a Per m² row land on the supplier's own amount to the cent."""
+    sides = re.findall(r"\d+(?:\.\d+)?", sheet_size or "")
+    if len(sides) != 2:
+        return 0
+    return flt(sides[0]) * flt(sides[1]) / 1_000_000
+
+
+def _set_row_rate(row, rate):
+    row.rate = rate
     # Otherwise ERPNext re-derives the rate from the price list and shows the
     # difference as a margin/discount on the row. (Material Request Item has no
     # margin/discount fields, hence the per-field guard.)
     for fieldname in ("price_list_rate", "margin_rate_or_amount", "discount_percentage", "discount_amount"):
         if row.meta.has_field(fieldname):
             row.set(fieldname, 0)
+
+
+def _apply_glass_price(row, sheet_size, sft, pcs):
+    """Derive the per-sft Rate from the supplier's price in its own unit.
+
+    The line amount is worked out the way the supplier does it — sheets x price, m² x price,
+    or sft x price — and Rate = amount / qty (sft), so Accepted Qty x Rate gives that amount
+    back. It is re-derived from the price on every save, never from a rounded per-sheet
+    figure, so changing the sheets, size or price can't leave a stale Rate behind (the
+    $0.05645 on MAT-PRE-2026-00007-1). Returns False when the row has no unit price."""
+    if not row.meta.has_field("custom_price_unit"):
+        return False
+    sqm = sheet_size_sqm(sheet_size)
+    if row.meta.has_field("custom_qty_sqm"):
+        row.custom_qty_sqm = flt(sqm * pcs, 4)
+
+    price = flt(row.get("custom_unit_price") or 0)
+    if price <= 0 and flt(row.get("custom_rate_per_piece") or 0) > 0:
+        # Older rows and API callers price per sheet through Rate per Sheet / Piece.
+        row.custom_price_unit = PRICE_PER_SHEET
+        price = row.custom_unit_price = flt(row.custom_rate_per_piece)
+    if price <= 0:
+        return False
+
+    unit = row.get("custom_price_unit") or PRICE_PER_SHEET
+    row.custom_price_unit = unit
+    if unit == PRICE_PER_SQM:
+        if sqm <= 0:
+            frappe.throw(f"Row {row.idx}: can't work out the m² of sheet size {sheet_size}.")
+        amount = pcs * sqm * price
+    elif unit == PRICE_PER_SFT:
+        amount = pcs * sft * price
+    else:
+        amount = pcs * price
+
+    row.custom_rate_per_piece = amount / pcs
+    _set_row_rate(row, amount / row.qty)
+    return True
 
 
 def _apply_glass_row(row, sheet_map, takes_stock_in):
@@ -178,7 +241,8 @@ def _apply_glass_row(row, sheet_map, takes_stock_in):
         _apply_rejected_pcs(row, sft)
     _sync_received_qty(row, takes_stock_in)
     _sync_stock_qty(row)
-    _apply_piece_rate(row, pcs, row.qty)
+    if not _apply_glass_price(row, sheet_size, sft, pcs):
+        _apply_piece_rate(row, pcs, row.qty)
     return True
 
 

@@ -446,6 +446,49 @@ def _get_procurement_item_fields(include_rate=True, include_rejected=False):
 
     last_fieldname = "custom_sheet_sft"
     if include_rate:
+        glass = "eval:doc.custom_product_category=='Glass'"
+        fields.extend([
+            {
+                # Accepted sheets in m², from the exact sheet size in mm — the figure the
+                # supplier's invoice is billed on, to tick against it.
+                "fieldname": "custom_qty_sqm",
+                "label": "Qty (m²)",
+                "fieldtype": "Float",
+                "precision": "4",
+                "insert_after": last_fieldname,
+                "depends_on": glass,
+                "read_only": 1,
+                "module": "Crystal Alluminium Works",
+            },
+            {
+                # The unit the supplier priced glass in. The buyer types the price exactly as
+                # the supplier invoice shows it; purchase_handler._apply_glass_price derives the
+                # standard per-sft Rate from it on every save.
+                "fieldname": "custom_price_unit",
+                "label": "Price Unit",
+                "fieldtype": "Select",
+                "options": "Per Sheet\nPer m²\nPer sft",
+                "default": "Per Sheet",
+                "insert_after": "custom_qty_sqm",
+                "depends_on": glass,
+                "read_only": 0,
+                "module": "Crystal Alluminium Works",
+            },
+            {
+                "fieldname": "custom_unit_price",
+                "label": "Price",
+                "fieldtype": "Currency",
+                "options": "currency",
+                # Per-sft prices run to several decimals (0.398632); the 2-decimal currency
+                # default would round them to 0.40.
+                "precision": "6",
+                "insert_after": "custom_price_unit",
+                "depends_on": glass,
+                "read_only": 0,
+                "module": "Crystal Alluminium Works",
+            },
+        ])
+        last_fieldname = "custom_unit_price"
         fields.append({
             # Suppliers quote glass and ceiling per physical piece, not per
             # SFT/sqm. The row's standard `rate` (which ERPNext values stock at,
@@ -457,7 +500,9 @@ def _get_procurement_item_fields(include_rate=True, include_rejected=False):
             # Shown in the document's currency (the parent's ), like the standard rate.
             "options": "currency",
             "insert_after": last_fieldname,
-            "depends_on": "eval:doc.custom_product_category=='Glass' || doc.custom_product_category=='Ceiling'",
+            # Ceiling is priced here. Glass is priced through Price Unit + Price, which keeps
+            # this filled in as the derived price per sheet.
+            "depends_on": "eval:doc.custom_product_category=='Ceiling'",
             "read_only": 0,
             "module": "Crystal Alluminium Works",
         })
@@ -508,6 +553,13 @@ def reorder_procurement_standard_fields():
     reinsert both right after custom_product_category. Every other field's
     relative order is left untouched.
     """
+    for doctype in ("Purchase Order Item", "Purchase Receipt Item", "Purchase Invoice Item"):
+        # Glass Rate is per sft, derived from a per-m² or per-sheet price: 0.398632 for a
+        # $4.29/m² sheet. At 5 decimals 9,500 sft x 0.39863 misses the supplier's $3,787.00;
+        # 7 keeps Accepted Qty x Rate on the supplier's amount for any realistic quantity.
+        for fieldname in ("rate", "base_rate"):
+            _set_property(doctype, fieldname, "precision", "7", "Select")
+
     for doctype in (
         "Material Request Item",
         "Purchase Order Item",
