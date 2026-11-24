@@ -5407,6 +5407,31 @@ def _release_shortfall(job_card, invoice):
     return _round_job_card_amount(released + this_release - paid), paid, released, this_release
 
 
+def _assert_cash_release_within_paid(job_card, invoice):
+    """A Cash Customer takes home only what they have paid for: goods released so far plus
+    this invoice may not exceed the Job Card's paid amount (deposits and advance included).
+    Invoice Customers are on credit and release freely. Checked on the draft, before
+    submit, so a refusal rolls the whole request back."""
+    if job_card.payment_mode != "Cash Customer":
+        return
+
+    paid = _round_job_card_amount(frappe.db.get_value("CAW Job Card", job_card.name, "payment_amount"))
+    released = _released_invoice_value(job_card)
+    this_release = _round_job_card_amount(invoice.grand_total)
+    short = _round_job_card_amount(released + this_release - paid)
+    if short < PAYMENT_SETTLEMENT_TOLERANCE:
+        return
+
+    fmt = lambda value: frappe.utils.fmt_money(value, currency=invoice.currency)
+    frappe.throw(
+        f"This release is worth {fmt(this_release)}, but the customer has paid {fmt(paid)}"
+        + (f" and already taken {fmt(released)}" if released else "")
+        + f". Collect {fmt(short)} more on the Job Card, or release less "
+        f"(up to {fmt(max(paid - released, 0))} this time).",
+        title="Payment needed before release",
+    )
+
+
 def _assert_release_allowed(job_card, invoice):
     """The account term decides what may leave the yard (credit_control.py). Checked on the draft,
     before submit, so a refusal rolls the whole request back.
@@ -5422,6 +5447,8 @@ def _assert_release_allowed(job_card, invoice):
         is_on_account,
         parse_term,
     )
+
+    _assert_cash_release_within_paid(job_card, invoice)
 
     short, paid, released, this_release = _release_shortfall(job_card, invoice)
     term = get_customer_term(job_card.customer, job_card.name)
