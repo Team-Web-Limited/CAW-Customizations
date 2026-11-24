@@ -4906,6 +4906,81 @@ def _jc_ops_sheet_rows(job_card_name):
     }
 
 
+@frappe.whitelist()
+def make_sales_invoice_from_job_card(job_card_name):
+    if not job_card_name or not frappe.db.exists("CAW Job Card", job_card_name):
+        frappe.throw("Please select a valid Job Card.")
+
+    job_card = frappe.get_doc("CAW Job Card", job_card_name)
+    _assert_job_card_not_frozen(job_card)
+    _validate_glass_consumption(job_card)
+
+    if not job_card.quotation or not frappe.db.exists("Quotation", job_card.quotation):
+        frappe.throw("The selected Job Card is not linked to a valid Quotation.")
+
+    if not _is_job_card_settled(job_card.quotation_amount, job_card.payment_amount):
+        frappe.throw("The Job Card must be fully paid before creating a Sales Invoice.")
+
+    # Earlier partial invoices may already have billed part of this quotation
+    # (tracked via custom_collected_qty). If so, only release what's left so
+    # this invoice doesn't re-bill the whole quotation on top of them.
+    quotation = frappe.get_doc("Quotation", job_card.quotation)
+    rows_by_name = {row.name: row for row in quotation.items if not getattr(row, "custom_auto_generated", 0)}
+    had_prior_partial = any(flt(getattr(row, "custom_collected_qty", 0)) > 0 for row in rows_by_name.values())
+
+    remaining_releases = {}
+    if had_prior_partial:
+        for name, row in rows_by_name.items():
+            remaining = _get_partial_row_native_full(row) - flt(getattr(row, "custom_collected_qty", 0))
+            if remaining > 0.0001:
+                remaining_releases[name] = remaining
+
+        if not remaining_releases:
+            frappe.throw("This Quotation has already been fully invoiced.")
+        invoice_releases = remaining_releases
+    else:
+        # Nothing collected yet — this single invoice releases every row in full.
+        invoice_releases = {
+            name: _get_partial_row_native_full(row)
+            for name, row in rows_by_name.items()
+            if _get_partial_row_native_full(row) > 0.0001
+        }
+
+    _validate_sheet_release_stock(job_card, quotation, invoice_releases)
+
+    invoice_name = make_sales_invoice_from_quotation(
+        job_card.quotation,
+        releases=remaining_releases or None,
+    )
+    invoice = frappe.get_doc("Sales Invoice", invoice_name)
+    if frappe.get_meta("Sales Invoice").has_field("custom_source_job_card"):
+        invoice.custom_source_job_card = job_card.name
+        invoice.save(ignore_permissions=True)
+
+    paid_invoice = _submit_and_settle_job_card_sales_invoice(invoice, job_card)
+
+    # Stamp collected qty for every row this invoice actually billed. On the pure
+    # full-invoice path (no prior partials) remaining_releases is empty, so iterating
+    # it here would leave custom_collected_qty at 0 and keep the Partial Invoice button
+    # alive forever — use invoice_releases, which equals remaining_releases when partials
+    # came first and holds the full per-row qty otherwise.
+    for name, release_qty in invoice_releases.items():
+        row = rows_by_name[name]
+        new_collected = flt(getattr(row, "custom_collected_qty", 0)) + release_qty
+        frappe.db.set_value("Quotation Item", name, "custom_collected_qty", new_collected)
+
+    # Ceiling bundle rows: previously this audit log was only written on the partial
+    # path, so a ceiling job card paid in full upfront (no partial invoices first) got
+    # no piece breakdown. Log it here too, on every successful full/final invoice.
+    _record_ceiling_releases(job_card, paid_invoice, rows_by_name, invoice_releases)
+
+    # Generic per-item release log across every category — the invoice has been created
+    # and submitted successfully by this point.
+    _record_job_card_item_releases(job_card, paid_invoice, rows_by_name, invoice_releases, is_partial=False, quotation_items=quotation.items)
+
+    return paid_invoice.name
+
+
 def _record_ceiling_releases(job_card, invoice, rows_by_name, released_qtys):
     """Log this visit's auto-derived piece release for each Ceiling bundle row, so the
     component-piece breakdown (CAW Ceiling Release) is captured on every successful
