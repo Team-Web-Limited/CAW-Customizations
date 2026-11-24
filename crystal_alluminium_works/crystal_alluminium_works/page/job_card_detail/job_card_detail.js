@@ -420,8 +420,26 @@ function jc_is_cutoff_item(item_consumed) {
 	return String(item_consumed || '').trim().toLowerCase() === JC_CUTOFF_ITEM_CONSUMED.toLowerCase();
 }
 
+// Cutoffs pins Size to 1 x 1 and locks it; anything else drops the 1 x 1 option entirely.
+function jc_sync_cutoff_size($size, is_cutoff) {
+	let $option = $size.find(`option[value="${JC_CUTOFF_SIZE_VALUE}"]`);
+	if (is_cutoff) {
+		if (!$option.length) {
+			$size.append(`<option value="${JC_CUTOFF_SIZE_VALUE}">${JC_CUTOFF_SIZE_VALUE}</option>`);
+		}
+		$size.val(JC_CUTOFF_SIZE_VALUE).prop('disabled', true);
+	} else {
+		if ($size.val() === JC_CUTOFF_SIZE_VALUE) $size.val('');
+		$option.remove();
+		$size.prop('disabled', false);
+	}
+}
+
+// Real sheet sizes only: 1 x 1 is the Cutoffs placeholder, so it is never offered for a real
+// item. jc_sync_cutoff_size adds it back only while Consumed is Cutoffs.
 function jc_sheet_size_options_html(configs, selected_size) {
 	return configs
+		.filter(c => c.size !== JC_CUTOFF_SIZE_VALUE)
 		.map(c => `<option value="${c.size}" ${c.size === selected_size ? 'selected' : ''}>${c.size}</option>`)
 		.join('');
 }
@@ -431,7 +449,26 @@ function jc_sheet_size_options_html(configs, selected_size) {
 // Only used here to flag a Quotation data problem (missing Width/Height), never to
 // cap or judge what was actually consumed.
 function jc_get_row_need_sft(row) {
+	if (jc_is_tracked_sheet_row(row)) {
+		return flt(row.custom_sheet_sft || 0) * flt(row.custom_sheet_pcs || 0) || flt(row.qty || 0);
+	}
 	return flt(row.custom_area_sqft || 0) * flt(row.qty || 0);
+}
+
+// Ordinary glass sold as whole sheets (api._is_tracked_sheet_row). It only comes to JC
+// Operations when its own size was out of stock and it was cut from another sheet.
+function jc_is_tracked_sheet_row(row) {
+	return row.custom_product_category === 'Glass'
+		&& row.custom_glass_sale_mode === 'Sheet'
+		&& !!row.custom_sheet_size
+		&& row.custom_glass_type !== 'Laminated';
+}
+
+// What a Glass Consumed entry "produces". Cut-size and laminated rows are matched by item
+// code; a Sheet row gets its own key so it never shares entries with cut glass of the same
+// code (api.get_jc_operations_locked_items returns the same keys).
+function jc_produce_key(row) {
+	return jc_is_tracked_sheet_row(row) ? `${row.item_code}::sheet::${row.custom_sheet_size}` : row.item_code;
 }
 
 // Turns the flat "Glass Consumed" ledger (item/size/pcs + which item code it
@@ -450,7 +487,8 @@ function jc_get_row_need_sft(row) {
 function jc_allocate_ledger_to_rows(items, ledger) {
 	let by_code = {};
 	items.forEach(item => {
-		(by_code[item.item_code] = by_code[item.item_code] || []).push(item);
+		let key = jc_produce_key(item);
+		(by_code[key] = by_code[key] || []).push(item);
 	});
 
 	let consumption = {};
@@ -468,7 +506,7 @@ function jc_allocate_ledger_to_rows(items, ledger) {
 				// A Resized/Laminated row with no area is a Quotation data problem (missing
 				// width/height), not "nothing to consume" — flag it instead of silently
 				// waving it through, so billing stays blocked until it's actually fixed.
-				zero_area_rows.push({ item_code: code, item_name: row.item_name });
+				zero_area_rows.push({ key: code, item_code: row.item_code, item_name: row.item_name });
 				return;
 			}
 
@@ -495,7 +533,7 @@ function jc_allocate_ledger_to_rows(items, ledger) {
 		});
 
 		if (!has_entry) {
-			missing.push({ item_code: code, item_name: rows[0].item_name });
+			missing.push({ key: code, item_code: rows[0].item_code, item_name: rows[0].item_name });
 		}
 	});
 
@@ -525,7 +563,7 @@ function jc_ledger_from_saved_data(items, saved_data) {
 	Object.keys(saved_data || {}).forEach(row_name => {
 		let item = item_by_row[row_name];
 		if (item && !is_placeholder(saved_data[row_name]) && (saved_data[row_name] || []).length) {
-			codes_with_real_sheets.add(item.item_code);
+			codes_with_real_sheets.add(jc_produce_key(item));
 		}
 	});
 
@@ -533,7 +571,7 @@ function jc_ledger_from_saved_data(items, saved_data) {
 	Object.keys(saved_data || {}).forEach(row_name => {
 		let item = item_by_row[row_name];
 		if (!item) return;
-		if (codes_with_real_sheets.has(item.item_code) && is_placeholder(saved_data[row_name])) return;
+		if (codes_with_real_sheets.has(jc_produce_key(item)) && is_placeholder(saved_data[row_name])) return;
 		(saved_data[row_name] || []).forEach(sheet => {
 			let is_cutoff = !!sheet.is_cutoff || jc_is_cutoff_item(sheet.item_consumed);
 			let entry = {
@@ -541,7 +579,7 @@ function jc_ledger_from_saved_data(items, saved_data) {
 				size: is_cutoff ? JC_CUTOFF_SIZE_VALUE : (sheet.size || ''),
 				pcs: is_cutoff ? 0 : flt(sheet.pcs),
 				is_cutoff: is_cutoff,
-				produces: item.item_code
+				produces: jc_produce_key(item)
 			};
 			let key = jc_ledger_entry_key(entry);
 			if (by_key[key]) {
@@ -554,7 +592,10 @@ function jc_ledger_from_saved_data(items, saved_data) {
 	return Object.values(by_key);
 }
 
-function open_jc_operations_modal(page, job_card, quotation) {
+// options.sheet_rows: Sheet-mode rows to bring in because their sheet size is short at
+// release (see confirm_sheet_release_stock); they need the sheets actually cut logged here.
+function open_jc_operations_modal(page, job_card, quotation, options) {
+	let extra_sheet_rows = new Set((options || {}).sheet_rows || []);
 	if (!job_card.quotation) {
 		return;
 	}
@@ -573,18 +614,6 @@ function open_jc_operations_modal(page, job_card, quotation) {
 			callback: r => resolve(r.message || [])
 		}))
 	]).then(([full_quotation, saved_json_r, configs, glass_items, locked_item_codes]) => {
-		let items = (full_quotation.items || []).filter(item =>
-			item.custom_product_category === 'Glass' &&
-			(item.custom_glass_sale_mode === 'Resized' || item.custom_glass_type === 'Laminated')
-		);
-		items = items.slice().sort((a, b) => (a.item_code || '').localeCompare(b.item_code || ''));
-
-		if (items.length === 0) {
-			// The JC Operations button is hidden whenever there are no such items
-			// (see has_jc_operations_items), so this is just a defensive guard.
-			return;
-		}
-
 		let saved_data = {};
 		try {
 			// frappe.db.get_value(doctype, name, fieldname) resolves to {message: {fieldname: value}}.
@@ -594,19 +623,43 @@ function open_jc_operations_modal(page, job_card, quotation) {
 			}
 		} catch (e) {}
 
-		// Non-Laminated codes present on this job card can be auto-matched — typing
-		// that exact code as "Consumed" is enough to know what it produces.
-		let cut_size_codes = new Set(
-			items.filter(item => item.custom_glass_type !== 'Laminated').map(item => item.item_code)
+		// Sheet rows only appear when a release flagged them short, or once already logged.
+		let items = (full_quotation.items || []).filter(item =>
+			(item.custom_product_category === 'Glass' &&
+				(item.custom_glass_sale_mode === 'Resized' || item.custom_glass_type === 'Laminated')) ||
+			(jc_is_tracked_sheet_row(item) &&
+				(extra_sheet_rows.has(item.name) || (saved_data[item.name] || []).length))
 		);
-		// Every distinct code (Cut Size or Laminated) is a valid target for an
-		// explicit "Produces" pick — Cutoffs can cover either kind of row.
+		items = items.slice().sort((a, b) => (a.item_code || '').localeCompare(b.item_code || ''));
+
+		if (items.length === 0) {
+			// The JC Operations button is hidden whenever there are no such items
+			// (see has_jc_operations_items), so this is just a defensive guard.
+			return;
+		}
+
+		let sheet_items = items.filter(jc_is_tracked_sheet_row);
+		let sheet_codes = new Set(sheet_items.map(item => item.item_code));
+		// Non-Laminated cut-size codes present on this job card can be auto-matched — typing
+		// that exact code as "Consumed" is enough to know what it produces. A code also sold
+		// as a Sheet row here is ambiguous, so it is picked from Produces instead.
+		let cut_size_codes = new Set(
+			items.filter(item => item.custom_glass_type !== 'Laminated' && !jc_is_tracked_sheet_row(item))
+				.map(item => item.item_code)
+				.filter(code => !sheet_codes.has(code))
+		);
+		// Every distinct code (Cut Size or Laminated) — and each Sheet row's own key — is a
+		// valid target for an explicit "Produces" pick; Cutoffs can cover any kind of row.
 		let produce_options = [];
 		let seen_codes = new Set();
 		items.forEach(item => {
-			if (seen_codes.has(item.item_code)) return;
-			seen_codes.add(item.item_code);
-			produce_options.push({ code: item.item_code, name: item.item_name });
+			let key = jc_produce_key(item);
+			if (seen_codes.has(key)) return;
+			seen_codes.add(key);
+			let label = jc_is_tracked_sheet_row(item)
+				? `${item.item_code} — ${item.item_name} (Sheet ${item.custom_sheet_size})`
+				: `${item.item_code} — ${item.item_name}`;
+			produce_options.push({ code: key, name: item.item_name, label: label });
 		});
 
 		let ledger = jc_ledger_from_saved_data(items, saved_data);
@@ -686,21 +739,35 @@ function open_jc_operations_modal(page, job_card, quotation) {
 		`;
 
 		let produces_options_html = produce_options
-			.map(o => `<option value="${jc_escape(o.code)}">${jc_escape(o.code)} — ${jc_escape(o.name)}</option>`)
+			.map(o => `<option value="${jc_escape(o.code)}">${jc_escape(o.label)}</option>`)
 			.join('');
 
-		let summary_rows_html = items.map(item => `
-			<tr class="jc-glass-item-row" data-row-name="${jc_escape(item.name)}" data-item-code="${jc_escape(item.item_code)}">
+		let summary_rows_html = items.map(item => {
+			let is_sheet = jc_is_tracked_sheet_row(item);
+			let sheets_left = flt(get_partial_native_full(item) - flt(item.custom_collected_qty || 0), 3);
+			return `
+			<tr class="jc-glass-item-row" data-row-name="${jc_escape(item.name)}" data-produce-key="${jc_escape(jc_produce_key(item))}">
 				<td>${jc_escape(item.item_code)}</td>
-				<td>${jc_escape(item.item_name)}</td>
-				<td style="text-align:right;">${jc_number(item.custom_numbering, 0)}</td>
+				<td>${jc_escape(item.item_name)}${is_sheet ? ` <span class="text-muted">(Sheet ${jc_escape(item.custom_sheet_size)})</span>` : ''}</td>
+				<td style="text-align:right;">${is_sheet ? jc_number(sheets_left, 0) : jc_number(item.custom_numbering, 0)}</td>
 				<td style="text-align:right;">${jc_number(item.qty, 3)}</td>
 				<td>${jc_escape(item.uom)}</td>
 				<td class="jc-item-status text-muted">-</td>
 			</tr>
-		`).join('');
+		`;
+		}).join('');
+
+		let sheet_note_html = sheet_items.length ? `
+			<div style="margin-bottom:12px; padding:10px 14px; border-radius:8px; background:#fff3cd; border:1px solid #ffe69c; color:#664d03; font-size:13px;">
+				Sheet sizes short in stock: log the sheets actually cut to make the
+				<b>${sheet_items.map(item => `${jc_escape(item.item_code)} ${jc_escape(item.custom_sheet_size)}`).join(', ')}</b>
+				sheets still to go out (Pcs column). Their stock is deducted when you save; later releases
+				of these rows won't deduct it again.
+			</div>
+		` : '';
 
 		let html = `
+			${sheet_note_html}
 			<table class="table table-bordered">
 				<thead>
 					<tr>
@@ -767,12 +834,12 @@ function open_jc_operations_modal(page, job_card, quotation) {
 		// Scroll the body only, so the title and Save button stay visible.
 		d.$wrapper.find('.modal-body').css({ 'max-height': '70vh', 'overflow-y': 'auto' });
 
-		let produce_name_by_code = {};
-		produce_options.forEach(o => { produce_name_by_code[o.code] = o.name; });
+		let produce_label_by_code = {};
+		produce_options.forEach(o => { produce_label_by_code[o.code] = o.label; });
 
 		let render_ledger_view_row = function(entry, idx) {
 			let actions = locked_codes.has(entry.produces)
-				? `<span class="text-muted" title="Stock for ${jc_escape(entry.produces)} was already deducted when this Job Card was saved — cancel that Stock Entry before changing this row."><i class="fa fa-lock"></i></span>`
+				? `<span class="text-muted" title="Stock for ${jc_escape(produce_label_by_code[entry.produces] || entry.produces)} was already deducted when this Job Card was saved — cancel that Stock Entry before changing this row."><i class="fa fa-lock"></i></span>`
 				: `<button class="btn btn-default btn-xs jc-ledger-edit-btn" data-idx="${idx}" title="Edit"><i class="fa fa-pencil"></i></button>
 				   <button class="btn btn-default btn-xs jc-ledger-remove-btn" data-idx="${idx}" title="Remove"><i class="fa fa-trash text-danger"></i></button>`;
 			return `
@@ -780,7 +847,7 @@ function open_jc_operations_modal(page, job_card, quotation) {
 					<td>${jc_escape(entry.item_consumed)}</td>
 					<td>${jc_escape(entry.size)}</td>
 					<td style="text-align:right;">${entry.is_cutoff ? 'N/A' : jc_number(entry.pcs, 0)}</td>
-					<td>${jc_escape(entry.produces)} — ${jc_escape(produce_name_by_code[entry.produces] || '')}</td>
+					<td>${jc_escape(produce_label_by_code[entry.produces] || entry.produces)}</td>
 					<td style="white-space:nowrap;">${actions}</td>
 				</tr>
 			`;
@@ -788,7 +855,7 @@ function open_jc_operations_modal(page, job_card, quotation) {
 
 		let render_ledger_edit_row = function(entry, idx) {
 			let produces_options = produce_options
-				.map(o => `<option value="${jc_escape(o.code)}" ${o.code === entry.produces ? 'selected' : ''}>${jc_escape(o.code)} — ${jc_escape(o.name)}</option>`)
+				.map(o => `<option value="${jc_escape(o.code)}" ${o.code === entry.produces ? 'selected' : ''}>${jc_escape(o.label)}</option>`)
 				.join('');
 			return `
 				<tr class="jc-ledger-edit-row" data-idx="${idx}">
@@ -837,12 +904,10 @@ function open_jc_operations_modal(page, job_card, quotation) {
 			let $size = $row.find('.jc-edit-size');
 			let $pcs = $row.find('.jc-edit-pcs');
 			let $produces = $row.find('.jc-edit-produces');
+			jc_sync_cutoff_size($size, is_cutoff);
 			if (is_cutoff) {
-				$size.val(JC_CUTOFF_SIZE_VALUE).prop('disabled', true);
 				$pcs.val('').prop('disabled', true).attr('placeholder', 'N/A');
 			} else {
-				if ($size.val() === JC_CUTOFF_SIZE_VALUE) $size.val('');
-				$size.prop('disabled', false);
 				$pcs.prop('disabled', false).attr('placeholder', '');
 			}
 			if (!is_cutoff && cut_size_codes.has(consumed)) {
@@ -870,7 +935,7 @@ function open_jc_operations_modal(page, job_card, quotation) {
 				return;
 			}
 			if (locked_codes.has(produces)) {
-				frappe.msgprint(`Stock for ${jc_escape(produces)} was already deducted when this Job Card was saved, so no more Glass Consumed can be logged against it.`);
+				frappe.msgprint(`Stock for ${jc_escape(produce_label_by_code[produces] || produces)} was already deducted when this Job Card was saved, so no more Glass Consumed can be logged against it.`);
 				return;
 			}
 
@@ -895,13 +960,13 @@ function open_jc_operations_modal(page, job_card, quotation) {
 			render_ledger_rows();
 			let { consumption, missing, zero_area_rows } = jc_allocate_ledger_to_rows(items, ledger);
 			let missing_by_row = {};
-			missing.forEach(m => { missing_by_row[m.item_code] = m; });
+			missing.forEach(m => { missing_by_row[m.key] = m; });
 			let zero_area_by_row = {};
-			zero_area_rows.forEach(z => { zero_area_by_row[z.item_code] = z; });
+			zero_area_rows.forEach(z => { zero_area_by_row[z.key] = z; });
 
 			d.$wrapper.find('.jc-glass-item-row').each(function() {
 				let row_name = $(this).attr('data-row-name');
-				let item_code = $(this).attr('data-item-code');
+				let item_code = $(this).attr('data-produce-key');
 				let $status = $(this).find('.jc-item-status');
 
 				if (consumption[row_name]) {
@@ -938,16 +1003,14 @@ function open_jc_operations_modal(page, job_card, quotation) {
 			let $pcs = d.$wrapper.find('.jc-ledger-pcs');
 			let is_cutoff = jc_is_cutoff_item(consumed);
 
+			// 1 x 1 only ever means Cutoffs, so a real item never sees it.
+			jc_sync_cutoff_size($size, is_cutoff);
 			if (is_cutoff) {
 				// Cutoffs means unmeasured scrap — no sheet count to track and nothing
 				// deducted from stock, so Size/Pcs don't apply; disable both so it's
 				// obvious neither field means anything for this entry.
-				$size.val(JC_CUTOFF_SIZE_VALUE).prop('disabled', true);
 				$pcs.val('').prop('disabled', true).attr('placeholder', 'N/A');
 			} else {
-				// 1 x 1 only ever means Cutoffs, so a real item can't keep it.
-				if ($size.val() === JC_CUTOFF_SIZE_VALUE) $size.val('');
-				$size.prop('disabled', false);
 				$pcs.prop('disabled', false).attr('placeholder', '');
 			}
 
@@ -983,16 +1046,7 @@ function open_jc_operations_modal(page, job_card, quotation) {
 			update_produces_visibility();
 			update_ledger_balance();
 		});
-		// Size 1 x 1 and Consumed "Cutoffs" are the same thing: picking one sets the other, so a
-		// real glass item is never recorded against the 1 x 1 placeholder (which would deduct a
-		// token 1 sft instead of the sheet actually cut).
-		d.$wrapper.on('change', '.jc-ledger-size', function() {
-			if ($(this).val() === JC_CUTOFF_SIZE_VALUE) {
-				d.$wrapper.find('.jc-ledger-consumed').val(JC_CUTOFF_ITEM_CONSUMED);
-				update_produces_visibility();
-			}
-			update_ledger_balance();
-		});
+		d.$wrapper.on('change', '.jc-ledger-size', update_ledger_balance);
 
 		d.$wrapper.on('click', '.jc-ledger-add-btn', function() {
 			let consumed = (d.$wrapper.find('.jc-ledger-consumed').val() || '').trim();
@@ -1011,7 +1065,7 @@ function open_jc_operations_modal(page, job_card, quotation) {
 				return;
 			}
 			if (locked_codes.has(produces)) {
-				frappe.msgprint(`Stock for ${jc_escape(produces)} was already deducted when this Job Card was saved, so no more Glass Consumed can be logged against it.`);
+				frappe.msgprint(`Stock for ${jc_escape(produce_label_by_code[produces] || produces)} was already deducted when this Job Card was saved, so no more Glass Consumed can be logged against it.`);
 				return;
 			}
 
@@ -1025,7 +1079,7 @@ function open_jc_operations_modal(page, job_card, quotation) {
 			}
 
 			d.$wrapper.find('.jc-ledger-consumed').val('');
-			d.$wrapper.find('.jc-ledger-size').val('').prop('disabled', false);
+			jc_sync_cutoff_size(d.$wrapper.find('.jc-ledger-size').val(''), false);
 			d.$wrapper.find('.jc-ledger-pcs').val('').prop('disabled', false).attr('placeholder', '');
 			d.$wrapper.find('.jc-ledger-produces').val('');
 			d.$wrapper.find('.jc-ledger-produces-wrap').hide();
@@ -1057,12 +1111,6 @@ function open_jc_operations_modal(page, job_card, quotation) {
 		});
 
 		d.$wrapper.on('change awesomplete-selectcomplete input', '.jc-edit-consumed', sync_edit_row_fields);
-		d.$wrapper.on('change', '.jc-edit-size', function() {
-			if ($(this).val() === JC_CUTOFF_SIZE_VALUE) {
-				d.$wrapper.find('.jc-ledger-edit-row .jc-edit-consumed').val(JC_CUTOFF_ITEM_CONSUMED);
-				sync_edit_row_fields();
-			}
-		});
 
 		d.$wrapper.on('keydown', '.jc-ledger-edit-row input, .jc-ledger-edit-row select', function(e) {
 			if (e.key === 'Enter') {
@@ -2107,7 +2155,76 @@ function refresh_ceiling_component_preview($input) {
 	});
 }
 
-async function create_partial_invoice_from_job_card(job_card, dialog) {
+// Sheet-mode glass whose own size is short in stock was cut from another sheet; releasing it
+// as-is books a sheet that never left. Resolves true when the release can go ahead; otherwise
+// warns and offers JC Operations to log the sheets actually cut (api.get_sheet_release_shortfalls).
+async function confirm_sheet_release_stock(page, job_card, releases, on_open_jc_operations) {
+	let response = await frappe.call({
+		method: 'crystal_alluminium_works.api.get_sheet_release_shortfalls',
+		args: {
+			job_card_name: job_card.name,
+			releases: releases ? JSON.stringify(releases) : null
+		},
+		freeze: true,
+		freeze_message: 'Checking sheet stock...'
+	});
+	let shortfalls = (response && response.message) || [];
+	if (!shortfalls.length) {
+		return true;
+	}
+
+	let rows_html = shortfalls.map(s => `
+		<tr>
+			<td>${jc_escape(s.item_code)}</td>
+			<td>${jc_escape(s.item_name)}</td>
+			<td>${jc_escape(s.size)}</td>
+			<td style="text-align:right;">${jc_number(s.needed, 0)}</td>
+			<td style="text-align:right;" class="text-danger">${jc_number(s.available, 0)}</td>
+		</tr>
+	`).join('');
+
+	let d = new frappe.ui.Dialog({
+		title: 'Sheet stock low',
+		fields: [{
+			fieldtype: 'HTML',
+			fieldname: 'body',
+			options: `
+				<p>There aren't enough sheets of these sizes in stock for this release:</p>
+				<table class="table table-bordered table-sm">
+					<thead>
+						<tr>
+							<th>Item Code</th><th>Item</th><th>Sheet Size</th>
+							<th style="text-align:right;">Releasing</th>
+							<th style="text-align:right;">In Stock</th>
+						</tr>
+					</thead>
+					<tbody>${rows_html}</tbody>
+				</table>
+				<p>If they were cut from another sheet, record the sheet actually used in
+				<b>JC Operations</b>, then release again.</p>
+			`
+		}],
+		primary_action_label: 'Continue to JC Operations',
+		primary_action: function() {
+			d.hide();
+			if (on_open_jc_operations) on_open_jc_operations();
+			let sheet_rows = [];
+			shortfalls.forEach(s => sheet_rows.push(...(s.rows || [])));
+			open_jc_operations_modal(page, job_card, null, { sheet_rows: sheet_rows });
+		},
+		secondary_action_label: 'Cancel',
+		secondary_action: function() {
+			d.hide();
+		}
+	});
+	d.onhide = function() {
+		d.$wrapper.remove();
+	};
+	d.show();
+	return false;
+}
+
+async function create_partial_invoice_from_job_card(job_card, dialog, page) {
 	let $wrapper = dialog.fields_dict.preview.$wrapper;
 
 	// Every row's release qty, ceiling bundles included — pieces and money both flow
@@ -2131,6 +2248,10 @@ async function create_partial_invoice_from_job_card(job_card, dialog) {
 		return;
 	}
 
+	if (!(await confirm_sheet_release_stock(page, job_card, releases, () => dialog.hide()))) {
+		return;
+	}
+
 	let response = await frappe.call({
 		method: 'crystal_alluminium_works.api.make_partial_sales_invoice_from_job_card',
 		args: {
@@ -2151,7 +2272,7 @@ async function create_partial_invoice_from_job_card(job_card, dialog) {
 	}
 }
 
-async function open_partial_invoice_modal(job_card) {
+async function open_partial_invoice_modal(job_card, page) {
 	if (!job_card.quotation) {
 		frappe.msgprint(__('This Job Card is not linked to a Quotation.'));
 		return;
@@ -2168,7 +2289,7 @@ async function open_partial_invoice_modal(job_card) {
 		],
 		primary_action_label: 'Create Partial Invoice',
 		primary_action: function() {
-			create_partial_invoice_from_job_card(job_card, dialog);
+			create_partial_invoice_from_job_card(job_card, dialog, page);
 		}
 	});
 
@@ -2243,7 +2364,10 @@ function bind_single_job_card_detail_events(page, $body, job_card, quotation, hi
 		window.open(export_url, '_blank');
 	});
 
-	$body.on('click.job-card-detail', '[data-action="create-sales-invoice"]', function() {
+	$body.on('click.job-card-detail', '[data-action="create-sales-invoice"]', async function() {
+		if (!(await confirm_sheet_release_stock(page, job_card, null))) {
+			return;
+		}
 		frappe.confirm(
 			'<b>Create Sales Invoice?</b><br><br>This will create, submit, and mark the Sales Invoice as paid from the fully paid Job Card.',
 			() => {
@@ -2289,7 +2413,7 @@ function bind_single_job_card_detail_events(page, $body, job_card, quotation, hi
 	});
 
 	$body.on('click.job-card-detail', '[data-action="create-partial-invoice"]', function() {
-		open_partial_invoice_modal(job_card);
+		open_partial_invoice_modal(job_card, page);
 	});
 
 	$body.on('click.job-card-detail', '[data-action="go-to-sales-invoice"]', function() {
@@ -2995,9 +3119,15 @@ function render_single_job_card_detail(job_card, quotation, history, sales_invoi
 
 	// Matches the item filter in open_jc_operations_modal — hide the button entirely
 	// when there's nothing for it to configure, instead of opening it just to msgprint.
+	let saved_sheet_consumption = {};
+	try {
+		saved_sheet_consumption = JSON.parse(job_card.custom_sheet_consumption_json || '{}') || {};
+	} catch (e) {}
 	let has_jc_operations_items = !is_cancelled && ((quotation || {}).items || []).some(item =>
-		item.custom_product_category === 'Glass' &&
-		(item.custom_glass_sale_mode === 'Resized' || item.custom_glass_type === 'Laminated')
+		(item.custom_product_category === 'Glass' &&
+			(item.custom_glass_sale_mode === 'Resized' || item.custom_glass_type === 'Laminated')) ||
+		// Sheet rows logged in JC Operations after a short-stock release.
+		(item.custom_glass_sale_mode === 'Sheet' && (saved_sheet_consumption[item.name] || []).length)
 	);
 
 	// The export mirrors the PDF's Glass Cut Size table (every non-Sheet glass line —

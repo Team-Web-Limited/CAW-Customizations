@@ -4786,77 +4786,124 @@ def _validate_glass_consumption(job_card, row_names=None):
             + ", ".join(row.item_code for row in pending) + "."
         )
 
-@frappe.whitelist()
-def make_sales_invoice_from_job_card(job_card_name):
-    if not job_card_name or not frappe.db.exists("CAW Job Card", job_card_name):
-        frappe.throw("Please select a valid Job Card.")
 
-    job_card = frappe.get_doc("CAW Job Card", job_card_name)
-    _assert_job_card_not_frozen(job_card)
-    _validate_glass_consumption(job_card)
-
-    if not job_card.quotation or not frappe.db.exists("Quotation", job_card.quotation):
-        frappe.throw("The selected Job Card is not linked to a valid Quotation.")
-
-    if not _is_job_card_settled(job_card.quotation_amount, job_card.payment_amount):
-        frappe.throw("The Job Card must be fully paid before creating a Sales Invoice.")
-
-    # Earlier partial invoices may already have billed part of this quotation
-    # (tracked via custom_collected_qty). If so, only release what's left so
-    # this invoice doesn't re-bill the whole quotation on top of them.
-    quotation = frappe.get_doc("Quotation", job_card.quotation)
-    rows_by_name = {row.name: row for row in quotation.items if not getattr(row, "custom_auto_generated", 0)}
-    had_prior_partial = any(flt(getattr(row, "custom_collected_qty", 0)) > 0 for row in rows_by_name.values())
-
-    remaining_releases = {}
-    if had_prior_partial:
-        for name, row in rows_by_name.items():
-            remaining = _get_partial_row_native_full(row) - flt(getattr(row, "custom_collected_qty", 0))
-            if remaining > 0.0001:
-                remaining_releases[name] = remaining
-
-        if not remaining_releases:
-            frappe.throw("This Quotation has already been fully invoiced.")
-        invoice_releases = remaining_releases
-    else:
-        # Nothing collected yet — this single invoice releases every row in full.
-        invoice_releases = {
-            name: _get_partial_row_native_full(row)
-            for name, row in rows_by_name.items()
-            if _get_partial_row_native_full(row) > 0.0001
-        }
-
-    invoice_name = make_sales_invoice_from_quotation(
-        job_card.quotation,
-        releases=remaining_releases or None,
+def _is_tracked_sheet_row(row):
+    """Ordinary glass sold as whole sheets: released by sheet count of its own size, which
+    the glass sheet ledger tracks. Laminated is made to order and goes through JC Operations."""
+    return (
+        getattr(row, "custom_product_category", "") == "Glass"
+        and getattr(row, "custom_glass_sale_mode", "") == "Sheet"
+        and bool(getattr(row, "custom_sheet_size", ""))
+        and frappe.db.get_value("Item", row.item_code, "custom_glass_type") != "Laminated"
     )
-    invoice = frappe.get_doc("Sales Invoice", invoice_name)
-    if frappe.get_meta("Sales Invoice").has_field("custom_source_job_card"):
-        invoice.custom_source_job_card = job_card.name
-        invoice.save(ignore_permissions=True)
 
-    paid_invoice = _submit_and_settle_job_card_sales_invoice(invoice, job_card)
 
-    # Stamp collected qty for every row this invoice actually billed. On the pure
-    # full-invoice path (no prior partials) remaining_releases is empty, so iterating
-    # it here would leave custom_collected_qty at 0 and keep the Partial Invoice button
-    # alive forever — use invoice_releases, which equals remaining_releases when partials
-    # came first and holds the full per-row qty otherwise.
-    for name, release_qty in invoice_releases.items():
-        row = rows_by_name[name]
-        new_collected = flt(getattr(row, "custom_collected_qty", 0)) + release_qty
-        frappe.db.set_value("Quotation Item", name, "custom_collected_qty", new_collected)
+def _sheet_release_shortfalls(job_card, quotation, release_qtys):
+    """Sheet-mode glass this release would take more sheets of than the store holds.
 
-    # Ceiling bundle rows: previously this audit log was only written on the partial
-    # path, so a ceiling job card paid in full upfront (no partial invoices first) got
-    # no piece breakdown. Log it here too, on every successful full/final invoice.
-    _record_ceiling_releases(job_card, paid_invoice, rows_by_name, invoice_releases)
+    When the sold size is out of stock the factory cuts it from another sheet; releasing it
+    as-is would book a sheet of the sold size that never left. Rows already recorded in JC
+    Operations are skipped: their stock went out there, as the sheets actually cut.
 
-    # Generic per-item release log across every category — the invoice has been created
-    # and submitted successfully by this point.
-    _record_job_card_item_releases(job_card, paid_invoice, rows_by_name, invoice_releases, is_partial=False, quotation_items=quotation.items)
+    release_qtys: {quotation_item_name: sheet pcs being released}."""
+    consumption = json.loads(job_card.custom_sheet_consumption_json or "{}")
+    needed = {}
+    for row in quotation.items:
+        qty = release_qtys.get(row.name)
+        qty = flt(qty.get("qty") if isinstance(qty, dict) else qty)
+        if qty <= 0.0001 or consumption.get(row.name) or not _is_tracked_sheet_row(row):
+            continue
+        entry = needed.setdefault((row.item_code, row.custom_sheet_size), {
+            "item_code": row.item_code,
+            "item_name": row.item_name or row.item_code,
+            "size": row.custom_sheet_size,
+            "needed": 0,
+            "rows": [],
+        })
+        entry["needed"] += qty
+        entry["rows"].append(row.name)
 
-    return paid_invoice.name
+    if not needed:
+        return []
+
+    warehouse = _get_default_receiving_warehouse(_get_default_stock_company())
+    balances = {}
+    shortfalls = []
+    for (item_code, size), entry in needed.items():
+        if item_code not in balances:
+            ledger = get_glass_stock_ledger(item_code, warehouse, summary_only=True)
+            balances[item_code] = (ledger or {}).get("final_sheet_balance") or {}
+        available = flt(balances[item_code].get(size))
+        if available + 0.0001 < entry["needed"]:
+            entry["available"] = available
+            shortfalls.append(entry)
+    return shortfalls
+
+
+def _validate_sheet_release_stock(job_card, quotation, release_qtys):
+    shortfalls = _sheet_release_shortfalls(job_card, quotation, release_qtys)
+    if shortfalls:
+        frappe.throw(
+            "Not enough sheets in stock for: "
+            + "; ".join(
+                f"{s['item_code']} {s['size']} (releasing {flt(s['needed']):g}, in stock {flt(s['available']):g})"
+                for s in shortfalls
+            )
+            + ". If it was cut from another sheet, record the sheet used in JC Operations, then release again.",
+            title="Sheet stock low",
+        )
+
+
+@frappe.whitelist()
+def get_sheet_release_shortfalls(job_card_name, releases=None):
+    """Sheet stock check the Job Card page runs before a release. releases is the partial
+    invoice's [{row, qty}]; omitted, it checks what a full invoice would release."""
+    job_card = frappe.get_doc("CAW Job Card", job_card_name)
+    job_card.check_permission("read")
+    if not job_card.quotation:
+        return []
+    quotation = frappe.get_doc("Quotation", job_card.quotation)
+    if releases:
+        release_qtys = _parse_releases(releases)
+    else:
+        release_qtys = _job_card_full_release_qtys(quotation)
+    return _sheet_release_shortfalls(job_card, quotation, release_qtys)
+
+
+def _job_card_full_release_qtys(quotation):
+    """What a full invoice releases per row: everything not yet collected."""
+    release_qtys = {}
+    for row in quotation.items:
+        if getattr(row, "custom_auto_generated", 0):
+            continue
+        remaining = _get_partial_row_native_full(row) - flt(getattr(row, "custom_collected_qty", 0))
+        if remaining > 0.0001:
+            release_qtys[row.name] = remaining
+    return release_qtys
+
+
+def _jc_ops_sheet_rows(job_card_name):
+    """Quotation rows of Sheet-mode glass whose stock was deducted at JC Operations — only
+    those that were short at release and had the sheet actually cut logged there. Invoice
+    edits and swaps leave that stock alone, the same as cut-size glass; every other Sheet
+    row keeps its normal invoice-time stock handling."""
+    if not job_card_name:
+        return set()
+    quotation = frappe.db.get_value("CAW Job Card", job_card_name, "quotation")
+    if not quotation:
+        return set()
+    return {
+        row_name
+        for row_name in frappe.get_all(
+            "Quotation Item",
+            filters={"parent": quotation, "custom_glass_sale_mode": "Sheet"},
+            pluck="name",
+        )
+        if frappe.db.exists(
+            "Stock Entry",
+            {"remarks": ["like", f"%Deducted for CAW Job Card: {job_card_name} Row: {row_name}%"], "docstatus": 1},
+        )
+    }
 
 
 def _record_ceiling_releases(job_card, invoice, rows_by_name, released_qtys):
@@ -5147,6 +5194,7 @@ def make_partial_sales_invoice_from_job_card(job_card_name, releases=None):
 
     # Only the rows being released need their JC Operations done.
     _validate_glass_consumption(job_card, row_names=set(capped))
+    _validate_sheet_release_stock(job_card, quotation, capped)
 
     invoice_name = make_sales_invoice_from_quotation(job_card.quotation, releases=capped)
     invoice = frappe.get_doc("Sales Invoice", invoice_name)
@@ -5380,6 +5428,12 @@ def _release_reversal_blockers(invoice):
         for item in invoice.items
     ):
         reasons.append("Cut Size / Laminated glass releases cannot be undone here.")
+    elif frappe.db.exists(
+        "Stock Entry",
+        {"custom_sales_invoice": invoice.name, "docstatus": 1, "remarks": ["like", "%for CAW Job Card: % Row: %"]},
+    ):
+        # Sheet glass recorded in JC Operations (cut from another sheet) is deducted there too.
+        reasons.append("Glass recorded in JC Operations was released on this invoice, so it cannot be undone here.")
 
     if not frappe.db.exists("CAW Job Card Release", {"sales_invoice": invoice.name}):
         reasons.append("No release record was found for this invoice, so the collected quantities cannot be restored.")
@@ -5801,7 +5855,7 @@ def _invoice_income_map(invoice):
     return {acc: flt(amt, 2) for acc, amt in income.items()}
 
 
-def _invoice_edit_stock_map(rows, jc_has_sheet_consumption):
+def _invoice_edit_stock_map(rows, jc_has_sheet_consumption, jc_sheet_rows=()):
     """Aggregate what invoice-time stock deduction the given manual rows imply:
     {item_code: {"qty": ledger_uom_qty, "sheets": {size: pcs}}} — mirroring the
     category logic of _record_ceiling_releases / _record_job_card_item_releases.
@@ -5841,7 +5895,7 @@ def _invoice_edit_stock_map(rows, jc_has_sheet_consumption):
             sale_mode = getattr(row, "custom_glass_sale_mode", "") or ""
             if glass_type == "Laminated" or (
                 jc_has_sheet_consumption and sale_mode in ("Resized", "Custom")
-            ):
+            ) or (sale_mode == "Sheet" and getattr(row, "custom_quotation_row", None) in jc_sheet_rows):
                 # Deducted via JC Operations (sheet consumption), keyed to quotation
                 # rows — not safely adjustable from invoice rows.
                 excluded[row.item_code] = flt(excluded.get(row.item_code, 0)) + native_qty
@@ -5896,8 +5950,9 @@ def _apply_invoice_edit_stock_deltas(old_rows, invoice, job_card_name, warnings)
     jc_has_sheets = bool(jc_sheet_json and json.loads(jc_sheet_json or "{}"))
 
     new_rows = [r for r in invoice.items if not getattr(r, "custom_auto_generated", 0)]
-    old_map, old_excluded = _invoice_edit_stock_map(old_rows, jc_has_sheets)
-    new_map, new_excluded = _invoice_edit_stock_map(new_rows, jc_has_sheets)
+    jc_sheet_rows = _jc_ops_sheet_rows(job_card_name)
+    old_map, old_excluded = _invoice_edit_stock_map(old_rows, jc_has_sheets, jc_sheet_rows)
+    new_map, new_excluded = _invoice_edit_stock_map(new_rows, jc_has_sheets, jc_sheet_rows)
 
     for item_code in set(old_excluded) | set(new_excluded):
         if abs(flt(old_excluded.get(item_code, 0)) - flt(new_excluded.get(item_code, 0))) > 0.0001:
@@ -6360,7 +6415,7 @@ def _swap_new_item_value_net(invoice, row, new_item_code):
     return flt(value) * get_price_adjustment_multiplier(invoice)
 
 
-def _swap_stock_warning(invoice, row, new_item_code, jc_has_sheets):
+def _swap_stock_warning(invoice, row, new_item_code, jc_has_sheets, jc_sheet_rows=()):
     """Glass taken at JC Operations (laminated, or cut glass on a card with sheet consumption)
     is not corrected from the invoice — say so before the swap is made."""
     if _swap_item_group(row.item_code) != "Glass":
@@ -6368,7 +6423,9 @@ def _swap_stock_warning(invoice, row, new_item_code, jc_has_sheets):
     sale_mode = row.get("custom_glass_sale_mode") or ""
     for code in (row.item_code, new_item_code):
         glass_type = frappe.get_cached_value("Item", code, "custom_glass_type")
-        if glass_type == "Laminated" or (jc_has_sheets and sale_mode in ("Resized", "Custom")):
+        if glass_type == "Laminated" or (jc_has_sheets and sale_mode in ("Resized", "Custom")) or (
+            sale_mode == "Sheet" and row.get("custom_quotation_row") in jc_sheet_rows
+        ):
             return (
                 f"Row {row.idx}: stock for this glass was taken at JC Operations, so the swap will "
                 "not move it — correct it from the Job Card's JC Operations."
@@ -6390,6 +6447,7 @@ def _evaluate_invoice_swaps(invoice, swaps):
     if job_card_name:
         jc_sheet_json = frappe.db.get_value("CAW Job Card", job_card_name, "custom_sheet_consumption_json")
         jc_has_sheets = bool(jc_sheet_json and json.loads(jc_sheet_json or "{}"))
+    jc_sheet_rows = _jc_ops_sheet_rows(job_card_name)
 
     seen, rows, warnings = set(), [], []
     for swap in swaps:
@@ -6417,7 +6475,7 @@ def _evaluate_invoice_swaps(invoice, swaps):
             "new_item_value": new_value,
             "difference": flt(new_value - charged, 2),
         })
-        warning = _swap_stock_warning(invoice, row, new_item_code, jc_has_sheets)
+        warning = _swap_stock_warning(invoice, row, new_item_code, jc_has_sheets, jc_sheet_rows)
         if warning:
             warnings.append(warning)
 
@@ -11377,14 +11435,20 @@ def get_jc_operations_locked_items(job_card_name):
 
     locked = set()
     for row in frappe.get_all(
-        "Quotation Item", filters={"parent": job_card.quotation}, fields=["name", "item_code"]
+        "Quotation Item",
+        filters={"parent": job_card.quotation},
+        fields=["name", "item_code", "custom_product_category", "custom_glass_sale_mode", "custom_sheet_size"],
     ):
         # Matches both "Repacked for CAW Job Card: …" and "Deducted for CAW Job Card: …".
         if frappe.db.exists(
             "Stock Entry",
             {"remarks": ["like", f"%for CAW Job Card: {job_card.name} Row: {row.name}%"], "docstatus": 1},
         ):
-            locked.add(row.item_code)
+            # Sheet-mode rows are keyed apart from cut glass of the same code (jc_produce_key in
+            # job_card_detail.js), so locking one never locks the other.
+            locked.add(
+                f"{row.item_code}::sheet::{row.custom_sheet_size}" if _is_tracked_sheet_row(row) else row.item_code
+            )
     return sorted(locked)
 
 
@@ -11424,7 +11488,11 @@ def save_jc_operations_consumption(job_card_name, consumption_json, confirm_shor
         sale_mode = getattr(row, "custom_glass_sale_mode", "")
         
         is_laminated = (glass_type == "Laminated")
-        is_resized_or_custom = (sale_mode in ("Resized", "Custom"))
+        # Sheet-mode glass recorded here was cut from another sheet because its own size
+        # was out of stock: deduct the sheets actually cut, the same way as cut-size glass.
+        is_resized_or_custom = (sale_mode in ("Resized", "Custom")) or (
+            not is_laminated and _is_tracked_sheet_row(row)
+        )
         
         if not is_laminated and not is_resized_or_custom:
             continue
@@ -11480,7 +11548,12 @@ def save_jc_operations_consumption(job_card_name, consumption_json, confirm_shor
         _create_cutoff_laminated_receipt(job_card.name, quotation_doc, row, consumption, warehouse, company)
 
     for row, is_laminated, row_consumption in pending:
-        total_sft = frappe.utils.flt(row.custom_area_sqft) * frappe.utils.flt(row.qty)
+        if not is_laminated and getattr(row, "custom_glass_sale_mode", "") == "Sheet":
+            # What is still to go out of this row — earlier releases deducted their own sheets.
+            remaining_pcs = _get_partial_row_native_full(row) - frappe.utils.flt(row.custom_collected_qty)
+            total_sft = _native_release_qty_to_sft(row, max(remaining_pcs, 0))
+        else:
+            total_sft = frappe.utils.flt(row.custom_area_sqft) * frappe.utils.flt(row.qty)
         
         if is_laminated:
             # Execute repack (consumes raw glass, produces laminated). The modal puts every sheet
