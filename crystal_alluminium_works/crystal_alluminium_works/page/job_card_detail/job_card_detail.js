@@ -464,6 +464,21 @@ function jc_is_tracked_sheet_row(row) {
 		&& row.custom_glass_type !== 'Laminated';
 }
 
+// JC Operations marker for a Sheet row sold whole from stock (api._is_skip_sheet): nothing
+// was cut, so the release deducts the sold sheet size.
+function jc_is_skip_entry(sheet) {
+	return !!(sheet && sheet.skip);
+}
+
+// Produce keys whose Sheet rows were saved as Skip.
+function jc_skipped_keys_from_saved_data(items, saved_data) {
+	let keys = new Set();
+	items.forEach(item => {
+		if ((saved_data[item.name] || []).some(jc_is_skip_entry)) keys.add(jc_produce_key(item));
+	});
+	return keys;
+}
+
 // What a Glass Consumed entry "produces". Cut-size and laminated rows are matched by item
 // code; a Sheet row gets its own key so it never shares entries with cut glass of the same
 // code (api.get_jc_operations_locked_items returns the same keys).
@@ -484,7 +499,7 @@ function jc_produce_key(row) {
 // deducted, in full, against the first row producing that code (see below for why
 // that's safe). The only thing this still enforces is "did they log something at
 // all" — not "does it match what we calculated".
-function jc_allocate_ledger_to_rows(items, ledger) {
+function jc_allocate_ledger_to_rows(items, ledger, skipped_keys) {
 	let by_code = {};
 	items.forEach(item => {
 		let key = jc_produce_key(item);
@@ -496,6 +511,11 @@ function jc_allocate_ledger_to_rows(items, ledger) {
 	let zero_area_rows = [];
 
 	Object.keys(by_code).forEach(code => {
+		if (skipped_keys && skipped_keys.has(code)) {
+			// Sheet sold whole from stock: recorded as Skip, deducted at release as the sold size.
+			by_code[code].forEach(row => { consumption[row.name] = [{ skip: 1 }]; });
+			return;
+		}
 		let entries = ledger.filter(e => e.produces === code);
 		let has_entry = entries.some(e => e.is_cutoff || flt(e.pcs) > 0);
 		let rows = by_code[code];
@@ -560,6 +580,9 @@ function jc_ledger_from_saved_data(items, saved_data) {
 	let is_placeholder = sheets => (sheets || []).length === 1 &&
 		(!!sheets[0].is_cutoff || jc_is_cutoff_item(sheets[0].item_consumed));
 	let codes_with_real_sheets = new Set();
+	saved_data = Object.fromEntries(Object.entries(saved_data || {}).map(
+		([row_name, sheets]) => [row_name, (sheets || []).filter(sheet => !jc_is_skip_entry(sheet))]
+	));
 	Object.keys(saved_data || {}).forEach(row_name => {
 		let item = item_by_row[row_name];
 		if (item && !is_placeholder(saved_data[row_name]) && (saved_data[row_name] || []).length) {
@@ -592,8 +615,9 @@ function jc_ledger_from_saved_data(items, saved_data) {
 	return Object.values(by_key);
 }
 
-// options.sheet_rows: Sheet-mode rows to bring in because their sheet size is short at
-// release (see confirm_sheet_release_stock); they need the sheets actually cut logged here.
+// Every Sheet-mode row still to go out is listed: log the sheet actually cut, or tick Skip when
+// it is sold whole from stock. options.sheet_rows: rows a release found short in stock (see
+// confirm_sheet_release_stock), flagged so staff log the sheet they cut instead of skipping.
 function open_jc_operations_modal(page, job_card, quotation, options) {
 	let extra_sheet_rows = new Set((options || {}).sheet_rows || []);
 	if (!job_card.quotation) {
@@ -623,12 +647,13 @@ function open_jc_operations_modal(page, job_card, quotation, options) {
 			}
 		} catch (e) {}
 
-		// Sheet rows only appear when a release flagged them short, or once already logged.
+		// Sheet rows: every one still to go out, plus any with something already saved.
 		let items = (full_quotation.items || []).filter(item =>
 			(item.custom_product_category === 'Glass' &&
 				(item.custom_glass_sale_mode === 'Resized' || item.custom_glass_type === 'Laminated')) ||
 			(jc_is_tracked_sheet_row(item) &&
-				(extra_sheet_rows.has(item.name) || (saved_data[item.name] || []).length))
+				(get_partial_native_full(item) - flt(item.custom_collected_qty || 0) > 0.0001
+					|| (saved_data[item.name] || []).length))
 		);
 		items = items.slice().sort((a, b) => (a.item_code || '').localeCompare(b.item_code || ''));
 
@@ -663,6 +688,10 @@ function open_jc_operations_modal(page, job_card, quotation, options) {
 		});
 
 		let ledger = jc_ledger_from_saved_data(items, saved_data);
+		// Sheet rows ticked Skip (sold whole from stock). A row a release just found short is
+		// un-skipped so the sheet actually cut gets logged.
+		let skipped_keys = jc_skipped_keys_from_saved_data(items, saved_data);
+		items.forEach(item => { if (extra_sheet_rows.has(item.name)) skipped_keys.delete(jc_produce_key(item)); });
 		// Codes whose stock entry is already posted — their Glass Consumed entries can't be
 		// edited or removed any more (see api.py get_jc_operations_locked_items).
 		let locked_codes = new Set(locked_item_codes || []);
@@ -679,10 +708,10 @@ function open_jc_operations_modal(page, job_card, quotation, options) {
 					frappe.msgprint('Finish editing the Glass Consumed row first — press ✓ to apply the change or ✕ to discard it.');
 					return;
 				}
-				let { consumption, missing, zero_area_rows } = jc_allocate_ledger_to_rows(items, ledger);
+				let { consumption, missing, zero_area_rows } = jc_allocate_ledger_to_rows(items, ledger, skipped_keys);
 				if (missing.length > 0 || zero_area_rows.length > 0) {
 					let lines = missing.map(m =>
-						`"${frappe.utils.escape_html(m.item_name)}" (${frappe.utils.escape_html(m.item_code)}) has no Glass Consumed logged yet.`
+						`"${frappe.utils.escape_html(m.item_name)}" (${frappe.utils.escape_html(m.item_code)}) has no Glass Consumed logged yet${m.key.includes('::sheet::') ? ' — log the sheet cut, or tick Skip if it was sold whole' : ''}.`
 					).concat(zero_area_rows.map(z =>
 						`"${frappe.utils.escape_html(z.item_name)}" (${frappe.utils.escape_html(z.item_code)}) has no area set on the Quotation — fix its Width/Height there before it can be configured here.`
 					));
@@ -752,17 +781,21 @@ function open_jc_operations_modal(page, job_card, quotation, options) {
 				<td style="text-align:right;">${is_sheet ? jc_number(sheets_left, 0) : jc_number(item.custom_numbering, 0)}</td>
 				<td style="text-align:right;">${jc_number(item.qty, 3)}</td>
 				<td>${jc_escape(item.uom)}</td>
+				<td style="text-align:center;">${is_sheet ? `<input type="checkbox" class="jc-skip-sheet" data-produce-key="${jc_escape(jc_produce_key(item))}" title="Sold whole from stock — nothing cut">` : ''}</td>
 				<td class="jc-item-status text-muted">-</td>
 			</tr>
 		`;
 		}).join('');
 
+		let short_items = sheet_items.filter(item => extra_sheet_rows.has(item.name));
 		let sheet_note_html = sheet_items.length ? `
 			<div style="margin-bottom:12px; padding:10px 14px; border-radius:8px; background:#fff3cd; border:1px solid #ffe69c; color:#664d03; font-size:13px;">
-				Sheet sizes short in stock: log the sheets actually cut to make the
-				<b>${sheet_items.map(item => `${jc_escape(item.item_code)} ${jc_escape(item.custom_sheet_size)}`).join(', ')}</b>
-				sheets still to go out (Pcs column). Their stock is deducted when you save; later releases
-				of these rows won't deduct it again.
+				Glass sold in sheets: tick <b>Skip</b> when the sheet goes out whole from stock (deducted
+				at release as the sold size). If it was cut from another sheet, log the sheet used for the
+				sheets still to go out (Pcs column): that stock is deducted when you save, and later
+				releases of the row won't deduct it again.
+				${short_items.length ? `<br><b>Short in stock — log the sheet cut for:
+				${short_items.map(item => `${jc_escape(item.item_code)} ${jc_escape(item.custom_sheet_size)}`).join(', ')}</b>` : ''}
 			</div>
 		` : '';
 
@@ -776,6 +809,7 @@ function open_jc_operations_modal(page, job_card, quotation, options) {
 						<th style="text-align:right;">Pcs</th>
 						<th style="text-align:right;">Qty</th>
 						<th>UOM</th>
+						${sheet_items.length ? '<th style="text-align:center;" title="Sheet sold whole from stock — nothing cut">Skip</th>' : '<th></th>'}
 						<th>Status</th>
 					</tr>
 				</thead>
@@ -938,6 +972,10 @@ function open_jc_operations_modal(page, job_card, quotation, options) {
 				frappe.msgprint(`Stock for ${jc_escape(produce_label_by_code[produces] || produces)} was already deducted when this Job Card was saved, so no more Glass Consumed can be logged against it.`);
 				return;
 			}
+			if (skipped_keys.has(produces)) {
+				frappe.msgprint(`${jc_escape(produce_label_by_code[produces] || produces)} is ticked Skip (sold whole). Untick Skip to log the sheet it was cut from.`);
+				return;
+			}
 
 			let updated = { item_consumed: is_cutoff ? JC_CUTOFF_ITEM_CONSUMED : consumed, size, pcs: is_cutoff ? 0 : pcs, is_cutoff, produces };
 			let key = jc_ledger_entry_key(updated);
@@ -958,7 +996,7 @@ function open_jc_operations_modal(page, job_card, quotation, options) {
 
 		let refresh = function() {
 			render_ledger_rows();
-			let { consumption, missing, zero_area_rows } = jc_allocate_ledger_to_rows(items, ledger);
+			let { consumption, missing, zero_area_rows } = jc_allocate_ledger_to_rows(items, ledger, skipped_keys);
 			let missing_by_row = {};
 			missing.forEach(m => { missing_by_row[m.key] = m; });
 			let zero_area_by_row = {};
@@ -968,8 +1006,13 @@ function open_jc_operations_modal(page, job_card, quotation, options) {
 				let row_name = $(this).attr('data-row-name');
 				let item_code = $(this).attr('data-produce-key');
 				let $status = $(this).find('.jc-item-status');
+				$(this).find('.jc-skip-sheet')
+					.prop('checked', skipped_keys.has(item_code))
+					.prop('disabled', locked_codes.has(item_code));
 
-				if (consumption[row_name]) {
+				if (skipped_keys.has(item_code)) {
+					$status.attr('class', 'jc-item-status text-success').text('✓ Skipped (sold whole)');
+				} else if (consumption[row_name]) {
 					$status.attr('class', 'jc-item-status text-success').text('✓ Covered');
 				} else if (zero_area_by_row[item_code]) {
 					$status.attr('class', 'jc-item-status text-danger').text('No area set on Quotation');
@@ -1048,6 +1091,24 @@ function open_jc_operations_modal(page, job_card, quotation, options) {
 		});
 		d.$wrapper.on('change', '.jc-ledger-size', update_ledger_balance);
 
+		d.$wrapper.on('change', '.jc-skip-sheet', function() {
+			let key = $(this).attr('data-produce-key');
+			if (!$(this).prop('checked')) {
+				skipped_keys.delete(key);
+				refresh();
+				return;
+			}
+			let logged = ledger.filter(e => e.produces === key).length;
+			skipped_keys.add(key);
+			if (logged) {
+				// Skip means nothing was cut, so the sheets logged for this row no longer apply.
+				ledger = ledger.filter(e => e.produces !== key);
+				editing_idx = null;
+				frappe.show_alert({ message: `Removed ${logged} Glass Consumed ${logged === 1 ? 'entry' : 'entries'} for the skipped sheet`, indicator: 'orange' });
+			}
+			refresh();
+		});
+
 		d.$wrapper.on('click', '.jc-ledger-add-btn', function() {
 			let consumed = (d.$wrapper.find('.jc-ledger-consumed').val() || '').trim();
 			let is_cutoff = jc_is_cutoff_item(consumed);
@@ -1066,6 +1127,10 @@ function open_jc_operations_modal(page, job_card, quotation, options) {
 			}
 			if (locked_codes.has(produces)) {
 				frappe.msgprint(`Stock for ${jc_escape(produce_label_by_code[produces] || produces)} was already deducted when this Job Card was saved, so no more Glass Consumed can be logged against it.`);
+				return;
+			}
+			if (skipped_keys.has(produces)) {
+				frappe.msgprint(`${jc_escape(produce_label_by_code[produces] || produces)} is ticked Skip (sold whole). Untick Skip to log the sheet it was cut from.`);
 				return;
 			}
 
@@ -2344,6 +2409,25 @@ function bind_single_job_card_detail_events(page, $body, job_card, quotation, hi
 		open_edit_job_card_modal(page, job_card, quotation);
 	});
 
+	$body.on('click.job-card-detail', '[data-action="skip-all-sheets"]', function() {
+		let count = (job_card.jc_operations_pending_sheet_rows || []).length;
+		frappe.confirm(
+			`Mark ${count === 1 ? 'the glass sheet row' : `all ${count} glass sheet rows`} as sold whole from stock?<br><br>
+			Each releases its sold sheet size. If a size turns out short at release, you'll be asked to
+			log the sheet it was cut from in <b>JC Operations</b>.`,
+			() => frappe.call({
+				method: 'crystal_alluminium_works.api.skip_all_sheet_jc_operations',
+				args: { job_card_name: job_card.name },
+				freeze: true,
+				callback: function(r) {
+					let skipped = (r.message || {}).skipped || 0;
+					frappe.show_alert({ message: `Skipped ${skipped} sheet ${skipped === 1 ? 'row' : 'rows'}`, indicator: 'green' });
+					load_single_job_card_detail(page, job_card.name);
+				}
+			})
+		).set_title(__('Skip all sheets'));
+	});
+
 	$body.on('click.job-card-detail', '[data-action="jc-operations"]', function() {
 		open_jc_operations_modal(page, job_card, quotation);
 	});
@@ -3059,36 +3143,18 @@ function render_single_job_card_detail(job_card, quotation, history, sales_invoi
 	// invoice itself never touches GL.
 	let can_create_partial_invoice = !amendment_pending && can_create_partial_invoice_from_job_card(job_card, quotation);
 	
-	let glass_ops_rows = ((quotation || {}).items || [])
-		.filter(item => 
-			item.custom_product_category === 'Glass' && 
-			(item.custom_glass_type === 'Laminated' || 
-			 item.custom_glass_sale_mode === 'Resized' || 
-			 item.custom_glass_sale_mode === 'Custom')
-		)
-		.map(item => item.name);
-		
-	let glass_ops_configured = true;
-	if (glass_ops_rows.length > 0) {
-		let saved_consumption = {};
-		try {
-			if (job_card.custom_sheet_consumption_json) {
-				saved_consumption = JSON.parse(job_card.custom_sheet_consumption_json);
-			}
-		} catch (e) {}
-		
-		glass_ops_configured = glass_ops_rows.every(row_name => {
-			let rows = saved_consumption[row_name] || [];
-			return rows.length > 0 && rows.some(r => r.item_consumed && r.size && (r.is_cutoff || r.pcs > 0));
-		});
-	}
-	let glass_ops_pending = glass_ops_rows.length > 0 && !glass_ops_configured;
+	// Glass still waiting on JC Operations — cut-size/laminated without consumption, and Sheet
+	// rows with neither a logged cut nor Skip (api._rows_pending_jc_operations).
+	let glass_ops_pending = ((job_card.jc_operations_pending_rows || []).length > 0);
+	let pending_sheet_count = (job_card.jc_operations_pending_sheet_rows || []).length;
+	let pending_cut_count = (job_card.jc_operations_pending_rows || []).length - pending_sheet_count;
 
 	if (amendment_pending || glass_ops_pending) {
 		can_edit_job_card = amendment_pending ? false : can_edit_job_card;
 		can_create_invoice = false;
-		// Pending JC Operations only holds back the glass that needs it (cut-size and
-		// laminated); everything else can still go out on a Partial Invoice. The server
+		// Pending JC Operations only holds back the glass that needs it (cut-size, laminated,
+		// and Sheet rows not yet logged or skipped); everything else can still go out on a
+		// Partial Invoice. The server
 		// re-checks the rows actually released (api._validate_glass_consumption).
 		can_create_partial_invoice = !amendment_pending && can_create_partial_invoice
 			&& !!(quotation && quotation.has_releasable_items_ready);
@@ -3119,15 +3185,11 @@ function render_single_job_card_detail(job_card, quotation, history, sales_invoi
 
 	// Matches the item filter in open_jc_operations_modal — hide the button entirely
 	// when there's nothing for it to configure, instead of opening it just to msgprint.
-	let saved_sheet_consumption = {};
-	try {
-		saved_sheet_consumption = JSON.parse(job_card.custom_sheet_consumption_json || '{}') || {};
-	} catch (e) {}
 	let has_jc_operations_items = !is_cancelled && ((quotation || {}).items || []).some(item =>
 		(item.custom_product_category === 'Glass' &&
 			(item.custom_glass_sale_mode === 'Resized' || item.custom_glass_type === 'Laminated')) ||
-		// Sheet rows logged in JC Operations after a short-stock release.
-		(item.custom_glass_sale_mode === 'Sheet' && (saved_sheet_consumption[item.name] || []).length)
+		// Every Sheet row: log the sheet cut or Skip (sold whole).
+		(item.custom_product_category === 'Glass' && item.custom_glass_sale_mode === 'Sheet' && item.custom_glass_type !== 'Laminated')
 	);
 
 	// The export mirrors the PDF's Glass Cut Size table (every non-Sheet glass line —
@@ -3224,9 +3286,14 @@ function render_single_job_card_detail(job_card, quotation, history, sales_invoi
 		` : ''}
 
 		${glass_ops_pending ? `
-			<div style="margin-bottom:18px; padding:12px 16px; border-radius:8px; background:#fff3cd; border:1px solid #ffeeba; color:#856404; font-size:13px;">
-				<strong>Glass Sheet Consumption Pending</strong><br>
-				Cut-size and laminated glass can't be released until the sheets they consumed are recorded via <b>JC Operations</b>. Other items, including glass sold in sheets, can still be released through <b>Partial Invoice</b>.
+			<div style="margin-bottom:18px; padding:12px 16px; border-radius:8px; background:#fff3cd; border:1px solid #ffeeba; color:#856404; font-size:13px; display:flex; gap:16px; align-items:center;">
+				<div style="flex:1;">
+					<strong>Glass Sheet Consumption Pending</strong><br>
+					${pending_cut_count ? 'Cut-size and laminated glass can\'t be released until the sheets they consumed are recorded via <b>JC Operations</b>. ' : ''}
+					${pending_sheet_count ? `Glass sold in sheets (${pending_sheet_count} ${pending_sheet_count === 1 ? 'row' : 'rows'}) needs the sheet cut logged in <b>JC Operations</b>, or <b>Skip all sheets</b> if ${pending_sheet_count === 1 ? 'it goes' : 'they go'} out whole from stock. ` : ''}
+					Other items can still be released through <b>Partial Invoice</b>.
+				</div>
+				${pending_sheet_count ? `<button class="btn btn-default btn-sm" data-action="skip-all-sheets" style="white-space:nowrap;">Skip all sheets</button>` : ''}
 			</div>
 		` : ''}
 

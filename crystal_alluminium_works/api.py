@@ -897,6 +897,17 @@ def _is_cutoff_sheet(sheet):
 CUTOFF_SHEET_SIZE = "1 x 1"
 
 
+def _is_skip_sheet(sheet):
+    """JC Operations marker for Sheet-mode glass sold as a whole sheet from stock: nothing was
+    cut, so nothing is deducted at JC Operations and the release deducts the sold size."""
+    return bool((sheet or {}).get("skip"))
+
+
+def _real_sheets(sheets):
+    """A row's JC Operations entries without the Skip marker."""
+    return [sheet for sheet in (sheets or []) if not _is_skip_sheet(sheet)]
+
+
 def _normalize_cutoff_sheets(consumption):
     """The 1 x 1 size exists only as the Cutoffs placeholder. A sheet row recorded against it
     as a real item (e.g. "RGL7, 1 x 1, 1 pc") would deduct a token 1 sft instead of the sheet
@@ -3678,7 +3689,8 @@ def get_job_card_detail(name):
             item_map = {item.name: item for item in quotation.items} if quotation else {}
             for row_name, sheets in saved_data.items():
                 item = item_map.get(row_name)
-                if not item:
+                sheets = _real_sheets(sheets)
+                if not item or not sheets:
                     continue
                 
                 is_laminated = frappe.db.get_value("Item", item.item_code, "custom_glass_type") == "Laminated"
@@ -3831,6 +3843,8 @@ def get_job_card_detail(name):
             "custom_sheet_consumption_json": job_card.custom_sheet_consumption_json,
             # Rows the Partial Invoice dialog must hold at 0 until JC Operations is done.
             "jc_operations_pending_rows": [row.name for row in pending_jc_rows],
+            # The Sheet-mode ones among them, which "Skip all sheets" can clear in one go.
+            "jc_operations_pending_sheet_rows": [row.name for row in pending_jc_rows if _is_tracked_sheet_row(row)],
         },
         "quotation": {
             "name": quotation.name,
@@ -4753,7 +4767,8 @@ def _row_needs_jc_operations(row):
 
 
 def _rows_pending_jc_operations(job_card, quotation=None):
-    """Quotation rows that need JC Operations and don't have their sheet consumption yet."""
+    """Quotation rows that need JC Operations and don't have their sheet consumption yet —
+    cut-size/laminated glass, and Sheet glass with neither a logged cut nor Skip."""
     if not job_card.quotation:
         return []
     import json
@@ -4761,6 +4776,13 @@ def _rows_pending_jc_operations(job_card, quotation=None):
     consumption = json.loads(job_card.custom_sheet_consumption_json or "{}")
     pending = []
     for row in quotation.items:
+        if _is_tracked_sheet_row(row):
+            # Every Sheet row gets a decision in JC Operations before it goes out: the sheet
+            # actually cut, or Skip (sold whole from stock). Fully released rows are done.
+            remaining = _get_partial_row_native_full(row) - flt(getattr(row, "custom_collected_qty", 0))
+            if remaining > 0.0001 and not consumption.get(row.name):
+                pending.append(row)
+            continue
         if not _row_needs_jc_operations(row):
             continue
         configured = any(
@@ -4771,6 +4793,34 @@ def _rows_pending_jc_operations(job_card, quotation=None):
         if not configured:
             pending.append(row)
     return pending
+
+
+@frappe.whitelist()
+def skip_all_sheet_jc_operations(job_card_name):
+    """Mark every Sheet-mode row still waiting on JC Operations as Skip (sold whole from stock),
+    so a job of plain sheets doesn't need each row ticked in JC Operations. Rows with a cut
+    already logged, and cut-size/laminated glass, are left as they are. The release still runs
+    the sheet stock check on skipped rows."""
+    job_card = frappe.get_doc("CAW Job Card", job_card_name)
+    job_card.check_permission("write")
+    _assert_job_card_not_frozen(job_card)
+    if not job_card.quotation:
+        return {"skipped": 0}
+    quotation = frappe.get_doc("Quotation", job_card.quotation)
+    rows = [row for row in _rows_pending_jc_operations(job_card, quotation) if _is_tracked_sheet_row(row)]
+    if not rows:
+        return {"skipped": 0}
+    consumption = json.loads(job_card.custom_sheet_consumption_json or "{}")
+    for row in rows:
+        consumption[row.name] = [{"skip": 1}]
+    frappe.db.set_value("CAW Job Card", job_card.name, "custom_sheet_consumption_json", json.dumps(consumption))
+    job_card.add_comment(
+        "Comment",
+        f"JC Operations skipped for {len(rows)} sheet row(s), sold whole from stock: "
+        + ", ".join(f"{row.item_code} {row.custom_sheet_size}" for row in rows)
+        + f" — by {frappe.session.user}.",
+    )
+    return {"skipped": len(rows)}
 
 
 def _validate_glass_consumption(job_card, row_names=None):
@@ -4802,8 +4852,8 @@ def _sheet_release_shortfalls(job_card, quotation, release_qtys):
     """Sheet-mode glass this release would take more sheets of than the store holds.
 
     When the sold size is out of stock the factory cuts it from another sheet; releasing it
-    as-is would book a sheet of the sold size that never left. Rows already recorded in JC
-    Operations are skipped: their stock went out there, as the sheets actually cut.
+    as-is would book a sheet of the sold size that never left. Rows with the cut logged in JC
+    Operations are left out: their stock went out there, as the sheets actually cut.
 
     release_qtys: {quotation_item_name: sheet pcs being released}."""
     consumption = json.loads(job_card.custom_sheet_consumption_json or "{}")
@@ -4811,7 +4861,8 @@ def _sheet_release_shortfalls(job_card, quotation, release_qtys):
     for row in quotation.items:
         qty = release_qtys.get(row.name)
         qty = flt(qty.get("qty") if isinstance(qty, dict) else qty)
-        if qty <= 0.0001 or consumption.get(row.name) or not _is_tracked_sheet_row(row):
+        # Skipped rows go out as the sold size, so they are checked; logged rows are not.
+        if qty <= 0.0001 or _real_sheets(consumption.get(row.name)) or not _is_tracked_sheet_row(row):
             continue
         entry = needed.setdefault((row.item_code, row.custom_sheet_size), {
             "item_code": row.item_code,
@@ -5077,7 +5128,8 @@ def _record_job_card_item_releases(job_card, invoice, rows_by_name, released_qty
         else:
             qty = flt(release_data)
             
-        sheets = jc_sheets.get(name, [])
+        # Skip = sold whole from stock: deducted below as the sold sheet size.
+        sheets = _real_sheets(jc_sheets.get(name, []))
 
         row = rows_by_name.get(name)
         if not row or qty <= 0:
