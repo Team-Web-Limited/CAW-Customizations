@@ -371,7 +371,11 @@ function open_price_list_modal() {
 		</style>
 		<div class="pl-tabs">${PL_TABS.map((c, i) =>
 			`<button type="button" class="pl-tab${i ? '' : ' active'}" data-category="${c}">${__(c)}</button>`).join('')}</div>
-		<input type="text" class="form-control pl-search" placeholder="${__('Search name or code')}" style="margin-bottom:12px;">
+		<div style="display:flex; gap:12px; align-items:center; margin-bottom:12px;">
+			<input type="text" class="form-control pl-search" placeholder="${__('Search name or code')}" style="flex:1;">
+			<label class="text-muted" style="margin:0; white-space:nowrap; font-size:12px;">${__('Stock PDF as at')}</label>
+			<input type="date" class="form-control pl-stock-date" style="width:160px;" value="${frappe.datetime.get_today()}" max="${frappe.datetime.get_today()}">
+		</div>
 		<div class="pl-scroll"><table class="pl-table"><thead class="pl-head"></thead><tbody class="pl-body"></tbody></table></div>
 		<div class="pl-note text-muted" style="margin-top:10px;font-size:12px;"></div>
 	`);
@@ -389,7 +393,8 @@ function open_price_list_modal() {
 		const heads = is_services
 			? [[__('Service'), ''], [__('Item Code'), ''], [__('Charged Per'), ''], [__('Rate (VAT incl.)'), 'pl-num']]
 			: [[__('Item'), ''], [__('Product Code'), ''], [__('Item Code'), ''], [__('UOM'), ''], [__('Retail'), 'pl-num']]
-				.concat(is_alu ? [[__('Rate/Kg'), 'pl-num']] : [[__('Wholesale'), 'pl-num'], [__('Special'), 'pl-num']]);
+				.concat(is_alu ? [[__('Rate/Kg'), 'pl-num']] : [[__('Wholesale'), 'pl-num'], [__('Special'), 'pl-num']])
+				.concat([[__('Stock'), 'pl-num']]);
 		$root.find('.pl-head').html('<tr>' + heads.map(h => `<th class="${h[1]}">${h[0]}</th>`).join('') + '</tr>');
 		$root.find('.pl-note').text(is_services
 			? __('Rates are set in Manage Items. Sandblasting Half is charged on half the glass area. A58 (Miscellaneous) has no fixed rate; it is priced per job.')
@@ -418,12 +423,23 @@ function open_price_list_modal() {
 			</tr>`).join(''));
 			return;
 		}
+		// Ordinary glass is counted in sheets (per size); everything else in its stock UOM.
+		const stock_cell = r => {
+			if (r.stock_sheets) {
+				const parts = Object.entries(r.stock_sheets).map(([size, n]) =>
+					`<div style="${n < 0 ? 'color:var(--red-600);' : ''}">${esc(size)}: <b>${format_number(n, null, 0)}</b></div>`);
+				return parts.length ? parts.join('') : `<span class="text-muted">${__('0 sheets')}</span>`;
+			}
+			const qty = flt(r.stock_qty);
+			return `<span style="${qty < 0 ? 'color:var(--red-600);' : (qty === 0 ? 'color:var(--text-muted);' : '')}">${format_number(qty, null, 2)} ${esc(r.uom || '')}</span>`;
+		};
 		$body.html(shown.map(r => `<tr>
 			<td style="font-weight:500;">${esc(r.item_name || r.item_code || '')}</td>
 			<td>${esc(r.product_code)}</td><td>${esc(r.item_code || '')}</td><td>${esc(r.uom || '')}</td>
 			<td class="pl-num">${money(r.retail)}</td>
 			${is_alu ? `<td class="pl-num">${money(r.rate_per_kg)}</td>`
 				: `<td class="pl-num">${money(r.wholesale)}</td><td class="pl-num">${money(r.special)}</td>`}
+			<td class="pl-num">${stock_cell(r)}</td>
 		</tr>`).join(''));
 	}
 
@@ -450,6 +466,13 @@ function open_price_list_modal() {
 		load();
 	});
 	$root.on('input', '.pl-search', render);
+
+	dialog.set_secondary_action_label(__('Download Stock (PDF)'));
+	dialog.set_secondary_action(() => {
+		const as_of = $root.find('.pl-stock-date').val() || frappe.datetime.get_today();
+		window.open(frappe.urllib.get_full_url(
+			'/api/method/crystal_alluminium_works.api.download_price_list_stock_pdf?as_of=' + encodeURIComponent(as_of)), '_blank');
+	});
 
 	dialog.show();
 	load();

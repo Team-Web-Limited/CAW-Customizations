@@ -57,6 +57,16 @@ function bind_job_cards_events(page) {
 		load_job_cards(page, 1);
 	});
 
+	$body.on('click', '.jc-export-layout', function(e) {
+		e.stopPropagation();
+		let name = $(this).closest('.jc-row').attr('data-name');
+		if (name) {
+			window.open(frappe.urllib.get_full_url(
+				`/api/method/crystal_alluminium_works.api.export_job_card_layout?name=${encodeURIComponent(name)}`
+			), '_blank');
+		}
+	});
+
 	$body.on('click', '.jc-row', function() {
 		let name = $(this).attr('data-name');
 		if (name) {
@@ -81,7 +91,7 @@ function load_job_cards(page, page_no) {
 		page_length: 30
 	};
 
-	$tbody.html('<tr><td colspan="8" style="padding:24px;text-align:center;color:var(--text-muted);">Loading job cards...</td></tr>');
+	$tbody.html('<tr><td colspan="9" style="padding:24px;text-align:center;color:var(--text-muted);">Loading job cards...</td></tr>');
 
 	frappe.call({
 		method: 'crystal_alluminium_works.api.get_job_cards_page',
@@ -91,7 +101,7 @@ function load_job_cards(page, page_no) {
 			let rows = message.rows || [];
 
 			if (!rows.length) {
-				$tbody.html('<tr><td colspan="8" style="padding:24px;text-align:center;color:var(--text-muted);">No job cards found.</td></tr>');
+				$tbody.html('<tr><td colspan="9" style="padding:24px;text-align:center;color:var(--text-muted);">No job cards found.</td></tr>');
 				$body.find('.jc-list-pagination').html('');
 				return;
 			}
@@ -113,6 +123,7 @@ function render_job_card_row(row) {
 			<td style="text-align:right;">${format_currency(row.payment_amount || 0, 'KES')}</td>
 			<td style="text-align:right;font-weight:600;">${format_currency(row.balance_amount || 0, 'KES')}</td>
 			<td>${render_job_card_status_pill(row.status)}</td>
+			<td><button class="btn btn-default btn-xs jc-export-layout" title="Export the Glass Cut Size table as xlsx"><i class="fa fa-download"></i> Export</button></td>
 		</tr>
 	`;
 }
@@ -237,10 +248,11 @@ function get_job_cards_html() {
 							<th style="text-align:right;">Payment</th>
 							<th style="text-align:right;">Balance</th>
 							<th>Status</th>
+							<th>Export</th>
 						</tr>
 					</thead>
 					<tbody class="jc-list-body">
-						<tr><td colspan="8" style="padding:24px;text-align:center;color:var(--text-muted);">Loading job cards...</td></tr>
+						<tr><td colspan="9" style="padding:24px;text-align:center;color:var(--text-muted);">Loading job cards...</td></tr>
 					</tbody>
 				</table>
 			</div>

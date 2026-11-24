@@ -66,8 +66,11 @@ def validate(doc, method):
     Same names are allowed; a KRA PIN already on another Customer is not. Checked only when a
     Customer is created or its PIN changes, so the pairs that already share a PIN stay editable.
     """
+    from crystal_alluminium_works.credit_control import validate_customer
+
     before = doc.get_doc_before_save()
     _assert_billing_type_unchanged(doc, before)
+    validate_customer(doc, before)
     # Like the PIN, only checked when the number is new or changed, so existing pairs stay editable.
     if normalize_phone(doc.mobile_no) and (not before or normalize_phone(before.mobile_no) != normalize_phone(doc.mobile_no)):
         assert_unique_customer_phone(doc.mobile_no, exclude=doc.name)
