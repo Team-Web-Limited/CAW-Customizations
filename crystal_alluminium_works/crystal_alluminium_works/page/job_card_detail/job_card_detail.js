@@ -2249,45 +2249,49 @@ async function confirm_sheet_release_stock(page, job_card, releases, on_open_jc_
 		</tr>
 	`).join('');
 
-	let d = new frappe.ui.Dialog({
-		title: 'Sheet stock low',
-		fields: [{
-			fieldtype: 'HTML',
-			fieldname: 'body',
-			options: `
-				<p>There aren't enough sheets of these sizes in stock for this release:</p>
-				<table class="table table-bordered table-sm">
-					<thead>
-						<tr>
-							<th>Item Code</th><th>Item</th><th>Sheet Size</th>
-							<th style="text-align:right;">Releasing</th>
-							<th style="text-align:right;">In Stock</th>
-						</tr>
-					</thead>
-					<tbody>${rows_html}</tbody>
-				</table>
-				<p>If they were cut from another sheet, record the sheet actually used in
-				<b>JC Operations</b>, then release again.</p>
-			`
-		}],
-		primary_action_label: 'Continue to JC Operations',
-		primary_action: function() {
-			d.hide();
-			if (on_open_jc_operations) on_open_jc_operations();
-			let sheet_rows = [];
-			shortfalls.forEach(s => sheet_rows.push(...(s.rows || [])));
-			open_jc_operations_modal(page, job_card, null, { sheet_rows: sheet_rows });
-		},
-		secondary_action_label: 'Cancel',
-		secondary_action: function() {
-			d.hide();
-		}
+	return new Promise(resolve => {
+		let d = new frappe.ui.Dialog({
+			title: 'Sheet stock low',
+			fields: [{
+				fieldtype: 'HTML',
+				fieldname: 'body',
+				options: `
+					<p>There aren't enough sheets of these sizes in stock for this release:</p>
+					<table class="table table-bordered table-sm">
+						<thead>
+							<tr>
+								<th>Item Code</th><th>Item</th><th>Sheet Size</th>
+								<th style="text-align:right;">Releasing</th>
+								<th style="text-align:right;">In Stock</th>
+							</tr>
+						</thead>
+						<tbody>${rows_html}</tbody>
+					</table>
+					<p>If they were cut from another sheet, record the sheet actually used in
+					<b>JC Operations</b>, then release again.</p>
+				`
+			}],
+			primary_action_label: 'Continue to JC Operations',
+			primary_action: function() {
+				d.hide();
+				if (on_open_jc_operations) on_open_jc_operations();
+				let sheet_rows = [];
+				shortfalls.forEach(s => sheet_rows.push(...(s.rows || [])));
+				open_jc_operations_modal(page, job_card, null, { sheet_rows: sheet_rows });
+				resolve(false);
+			},
+			secondary_action_label: 'Release anyway',
+			secondary_action: function() {
+				d.hide();
+				resolve(true);
+			}
+		});
+		d.onhide = function() {
+			resolve(false);
+			d.$wrapper.remove();
+		};
+		d.show();
 	});
-	d.onhide = function() {
-		d.$wrapper.remove();
-	};
-	d.show();
-	return false;
 }
 
 async function create_partial_invoice_from_job_card(job_card, dialog, page) {
