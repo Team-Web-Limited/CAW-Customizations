@@ -823,7 +823,9 @@ def resolve_collector(customer, collector):
     it must be one of them (the yard checks the ID); otherwise any name/ID given is recorded."""
     from crystal_alluminium_works.api import SHARED_CASH_CUSTOMER_NAME
 
-    collector = frappe.parse_json(collector) if isinstance(collector, str) else (collector or {})
+    # frappe.call sends a null arg as "" (jQuery.param), and parse_json("") raises in orjson.
+    if isinstance(collector, str):
+        collector = frappe.parse_json(collector) if collector.strip() else {}
     collector = frappe._dict(collector or {})
     authorised = [] if customer == SHARED_CASH_CUSTOMER_NAME else [
         row for row in _contact_rows(customer) if row.custom_account_role == AUTHORISED_COLLECTOR
