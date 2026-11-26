@@ -1866,6 +1866,8 @@ SALES_INVOICE_LIST_FIELDS = [
     "status",
     "docstatus",
     "custom_source_quotation",
+    "custom_price_adjustment_type",
+    "custom_price_adjustment_percent",
     "update_stock",
     "creation",
     "customer.tax_id as pin",
@@ -5020,18 +5022,33 @@ def _sheet_release_shortfalls(job_card, quotation, release_qtys):
     return shortfalls
 
 
-def _validate_sheet_release_stock(job_card, quotation, release_qtys):
+def _describe_sheet_shortfalls(shortfalls):
+    return "; ".join(
+        f"{s['item_code']} {s['size']} (releasing {flt(s['needed']):g}, in stock {flt(s['available']):g})"
+        for s in shortfalls
+    )
+
+
+def _validate_sheet_release_stock(job_card, quotation, release_qtys, release_short=False):
+    """Refuse a release that is short of sheets, unless the user chose "Release anyway" on the
+    Job Card page (release_short). Returns the shortfalls being overridden, for the comment."""
     shortfalls = _sheet_release_shortfalls(job_card, quotation, release_qtys)
-    if shortfalls:
+    if shortfalls and not frappe.utils.cint(release_short):
         frappe.throw(
-            "Not enough sheets in stock for: "
-            + "; ".join(
-                f"{s['item_code']} {s['size']} (releasing {flt(s['needed']):g}, in stock {flt(s['available']):g})"
-                for s in shortfalls
-            )
+            "Not enough sheets in stock for: " + _describe_sheet_shortfalls(shortfalls)
             + ". If it was cut from another sheet, record the sheet used in JC Operations, then release again.",
             title="Sheet stock low",
         )
+    return shortfalls
+
+
+def _comment_short_sheet_release(job_card, invoice_name, shortfalls):
+    if not shortfalls:
+        return
+    job_card.add_comment("Comment", frappe.utils.escape_html(
+        f"{frappe.utils.get_fullname(frappe.session.user)} released sheets short of stock on "
+        f"{invoice_name}: {_describe_sheet_shortfalls(shortfalls)}."
+    ))
 
 
 @frappe.whitelist()
@@ -5087,7 +5104,7 @@ def _jc_ops_sheet_rows(job_card_name):
 
 
 @frappe.whitelist()
-def make_sales_invoice_from_job_card(job_card_name, collector=None):
+def make_sales_invoice_from_job_card(job_card_name, collector=None, release_short=0):
     from crystal_alluminium_works.credit_control import resolve_collector, stamp_collector
 
     if not job_card_name or not frappe.db.exists("CAW Job Card", job_card_name):
@@ -5131,7 +5148,7 @@ def make_sales_invoice_from_job_card(job_card_name, collector=None):
             if _get_partial_row_native_full(row) > 0.0001
         }
 
-    _validate_sheet_release_stock(job_card, quotation, invoice_releases)
+    shortfalls = _validate_sheet_release_stock(job_card, quotation, invoice_releases, release_short)
 
     invoice_name = make_sales_invoice_from_quotation(
         job_card.quotation,
@@ -5163,6 +5180,7 @@ def make_sales_invoice_from_job_card(job_card_name, collector=None):
     # and submitted successfully by this point.
     _record_job_card_item_releases(job_card, paid_invoice, rows_by_name, invoice_releases, is_partial=False, quotation_items=quotation.items)
     stamp_collector(paid_invoice.name, collector)
+    _comment_short_sheet_release(job_card, paid_invoice.name, shortfalls)
 
     return paid_invoice.name
 
@@ -5493,7 +5511,7 @@ def _assert_release_not_on_hold(job_card):
 
 
 @frappe.whitelist()
-def make_partial_sales_invoice_from_job_card(job_card_name, releases=None, collector=None):
+def make_partial_sales_invoice_from_job_card(job_card_name, releases=None, collector=None, release_short=0):
     from crystal_alluminium_works.credit_control import resolve_collector, stamp_collector
 
     if not job_card_name or not frappe.db.exists("CAW Job Card", job_card_name):
@@ -5529,7 +5547,7 @@ def make_partial_sales_invoice_from_job_card(job_card_name, releases=None, colle
 
     # Only the rows being released need their JC Operations done.
     _validate_glass_consumption(job_card, row_names=set(capped))
-    _validate_sheet_release_stock(job_card, quotation, capped)
+    shortfalls = _validate_sheet_release_stock(job_card, quotation, capped, release_short)
 
     invoice_name = make_sales_invoice_from_quotation(job_card.quotation, releases=capped)
     invoice = frappe.get_doc("Sales Invoice", invoice_name)
@@ -5564,6 +5582,7 @@ def make_partial_sales_invoice_from_job_card(job_card_name, releases=None, colle
     # at what they have paid (_assert_release_allowed, above).
     _record_job_card_item_releases(job_card, paid_invoice, rows_by_name, capped, is_partial=True, quotation_items=quotation.items)
     stamp_collector(paid_invoice.name, collector)
+    _comment_short_sheet_release(job_card, paid_invoice.name, shortfalls)
 
     return paid_invoice.name
 
@@ -7398,6 +7417,8 @@ def get_items_with_prices(category):
         item_fields.append("custom_glass_type")
     if _item_has_field("custom_product_code"):
         item_fields.append("custom_product_code")
+    if _item_has_field("custom_print_uom"):
+        item_fields.append("custom_print_uom")
     if storage_category == "Aluminium":
         if _item_has_field("custom_aluminium_rate_per_kg"):
             item_fields.append("custom_aluminium_rate_per_kg")
@@ -7910,6 +7931,13 @@ def reprice_aluminium_items(price_factor=None):
     return {"repriced": repriced, "skipped": skipped, "price_factor": factor}
 
 
+def _set_item_print_uom(item, data):
+    """Print-only unit shown on quotation / invoice print formats. Pricing and stock keep using
+    stock_uom. Left alone when the payload omits it (e.g. spreadsheet imports)."""
+    if "print_uom" in data and _item_has_field("custom_print_uom"):
+        item.custom_print_uom = (data.get("print_uom") or "").strip()
+
+
 @frappe.whitelist()
 def save_custom_item(data):
     """
@@ -8005,6 +8033,7 @@ def save_custom_item(data):
             item.custom_aluminium_weight_per_length = aluminium_weight_per_length if storage_category == "Aluminium" else 0
         if _item_has_field("custom_product_code"):
             item.custom_product_code = product_code
+        _set_item_print_uom(item, data)
         _ensure_item_has_default_uom(item, uom)
         item.insert(ignore_permissions=True)
     else:
@@ -8030,6 +8059,7 @@ def save_custom_item(data):
             item.custom_aluminium_weight_per_length = aluminium_weight_per_length if storage_category == "Aluminium" else 0
         if _item_has_field("custom_product_code"):
             item.custom_product_code = product_code
+        _set_item_print_uom(item, data)
         # Existing items keep their current stock UOM; changing it is blocked
         # by ERPNext once transactions exist, and this page never intends to
         # change UOM — only prices.
@@ -11830,16 +11860,29 @@ def get_category_stock_balance(item_group=None, warehouse=None):
     item_codes = list(set([b.item_code for b in bins]))
     item_map = {}
     if item_codes:
-        item_list = frappe.get_all("Item", filters={"name": ["in", item_codes]}, fields=["name", "item_name", "item_group"])
+        item_fields = ["name", "item_name", "item_group"]
+        item_fields += [f for f in ("custom_glass_type", "custom_print_uom") if _item_has_field(f)]
+        item_list = frappe.get_all("Item", filters={"name": ["in", item_codes]}, fields=item_fields)
         item_map = {i.name: i for i in item_list}
+
+    from crystal_alluminium_works.create_print_format import get_print_uom
 
     for b in bins:
         item = item_map.get(b.item_code, {})
         b.item_name = item.get("item_name", b.item_code)
         b.item_group = item.get("item_group", "")
+        b.display_qty = flt(b.actual_qty)
+        b.display_uom = get_print_uom(b.item_code, b.item_group, b.stock_uom, item.get("custom_print_uom"))
         if b.item_group == "Glass":
             glass_data = get_glass_stock_ledger(b.item_code, b.warehouse, summary_only=True)
             b.sheet_balance = glass_data.get("final_sheet_balance", {})
+            # Ordinary glass is held in sheets; laminated and toughened glass are made to order
+            # and stay in square feet.
+            glass_type = _infer_glass_type(b.item_code, b.item_name, item.get("custom_glass_type"))
+            if glass_type == "Ordinary" or (glass_type == "Ready Laminated" and b.sheet_balance):
+                b.in_sheets = True
+                b.display_qty = sum(flt(pcs) for pcs in b.sheet_balance.values())
+                b.display_uom = "sheets"
 
     return bins
 
@@ -11914,8 +11957,13 @@ def download_stock_ledger_xlsx(item_code=None, item_group=None, warehouse=None,
             b for b in get_category_stock_balance(item_group or None, warehouse or None)
             if not needle or needle in (b.item_code or "").lower() or needle in (b.item_name or "").lower()
         ]
-        rows = [["Item Code", "Item Name", "Category", "Warehouse", "Stock Balance", "UOM"]]
-        rows += [[b.item_code, b.item_name, b.item_group, b.warehouse, flt(b.actual_qty), b.stock_uom] for b in data]
+        rows = [["Item Code", "Item Name", "Category", "Warehouse", "Stock Balance", "UOM",
+                 "Glass SFT", "Sheets by Size"]]
+        rows += [[
+            b.item_code, b.item_name, b.item_group, b.warehouse, b.display_qty, b.display_uom,
+            flt(b.actual_qty) if b.get("in_sheets") else "",
+            sheets(b.sheet_balance) if b.get("in_sheets") else "",
+        ] for b in data]
         return _stream_xlsx_file("Stock_Balances", rows)
 
     group = frappe.db.get_value("Item", item_code, "item_group")

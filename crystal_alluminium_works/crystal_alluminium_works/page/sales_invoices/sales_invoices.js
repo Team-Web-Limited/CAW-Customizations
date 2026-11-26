@@ -35,6 +35,14 @@ function sales_invoice_row_uses_visual_vat(invoice) {
 	return flt(invoice.total_taxes_and_charges || 0) === 0;
 }
 
+// The Builder's "-" / "+" % baked into the invoice's rates: "-5%" discount (red), "+5%" markup (green).
+function get_sales_invoice_row_adjustment_html(invoice) {
+	let percent = flt(invoice.custom_price_adjustment_percent || 0);
+	if (!percent) return '<span style="color:var(--text-muted);">-</span>';
+	let is_markup = invoice.custom_price_adjustment_type === '+';
+	return `<span style="font-weight:600;color:${is_markup ? '#27ae60' : '#c0392b'};">${is_markup ? '+' : '-'}${percent}%</span>`;
+}
+
 function get_sales_invoice_row_display_total(invoice) {
 	let total = flt(invoice.grand_total || 0);
 	return sales_invoice_row_uses_visual_vat(invoice) ? flt(total * (1 + SALES_INVOICES_VAT_RATE)) : total;
@@ -142,7 +150,7 @@ function load_sales_invoices(page, page_number) {
 	$body.find('.si-list-foot').empty();
 	$body.find('.si-list-body').html(`
 		<tr>
-			<td colspan="7" style="padding:24px; text-align:center; color:var(--text-muted);">
+			<td colspan="8" style="padding:24px; text-align:center; color:var(--text-muted);">
 				Loading invoices...
 			</td>
 		</tr>
@@ -175,7 +183,7 @@ function render_sales_invoices_table(page, rows) {
 	if (!rows.length) {
 		$body.html(`
 		<tr>
-			<td colspan="7" style="padding:24px; text-align:center; color:var(--text-muted);">
+			<td colspan="8" style="padding:24px; text-align:center; color:var(--text-muted);">
 				No invoices match the current filters.
 			</td>
 		</tr>
@@ -201,6 +209,7 @@ function render_sales_invoices_table(page, rows) {
 				<td style="padding:12px 16px;">
 					<div>${invoice.posting_date ? frappe.datetime.str_to_user(invoice.posting_date) : '—'}</div>
 				</td>
+				<td style="padding:12px 16px; text-align:center;">${get_sales_invoice_row_adjustment_html(invoice)}</td>
 				<td style="padding:12px 16px; text-align:right;">
 					<div style="font-weight:600;">${format_currency(get_sales_invoice_row_display_total(invoice), invoice.currency || 'KES')}</div>
 				</td>
@@ -233,7 +242,7 @@ function render_sales_invoices_totals(page, rows) {
 	}
 	$foot.html(`
 		<tr>
-			<td colspan="3" style="padding:12px 16px; font-weight:700;">Total</td>
+			<td colspan="4" style="padding:12px 16px; font-weight:700;">Total</td>
 			<td style="padding:12px 16px; text-align:right; font-weight:700;">${format_currency(state.total_amount || 0, 'KES')}</td>
 			<td style="padding:12px 16px; text-align:right; font-weight:700;">${format_currency(state.total_balance || 0, 'KES')}</td>
 			<td colspan="2"></td>
@@ -439,6 +448,7 @@ function get_sales_invoices_html() {
 							<th>Customer</th>
 							<th>Invoice Number</th>
 							<th>Date</th>
+							<th style="text-align:center;">Discount %</th>
 							<th style="text-align:right;">Amount</th>
 							<th style="text-align:right;">Balance</th>
 							<th>PIN</th>
@@ -447,7 +457,7 @@ function get_sales_invoices_html() {
 					</thead>
 					<tbody class="si-list-body">
 						<tr>
-							<td colspan="7" style="padding:24px; text-align:center; color:var(--text-muted);">
+							<td colspan="8" style="padding:24px; text-align:center; color:var(--text-muted);">
 								Loading...
 							</td>
 						</tr>

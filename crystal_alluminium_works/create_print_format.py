@@ -38,8 +38,8 @@ def embed_letterhead_image(html):
 
 # The UOM printed on Quotation / Sales Invoice / Credit Note / Sales Order rows, in place of
 # the stock UOM (aluminium is stocked in Nos but sold by the length). Print-only — the
-# documents' own uom and stock postings are untouched. An item code listed here wins over
-# its category.
+# documents' own uom and stock postings are untouched. The Item's custom_print_uom (typed on
+# Manage Items) wins, then an item code listed here, then its category.
 PRINT_UOM_BY_CATEGORY = {
     "Aluminium": "Length",
     "Silicone": "pcs",
@@ -77,6 +77,19 @@ CRYSTAL_PAGE_STYLE = (
 )
 
 
+def get_print_uom(item_code, category, stock_uom, item_print_uom=None):
+    """Python twin of the print formats' print_uom / short_uom macros, for screens that should
+    name a quantity the way a quotation does."""
+    override = item_print_uom or PRINT_UOM_BY_ITEM_CODE.get(item_code) or PRINT_UOM_BY_CATEGORY.get(category)
+    if override:
+        return override
+    short = {
+        "square foot": "sft", "square meter": "sqm", "meter": "len", "metre": "len", "len": "len",
+        "running foot": "rft", "rft": "rft", "nos": "nos",
+    }
+    return short.get((stock_uom or "").strip().lower(), stock_uom or "")
+
+
 def build_crystal_print_format_html(ref_label, terms, payment_details=""):
     html = f"""
 {{% macro short_uom(value) %}}
@@ -92,7 +105,7 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
 {{% set print_uom_by_category = {PRINT_UOM_BY_CATEGORY!r} %}}
 {{% set print_uom_by_item_code = {PRINT_UOM_BY_ITEM_CODE!r} %}}
 {{% macro print_uom(row, uom) %}}
-    {{{{ print_uom_by_item_code.get(row.item_code) or print_uom_by_category.get(row.custom_product_category or '') or short_uom(uom) }}}}
+    {{{{ frappe.db.get_value('Item', row.item_code, 'custom_print_uom') or print_uom_by_item_code.get(row.item_code) or print_uom_by_category.get(row.custom_product_category or '') or short_uom(uom) }}}}
 {{% endmacro %}}
 
 {{% macro format_dimension(mm_value, uom) %}}
@@ -364,7 +377,7 @@ def build_crystal_print_format_html(ref_label, terms, payment_details=""):
                         {{% if is_bundle %}}{{{{ frappe.utils.flt(ceiling_quantity, 3) }}}}{{% else %}}-{{% endif %}}
                     </td>
                     {{% endif %}}
-                    <td style="text-align: center; white-space: nowrap;">{{{{ short_uom(display_uom) }}}}</td>
+                    <td style="text-align: center; white-space: nowrap;">{{{{ print_uom(parent, display_uom) }}}}</td>
                     {{% for column in ceiling_columns %}}
                         {{% set column_qty = namespace(value='-') %}}
                         {{% if is_bundle %}}
@@ -818,6 +831,7 @@ def build_crystal_invoice_list_html():
             <th style="text-align: left;">Invoice Number</th>
             <th style="text-align: center;">Date</th>
             {% if show_pin_and_balance %}<th style="text-align: left;">PIN</th>{% endif %}
+            <th style="text-align: center;">Discount %</th>
             <th style="text-align: right;">Amount</th>
             {% if show_pin_and_balance %}<th style="text-align: right;">Balance</th>{% endif %}
             <th style="text-align: center;">Status</th>
@@ -831,18 +845,19 @@ def build_crystal_invoice_list_html():
             <td style="text-align: left;">{{ row.name }}</td>
             <td style="text-align: center; white-space: nowrap;">{{ frappe.utils.formatdate(row.posting_date) if row.posting_date else '-' }}</td>
             {% if show_pin_and_balance %}<td style="text-align: left;">{{ row.pin or '-' }}</td>{% endif %}
+            <td style="text-align: center; white-space: nowrap;">{% if row.custom_price_adjustment_percent %}{{ '+' if row.custom_price_adjustment_type == '+' else '-' }}{{ row.custom_price_adjustment_percent|float|round(2) }}%{% else %}-{% endif %}</td>
             <td style="text-align: right; white-space: nowrap;">{{ frappe.utils.fmt_money(row.display_amount, currency=row.currency or 'KES') }}</td>
             {% if show_pin_and_balance %}<td style="text-align: right; white-space: nowrap;">{{ frappe.utils.fmt_money(row.display_balance, currency=row.currency or 'KES') }}</td>{% endif %}
             <td style="text-align: center;">{{ row.display_status or '-' }}</td>
         </tr>
         {% else %}
-        <tr><td colspan="{{ 8 if show_pin_and_balance else 6 }}" style="text-align: center; padding: 20px; color: #7f8c8d;">No invoices match these filters.</td></tr>
+        <tr><td colspan="{{ 9 if show_pin_and_balance else 7 }}" style="text-align: center; padding: 20px; color: #7f8c8d;">No invoices match these filters.</td></tr>
         {% endfor %}
     </tbody>
     {% if rows %}
     <tfoot>
         <tr>
-            <td colspan="{{ 5 if show_pin_and_balance else 4 }}" style="text-align: left; text-transform: uppercase;">
+            <td colspan="{{ 6 if show_pin_and_balance else 5 }}" style="text-align: left; text-transform: uppercase;">
                 Total ({{ rows|selectattr('docstatus', 'ne', 2)|list|length }} invoices{% if rows|selectattr('docstatus', 'eq', 2)|list|length %}, cancelled excluded{% endif %})
             </td>
             <td style="text-align: right; white-space: nowrap;">{{ frappe.utils.fmt_money(total_amount, currency='KES') }}</td>

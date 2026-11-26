@@ -1,7 +1,7 @@
 import json
 
 import frappe
-from frappe.utils import flt
+from frappe.utils import flt, getdate, nowdate
 
 # These are stock Items under "Glass" (so plain job-costing services could be
 # priced/consumed like any other item) but aren't physical stock a warehouse
@@ -100,6 +100,10 @@ def submit_stock_reconciliation(payload):
 	warehouse = data.get("warehouse")
 	item_group = data.get("item_group")
 	items = data.get("items", [])
+	posting_date = _clean_posting_date(data.get("posting_date"))
+	# Optional override for the Stock Reconciliation difference account. The page does
+	# not send it yet; blank means the company's Stock Adjustment account, as before.
+	difference_account = data.get("difference_account") or None
 
 	if not warehouse:
 		frappe.throw("Warehouse is required.")
@@ -122,18 +126,39 @@ def submit_stock_reconciliation(payload):
 
 		entry_names = []
 		if qty_items:
-			entry_names.append(_submit_plain_reconciliation(warehouse, qty_items))
+			entry_names.append(_submit_plain_reconciliation(warehouse, qty_items, posting_date, difference_account))
 		if sheet_items:
-			entry_names.append(_submit_glass_sheet_adjustment(warehouse, sheet_items))
+			entry_names.append(_submit_glass_sheet_adjustment(warehouse, sheet_items, posting_date))
 		return ", ".join(entry_names)
 
-	return _submit_plain_reconciliation(warehouse, items)
+	return _submit_plain_reconciliation(warehouse, items, posting_date, difference_account)
 
 
-def _submit_plain_reconciliation(warehouse, items):
+def _clean_posting_date(value):
+	"""Blank means "now" (returns None). A past date is posted at 23:59:59 so it lands
+	after that day's other movements, like the 30 Sep opening entries. Future dates are refused."""
+	if not value:
+		return None
+	date = getdate(value)
+	if date > getdate(nowdate()):
+		frappe.throw("Posting Date cannot be in the future.")
+	return None if date == getdate(nowdate()) else date
+
+
+def _apply_posting_date(doc, posting_date):
+	if posting_date:
+		doc.set_posting_time = 1
+		doc.posting_date = posting_date
+		doc.posting_time = "23:59:59"
+
+
+def _submit_plain_reconciliation(warehouse, items, posting_date=None, difference_account=None):
 	sr = frappe.new_doc("Stock Reconciliation")
 	sr.purpose = "Stock Reconciliation"
 	sr.set_posting_time = 1
+	_apply_posting_date(sr, posting_date)
+	if difference_account:
+		sr.expense_account = difference_account
 
 	for row in items:
 		sr.append("items", {
@@ -148,7 +173,7 @@ def _submit_plain_reconciliation(warehouse, items):
 	return sr.name
 
 
-def _submit_glass_sheet_adjustment(warehouse, items):
+def _submit_glass_sheet_adjustment(warehouse, items, posting_date=None):
 	"""Glass can't go through Stock Reconciliation: crystal_alluminium_works.api.
 	get_glass_stock_ledger reconstructs the per-size sheet balance only from
 	Purchase Receipt and Stock Entry rows, so a Stock Reconciliation moves the
@@ -218,18 +243,19 @@ def _submit_glass_sheet_adjustment(warehouse, items):
 
 	entry_names = []
 	if issue_rows:
-		entry_names.append(_create_glass_adjustment_entry("Material Issue", issue_rows, company, warehouse))
+		entry_names.append(_create_glass_adjustment_entry("Material Issue", issue_rows, company, warehouse, posting_date))
 	if receipt_rows:
-		entry_names.append(_create_glass_adjustment_entry("Material Receipt", receipt_rows, company, warehouse))
+		entry_names.append(_create_glass_adjustment_entry("Material Receipt", receipt_rows, company, warehouse, posting_date))
 
 	return ", ".join(entry_names)
 
 
-def _create_glass_adjustment_entry(entry_type, rows, company, warehouse):
+def _create_glass_adjustment_entry(entry_type, rows, company, warehouse, posting_date=None):
 	entry = frappe.new_doc("Stock Entry")
 	entry.stock_entry_type = entry_type
 	entry.company = company
 	entry.remarks = "Stock Adjustment: glass sheet count correction"
+	_apply_posting_date(entry, posting_date)
 	for r in rows:
 		item_dict = {
 			"item_code": r["item_code"],

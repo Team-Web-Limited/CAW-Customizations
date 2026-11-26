@@ -650,6 +650,8 @@ function open_stock_breakdown_modal(item_code, item_name, rows) {
 function open_item_modal(page, category, existing_item) {
 	let is_new = !existing_item;
 	let is_aluminium = category === 'Aluminium';
+	// Ordinary glass is stocked in sheets, so its unit is fixed rather than typed.
+	let is_ordinary_glass = category === 'Ordinary Glass';
 	let default_product_code = existing_item && existing_item.custom_product_code
 		? existing_item.custom_product_code
 		: get_default_product_code(category);
@@ -668,6 +670,16 @@ function open_item_modal(page, category, existing_item) {
 			default: is_new ? '' : existing_item.item_code
 		},
 		{ fieldtype: 'Data', fieldname: 'item_name', label: 'Item Name (Description)', reqd: 1, default: is_new ? '' : existing_item.item_name },
+		{
+			fieldtype: 'Data',
+			fieldname: 'print_uom',
+			label: is_ordinary_glass ? 'Unit of Measure (stock)' : 'Unit of Measure (print only)',
+			read_only: is_ordinary_glass ? 1 : 0,
+			description: is_ordinary_glass
+				? 'Stock is counted in sheets. Quotations and invoices keep their usual unit.'
+				: 'Shown on quotation and invoice printouts. Does not change pricing or stock. Leave blank for the usual unit.',
+			default: is_ordinary_glass ? 'Sheets' : (is_new ? '' : (existing_item.custom_print_uom || ''))
+		},
 	];
 
 	if (is_aluminium) {
@@ -737,6 +749,8 @@ function open_item_modal(page, category, existing_item) {
 				item_code: values.item_code || values.item_name,
 				original_item_code: is_new ? (values.item_code || values.item_name) : existing_item.item_code,
 				item_name: values.item_name,
+				// Never saved for ordinary glass: it would print "Sheets" against per-sft rates.
+				print_uom: is_ordinary_glass ? '' : (values.print_uom || ''),
 				glass_type: g_type,
 				retail_rate: values.retail_rate,
 				wholesale_rate: values.wholesale_rate,

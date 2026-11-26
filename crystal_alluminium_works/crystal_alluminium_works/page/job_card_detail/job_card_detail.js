@@ -2282,8 +2282,9 @@ async function confirm_sheet_release_stock(page, job_card, releases, on_open_jc_
 			},
 			secondary_action_label: 'Release anyway',
 			secondary_action: function() {
+				// Resolve before hiding: onhide resolves false.
+				resolve('short');
 				d.hide();
-				resolve(true);
 			}
 		});
 		d.onhide = function() {
@@ -2318,7 +2319,8 @@ async function create_partial_invoice_from_job_card(job_card, dialog, page) {
 		return;
 	}
 
-	if (!(await confirm_sheet_release_stock(page, job_card, releases, () => dialog.hide()))) {
+	let stock_check = await confirm_sheet_release_stock(page, job_card, releases, () => dialog.hide());
+	if (!stock_check) {
 		return;
 	}
 	let collector = await jc_choose_collector(job_card);
@@ -2329,7 +2331,8 @@ async function create_partial_invoice_from_job_card(job_card, dialog, page) {
 		args: {
 			job_card_name: job_card.name,
 			releases: JSON.stringify(releases),
-			collector: collector ? JSON.stringify(collector) : null
+			collector: collector ? JSON.stringify(collector) : null,
+			release_short: stock_check === 'short' ? 1 : 0
 		},
 		freeze: true,
 		freeze_message: 'Creating partial Sales Invoice...'
@@ -2462,7 +2465,8 @@ function bind_single_job_card_detail_events(page, $body, job_card, quotation, hi
 	});
 
 	$body.on('click.job-card-detail', '[data-action="create-sales-invoice"]', async function() {
-		if (!(await confirm_sheet_release_stock(page, job_card, null))) {
+		let stock_check = await confirm_sheet_release_stock(page, job_card, null);
+		if (!stock_check) {
 			return;
 		}
 		frappe.confirm(
@@ -2472,7 +2476,11 @@ function bind_single_job_card_detail_events(page, $body, job_card, quotation, hi
 				if (collector === false) return;
 				frappe.call({
 					method: 'crystal_alluminium_works.api.make_sales_invoice_from_job_card',
-					args: { job_card_name: job_card.name, collector: collector ? JSON.stringify(collector) : null },
+					args: {
+						job_card_name: job_card.name,
+						collector: collector ? JSON.stringify(collector) : null,
+						release_short: stock_check === 'short' ? 1 : 0
+					},
 					freeze: true,
 					freeze_message: 'Creating paid Sales Invoice...',
 					callback: function(r) {

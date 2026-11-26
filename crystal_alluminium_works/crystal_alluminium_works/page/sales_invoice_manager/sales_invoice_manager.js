@@ -282,6 +282,7 @@ function render_sales_invoice_aluminium_row(item, index, doc) {
 				<span style="background:var(--subtle-fg);padding:2px 8px;border-radius:6px;font-size:12px;">${price_list}</span>
 			</td>
 			<td style="text-align:right;">${format_currency(rate_per_m, doc ? doc.currency : 'KES')}</td>
+			${get_sales_invoice_adjustment_cell_html(doc)}
 			<td style="text-align:right;font-weight:600;">${format_currency(item.amount, doc ? doc.currency : 'KES')}</td>
 		</tr>
 	`;
@@ -299,6 +300,7 @@ function render_sales_invoice_fittings_row(item, index, doc) {
 				<span style="background:var(--subtle-fg);padding:2px 8px;border-radius:6px;font-size:12px;">${price_list}</span>
 			</td>
 			<td style="text-align:right;">${format_currency(item.rate, doc ? doc.currency : 'KES')}</td>
+			${get_sales_invoice_adjustment_cell_html(doc)}
 			<td style="text-align:right;font-weight:600;">${format_currency(item.amount, doc ? doc.currency : 'KES')}</td>
 		</tr>
 	`;
@@ -322,6 +324,7 @@ function render_sales_invoice_other_row(item, index, doc) {
 				<span style="background:var(--subtle-fg);padding:2px 8px;border-radius:6px;font-size:12px;">${price_list}</span>
 			</td>
 			<td style="text-align:right;">${format_currency(rate, doc ? doc.currency : 'KES')}</td>
+			${get_sales_invoice_adjustment_cell_html(doc)}
 			<td style="text-align:right;font-weight:600;">${format_currency(item.amount, doc ? doc.currency : 'KES')}</td>
 		</tr>
 	`;
@@ -363,6 +366,7 @@ function render_sales_invoice_ceiling_row(item, index, doc, ceiling_review, serv
 				<span style="background:var(--subtle-fg);padding:2px 8px;border-radius:6px;font-size:12px;">${frappe.utils.escape_html(price_list)}</span>
 			</td>
 			<td style="text-align:right;">${format_currency(rate, doc ? doc.currency : 'KES')}</td>
+			${get_sales_invoice_adjustment_cell_html(doc)}
 			<td style="text-align:right;font-weight:600;">${format_currency(amount, doc ? doc.currency : 'KES')}</td>
 		</tr>
 	`;
@@ -402,6 +406,14 @@ function get_sales_invoice_discount_summary_html(doc) {
 		color = '#27ae60';
 	}
 	return `<div class="sim-subtotal-row sim-discount-row"><span>${label}</span><span style="font-weight:600;color:${color};">${text}</span></div>`;
+}
+
+// Same invoice-wide % as a table cell, so each priced row shows what is baked into its rate.
+function get_sales_invoice_adjustment_cell_html(doc) {
+	let percent = flt((doc || {}).custom_price_adjustment_percent || 0);
+	if (!percent) return '<td style="text-align:center;color:var(--text-muted);">-</td>';
+	let is_markup = doc.custom_price_adjustment_type === '+';
+	return `<td style="text-align:center;white-space:nowrap;font-weight:600;color:${is_markup ? '#27ae60' : '#c0392b'};">${is_markup ? '+' : '-'}${percent}%</td>`;
 }
 
 function get_sales_invoice_display_total(doc) {
@@ -637,6 +649,7 @@ async function render_sales_invoice_dashboard(page, invoice_name, wrapper, defau
 									<th style="text-align:center;white-space:nowrap;">Pieces</th>
 									<th style="text-align:center;white-space:nowrap;">Price List</th>
 									<th style="text-align:right;white-space:nowrap;">Rate</th>
+									<th style="text-align:center;white-space:nowrap;">Disc. %</th>
 									<th style="text-align:right;white-space:nowrap;">Amount</th>
 								</tr>
 							</thead>
@@ -667,6 +680,7 @@ async function render_sales_invoice_dashboard(page, invoice_name, wrapper, defau
 									<th style="text-align:center;white-space:nowrap;">Qty</th>
 									<th style="text-align:center;white-space:nowrap;">Price List</th>
 									<th style="text-align:right;white-space:nowrap;">Rate</th>
+									<th style="text-align:center;white-space:nowrap;">Disc. %</th>
 									<th style="text-align:right;white-space:nowrap;">Amount</th>
 								</tr>
 							</thead>
@@ -700,6 +714,7 @@ async function render_sales_invoice_dashboard(page, invoice_name, wrapper, defau
 									${ceiling_review.columns.map(column => `<th style="text-align:center;white-space:nowrap;">${frappe.utils.escape_html(column.label)}</th>`).join('')}
 									<th style="text-align:center;white-space:nowrap;">Price List</th>
 									<th style="text-align:right;white-space:nowrap;">Rate</th>
+									<th style="text-align:center;white-space:nowrap;">Disc. %</th>
 									<th style="text-align:right;white-space:nowrap;">Amount</th>
 								</tr>
 							</thead>
@@ -731,6 +746,7 @@ async function render_sales_invoice_dashboard(page, invoice_name, wrapper, defau
 									<th style="text-align:center;white-space:nowrap;">Qty</th>
 									<th style="text-align:center;white-space:nowrap;">Price List</th>
 									<th style="text-align:right;white-space:nowrap;">Rate</th>
+									<th style="text-align:center;white-space:nowrap;">Disc. %</th>
 									<th style="text-align:right;white-space:nowrap;">Amount</th>
 								</tr>
 							</thead>

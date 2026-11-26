@@ -373,6 +373,11 @@ function submit_reconciliation(page) {
 	let warehouse = $(page.body).find('.sa-warehouse').val();
 	let item_group = $(page.body).find('.sa-item-group').val();
 	let is_glass = item_group === 'Glass';
+	let posting_date = $(page.body).find('.sa-posting-date').val() || frappe.datetime.get_today();
+	if (posting_date > frappe.datetime.get_today()) {
+		frappe.msgprint('Posting Date cannot be in the future.');
+		return;
+	}
 
 	let modified_items = [];
 	page.adjustment_items.forEach(item => {
@@ -409,13 +414,14 @@ function submit_reconciliation(page) {
 		return;
 	}
 
-	frappe.confirm(`Submit Stock ${is_glass ? 'Adjustment' : 'Reconciliation'} for ${modified_items.length} item(s)?`, function() {
+	frappe.confirm(`Submit Stock ${is_glass ? 'Adjustment' : 'Reconciliation'} for ${modified_items.length} item(s)${posting_date !== frappe.datetime.get_today() ? ' dated ' + frappe.datetime.str_to_user(posting_date) : ''}?`, function() {
 		frappe.call({
 			method: 'crystal_alluminium_works.crystal_alluminium_works.page.stock_adjustment.stock_adjustment.submit_stock_reconciliation',
 			args: {
 				payload: JSON.stringify({
 					warehouse: warehouse,
 					item_group: item_group,
+					posting_date: posting_date,
 					items: modified_items
 				})
 			},
@@ -455,6 +461,10 @@ function get_stock_adjustment_html() {
 				<div class="sa-field">
 					<label>Item Group</label>
 					<select class="form-control sa-item-group"></select>
+				</div>
+				<div class="sa-field">
+					<label>Posting Date</label>
+					<input type="date" class="form-control sa-posting-date" max="${frappe.datetime.get_today()}" value="${frappe.datetime.get_today()}">
 				</div>
 				<div>
 					<button class="btn btn-primary sa-load-btn">Load Items</button>

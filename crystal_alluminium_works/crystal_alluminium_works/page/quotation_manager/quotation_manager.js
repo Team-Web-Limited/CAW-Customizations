@@ -645,13 +645,13 @@ function render_quotation_dashboard(page, quotation_name, wrapper, auto_amend) {
 									<th style="text-align:center;white-space:nowrap;">PW</th>
 									<th style="text-align:center;white-space:nowrap;">PH</th>
 									<th style="text-align:center;white-space:nowrap;">P.RFT</th>
-									<th style="text-align:center;white-space:nowrap;">T.SFT</th>
+									<th style="text-align:center;white-space:nowrap;">SFT</th>
 									<th style="white-space:nowrap;">Polish Sides</th>
 									<th style="text-align:center;white-space:nowrap;">No</th>
 									<th style="text-align:center;white-space:nowrap;">WIDTH</th>
 									<th style="text-align:center;white-space:nowrap;">HEIGHT</th>
 									<th style="text-align:center;white-space:nowrap;">Pcs</th>
-									<th style="text-align:center;white-space:nowrap;" title="T.SFT × Pcs">Total SFT</th>
+									<th style="text-align:center;white-space:nowrap;" title="SFT × Pcs">Total SFT</th>
 									<th style="white-space:nowrap;">Glass Type</th>
 									<th style="white-space:nowrap;">Description</th>
 								</tr>
@@ -930,6 +930,7 @@ function render_quotation_dashboard(page, quotation_name, wrapper, auto_amend) {
 						Contact: ${frappe.utils.escape_html(doc.custom_contact_name || doc.custom_customer_name || '-')} (${frappe.utils.escape_html(doc.custom_contact_phone || doc.custom_customer_phone || '-')})
 					</div>` : ''}
 					<div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">Created: ${frappe.datetime.global_date_format(doc.creation)}</div>
+					<div style="font-size: 13px; color: var(--text-muted); margin-top: 2px;">Sales Person: ${frappe.utils.escape_html(frappe.user_info(doc.owner).fullname || doc.owner)}</div>
 				</div>
 				<div style="text-align: right;">
 					<span class="qm-badge ${state_color}">${doc.status}</span>

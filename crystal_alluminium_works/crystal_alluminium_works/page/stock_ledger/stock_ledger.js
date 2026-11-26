@@ -121,7 +121,7 @@ function render_stock_ledger_page(page) {
 
 				<div class="sl-toolbar-field" style="margin-left:auto; min-width:auto;">
 					<label style="visibility:hidden;">Clear</label>
-					<button class="btn btn-default btn-sm sl-btn-download" disabled style="margin-right:6px;">
+					<button class="btn btn-primary btn-sm sl-btn-download" disabled style="margin-right:6px;">
 						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
 						Download
 					</button>
@@ -383,8 +383,17 @@ function sl_render_category_table(page, data) {
 	}
 
 	let rows_html = data.map(row => {
-		let qty_class = row.actual_qty > 0 ? 'sl-qty-positive' : (row.actual_qty < 0 ? 'sl-qty-negative' : 'sl-qty-zero');
-		
+		// display_qty / display_uom name the balance the way a quotation does; ordinary glass is
+		// counted in sheets, with its sizes and square feet underneath.
+		let qty = flt(row.display_qty);
+		let qty_class = qty > 0 ? 'sl-qty-positive' : (qty < 0 ? 'sl-qty-negative' : 'sl-qty-zero');
+		let detail = '';
+		if (row.in_sheets) {
+			let sizes = Object.entries(row.sheet_balance || {}).map(([size, pcs]) => `${size}: ${pcs}`);
+			sizes.push(`${format_number(row.actual_qty, null, 2)} sft`);
+			detail = `<div class="sl-muted" style="font-size:11px;">${frappe.utils.escape_html(sizes.join(' · '))}</div>`;
+		}
+
 		return `
 			<tr class="sl-clickable" data-item="${frappe.utils.escape_html(row.item_code)}" data-group="${frappe.utils.escape_html(row.item_group)}" data-warehouse="${frappe.utils.escape_html(row.warehouse)}">
 				<td><strong>${frappe.utils.escape_html(row.item_code)}</strong></td>
@@ -392,7 +401,8 @@ function sl_render_category_table(page, data) {
 				<td>${frappe.utils.escape_html(row.item_group || '')}</td>
 				<td>${frappe.utils.escape_html(row.warehouse || '')}</td>
 				<td style="text-align:right;">
-					<div class="${qty_class}">${format_number(row.actual_qty, null, 2)} ${frappe.utils.escape_html(row.stock_uom || '')}</div>
+					<div class="${qty_class}">${format_number(qty, null, row.in_sheets && Number.isInteger(qty) ? 0 : 2)} ${frappe.utils.escape_html(row.display_uom || '')}</div>
+					${detail}
 				</td>
 			</tr>
 		`;
